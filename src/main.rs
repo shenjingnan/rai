@@ -1,9 +1,9 @@
 use clap::Parser;
-use rai::cli::{self, Cli};
+use zapmomo::cli::{self, Cli};
 
 #[tokio::main]
 async fn main() {
-    rai::logging::init_logging();
+    zapmomo::logging::init_logging();
 
     let cli = Cli::parse();
     let result = cli::run(cli).await;

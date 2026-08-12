@@ -97,10 +97,10 @@ jobs:
         run: rustup component add clippy
 
       - name: Lint (app crate)
-        run: cargo clippy -p rai-app -- -D warnings
+        run: cargo clippy -p zapmomo-app -- -D warnings
 
       - name: Check (app crate)
-        run: cargo check -p rai-app
+        run: cargo check -p zapmomo-app
 
   test:
     name: Test (${{ matrix.os }})

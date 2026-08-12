@@ -1,8 +1,8 @@
 {
-  "name": "rai",
+  "name": "zapmomo",
   "private": true,
   "version": "0.1.0",
-  "description": "RAI 桌面应用（Tauri 2）",
+  "description": "ZapMomo 桌面应用（Tauri 2）",
   "scripts": {
     "tauri": "tauri"
   },

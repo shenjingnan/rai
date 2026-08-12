@@ -24,6 +24,6 @@
     "postcss": "^8.5.0",
     "serve": "^14.0.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }

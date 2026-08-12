@@ -4,6 +4,8 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
+> 📚 中文文档：[Fumadocs 文档站](docs/)，含快速开始、KWS、配置、桌面应用与开发指南。
+
 ## 特性
 
 - **语音唤醒（KWS）** — 基于 sherpa-onnx 的 zipformer 唤醒词检测，支持实时麦克风监听与离线 wav 检测；自定义关键词直接输中文，自动转拼音 token

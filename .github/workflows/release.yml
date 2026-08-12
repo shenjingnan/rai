@@ -61,7 +61,8 @@ jobs:
           cache: pnpm
 
       - name: Install frontend deps
-        run: pnpm install --frozen-lockfile
+        # 只装根包（@tauri-apps/cli），不装 docs workspace 的 Next.js 依赖
+        run: pnpm install --filter . --frozen-lockfile
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

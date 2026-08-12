@@ -1,0 +1,25 @@
+---
+title: 配置
+description: ~/.zapmomo/settings.toml 的 [kws] 段配置项
+---
+
+# 配置
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[kws]` 段覆盖默认值（全部可选）：
+
+```toml
+[kws]
+model_dir = "/path/to/model"              # 模型目录（支持 ${env.VAR}）
+provider = "cpu"                           # 推理后端，默认 cpu
+num_threads = 4                            # 推理线程数，默认 2
+chunk_size = 3200                          # 每次喂给模型的采样数（@16k），默认 3200
+sample_rate = 16000                        # 模型输入采样率，默认 16000
+keywords_score = 1.0                       # 关键词 boosting 分数
+keywords_threshold = 0.25                  # 触发阈值：越大越不容易误触发（0.15~0.5）
+encoder = "encoder-...-chunk-16-left-64.int8.onnx"   # 模型目录内带 int8 变体可选
+decoder = "decoder-...-chunk-16-left-64.onnx"
+joiner  = "joiner-...-chunk-16-left-64.onnx"
+tokens  = "tokens.txt"
+keywords_file = "/path/to/keywords.txt"    # 自定义关键词文件
+debug = false
+```

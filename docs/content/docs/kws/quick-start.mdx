@@ -1,0 +1,20 @@
+---
+title: 快速开始
+description: 下载模型、离线验证、实时监听
+---
+
+# 快速开始
+
+```bash
+# 1. 下载模型（约 31MB，存入 ./models/，不入库）
+./scripts/download-kws-model.sh
+
+# 2. 离线验证（无需麦克风）：对模型自带 wav 检测出「文森特卡索」「法国」
+cargo run -- kws test
+
+# 3. 实时监听：说出唤醒词，控制台打印反应（首次运行需授权麦克风）
+cargo run -- kws run
+
+# 4. 查看可用麦克风设备
+cargo run -- kws devices
+```

@@ -63,6 +63,56 @@ pub struct AppConfig {
     /// 自定义配置项（示例）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom: Option<std::collections::HashMap<String, String>>,
+    /// 唤醒词检测（KWS）配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kws: Option<KwsSettings>,
+}
+
+/// 唤醒词检测（KWS）配置。
+///
+/// 全部字段可缺省：未配置的项在解析时回退到 `kws::config` 的内置默认值，
+/// 因此这里用 `Option` 以区分「未配置」与「配置了」。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct KwsSettings {
+    /// 模型目录（支持 ${env.VAR} 引用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
+    /// encoder onnx 文件名（缺省用模型目录下 chunk-16 变体）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// decoder onnx 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    /// joiner onnx 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joiner: Option<String>,
+    /// tokens.txt 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<String>,
+    /// 关键词文件路径（缺省 = <model_dir>/test_wavs/keywords.txt）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_file: Option<String>,
+    /// 推理后端，缺省 "cpu"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// 推理线程数，缺省 2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_threads: Option<i32>,
+    /// 每次喂给模型的采样数（@16k），缺省 3200（0.2s）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<usize>,
+    /// 模型输入采样率，缺省 16000
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<i32>,
+    /// 关键词 boosting 分数，缺省 1.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_score: Option<f32>,
+    /// 触发阈值，缺省 0.25（越大越不容易误触发）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_threshold: Option<f32>,
+    /// 调试输出，缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<bool>,
 }
 
 fn default_log_level() -> String {
@@ -75,6 +125,7 @@ impl Default for AppConfig {
             debug: false,
             log_level: default_log_level(),
             custom: None,
+            kws: None,
         }
     }
 }
@@ -222,9 +273,75 @@ mod tests {
             debug: true,
             log_level: "warn".to_string(),
             custom: Some(std::collections::HashMap::new()),
+            kws: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    #[test]
+    fn test_load_settings_with_kws_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[kws]\nnum_threads = 4\nchunk_size = 1600\n");
+            let result = load_settings().unwrap().unwrap();
+            let kws = result.kws.unwrap();
+            assert_eq!(kws.num_threads, Some(4));
+            assert_eq!(kws.chunk_size, Some(1600));
+            // 未配置的字段保持 None
+            assert_eq!(kws.model_dir, None);
+            assert_eq!(kws.keywords_threshold, None);
+        });
+    }
+
+    #[test]
+    fn test_load_settings_without_kws_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "debug = true\n");
+            let result = load_settings().unwrap().unwrap();
+            assert!(result.kws.is_none());
+        });
+    }
+
+    #[test]
+    fn test_kws_settings_serde_roundtrip() {
+        let kws = KwsSettings {
+            model_dir: Some("${env.KWS_MODEL_DIR}".to_string()),
+            encoder: Some("encoder.onnx".to_string()),
+            decoder: None,
+            joiner: None,
+            tokens: None,
+            keywords_file: Some("kw.txt".to_string()),
+            provider: Some("cpu".to_string()),
+            num_threads: Some(4),
+            chunk_size: Some(1600),
+            sample_rate: Some(16000),
+            keywords_score: Some(1.0),
+            keywords_threshold: Some(0.3),
+            debug: Some(false),
+        };
+        let toml_str = toml::to_string(&kws).unwrap();
+        let deserialized: KwsSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(kws, deserialized);
+        // 未配置字段应被 skip_serializing_if 忽略
+        assert!(!toml_str.contains("decoder"));
+    }
+
+    #[test]
+    fn test_kws_settings_env_ref_resolution() {
+        unsafe {
+            std::env::set_var("KWS_MODEL_DIR", "/tmp/kws-model");
+        }
+        let kws = KwsSettings {
+            model_dir: Some("${env.KWS_MODEL_DIR}".to_string()),
+            ..KwsSettings::default()
+        };
+        assert_eq!(
+            resolve_env_ref(kws.model_dir.as_ref().unwrap()).unwrap(),
+            "/tmp/kws-model"
+        );
+        unsafe {
+            std::env::remove_var("KWS_MODEL_DIR");
+        }
     }
 }

@@ -21,6 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Cache sherpa-onnx prebuilt libs
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -73,6 +79,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Cache sherpa-onnx prebuilt libs
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

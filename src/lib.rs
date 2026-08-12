@@ -1,7 +1,9 @@
 /// 通用工具模块
+pub mod audio;
 pub mod cli;
 pub mod config;
 pub mod datetime;
+pub mod kws;
 pub mod logging;
 
 #[cfg(test)]

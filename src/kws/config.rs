@@ -199,13 +199,18 @@ mod tests {
         assert_eq!(cfg, ResolvedKwsConfig::default());
     }
 
+    /// 构造跨平台绝对路径（Windows 上 `/xxx` 无盘符不是绝对路径，避免测试依赖 POSIX 语义）
+    fn abs_path(rel: &str) -> PathBuf {
+        std::path::absolute(rel).unwrap()
+    }
+
     #[test]
     fn test_resolve_cli_model_dir_overrides_settings() {
         let settings = KwsSettings {
             model_dir: Some("settings-model".to_string()),
             ..KwsSettings::default()
         };
-        let cli = PathBuf::from("/tmp/cli-model");
+        let cli = abs_path("tmp/cli-model");
         let cfg = resolve(Some(&settings), Some(&cli)).unwrap();
         assert_eq!(cfg.model_dir, cli);
         assert_eq!(cfg.encoder.parent().unwrap(), cli);
@@ -213,52 +218,54 @@ mod tests {
 
     #[test]
     fn test_resolve_settings_model_dir() {
+        let dir = abs_path("opt/kws");
         let settings = KwsSettings {
-            model_dir: Some("/opt/kws".to_string()),
+            model_dir: Some(dir.to_string_lossy().to_string()),
             ..KwsSettings::default()
         };
         let cfg = resolve(Some(&settings), None).unwrap();
-        assert_eq!(cfg.model_dir, PathBuf::from("/opt/kws"));
-        assert_eq!(cfg.encoder, PathBuf::from("/opt/kws").join(DEFAULT_ENCODER));
-        assert_eq!(
-            cfg.keywords_file,
-            PathBuf::from("/opt/kws").join(DEFAULT_KEYWORDS_REL)
-        );
+        assert_eq!(cfg.model_dir, dir);
+        assert_eq!(cfg.encoder, dir.join(DEFAULT_ENCODER));
+        assert_eq!(cfg.keywords_file, dir.join(DEFAULT_KEYWORDS_REL));
     }
 
     #[test]
     fn test_resolve_relative_encoder_joins_model_dir() {
+        let dir = abs_path("opt/kws");
         let settings = KwsSettings {
-            model_dir: Some("/opt/kws".to_string()),
+            model_dir: Some(dir.to_string_lossy().to_string()),
             encoder: Some("my-encoder.int8.onnx".to_string()),
             ..KwsSettings::default()
         };
         let cfg = resolve(Some(&settings), None).unwrap();
-        assert_eq!(cfg.encoder, PathBuf::from("/opt/kws/my-encoder.int8.onnx"));
+        assert_eq!(cfg.encoder, dir.join("my-encoder.int8.onnx"));
     }
 
     #[test]
     fn test_resolve_absolute_encoder_kept_as_is() {
+        let dir = abs_path("opt/kws");
+        let enc = abs_path("elsewhere/enc.onnx");
         let settings = KwsSettings {
-            model_dir: Some("/opt/kws".to_string()),
-            encoder: Some("/elsewhere/enc.onnx".to_string()),
+            model_dir: Some(dir.to_string_lossy().to_string()),
+            encoder: Some(enc.to_string_lossy().to_string()),
             ..KwsSettings::default()
         };
         let cfg = resolve(Some(&settings), None).unwrap();
-        assert_eq!(cfg.encoder, PathBuf::from("/elsewhere/enc.onnx"));
+        assert_eq!(cfg.encoder, enc);
     }
 
     #[test]
     fn test_resolve_env_ref_in_model_dir() {
+        let dir = abs_path("env/kws");
         unsafe {
-            std::env::set_var("KWS_MODEL_DIR", "/env/kws");
+            std::env::set_var("KWS_MODEL_DIR", dir.to_string_lossy().as_ref());
         }
         let settings = KwsSettings {
             model_dir: Some("${env.KWS_MODEL_DIR}".to_string()),
             ..KwsSettings::default()
         };
         let cfg = resolve(Some(&settings), None).unwrap();
-        assert_eq!(cfg.model_dir, PathBuf::from("/env/kws"));
+        assert_eq!(cfg.model_dir, dir);
         unsafe {
             std::env::remove_var("KWS_MODEL_DIR");
         }

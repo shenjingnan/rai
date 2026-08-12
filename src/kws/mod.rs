@@ -90,13 +90,13 @@ impl KwsEngine {
         let mut outcome = ReactionOutcome::Continue;
         while self.spotter.is_ready(stream) {
             self.spotter.decode(stream);
-            if let Some(r) = self.spotter.get_result(stream) {
-                if !r.keyword.is_empty() {
-                    outcome = reaction.on_keyword(&KwsResult::from(&r));
-                    self.spotter.reset(stream);
-                    if outcome == ReactionOutcome::Stop {
-                        break;
-                    }
+            if let Some(r) = self.spotter.get_result(stream)
+                && !r.keyword.is_empty()
+            {
+                outcome = reaction.on_keyword(&KwsResult::from(&r));
+                self.spotter.reset(stream);
+                if outcome == ReactionOutcome::Stop {
+                    break;
                 }
             }
         }

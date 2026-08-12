@@ -48,17 +48,19 @@ fn split_syllable(syl: &str, tokens: &HashSet<String>) -> Result<(String, Option
         return Ok((String::new(), Some(syl.to_string())));
     }
     for init in INITIALS_2 {
-        if let Some(rest) = syl.strip_prefix(init) {
-            if !rest.is_empty() && tokens.contains(rest) {
-                return Ok((init.to_string(), Some(rest.to_string())));
-            }
+        if let Some(rest) = syl.strip_prefix(init)
+            && !rest.is_empty()
+            && tokens.contains(rest)
+        {
+            return Ok((init.to_string(), Some(rest.to_string())));
         }
     }
     for init in INITIALS_1 {
-        if let Some(rest) = syl.strip_prefix(init) {
-            if !rest.is_empty() && tokens.contains(rest) {
-                return Ok((init.to_string(), Some(rest.to_string())));
-            }
+        if let Some(rest) = syl.strip_prefix(init)
+            && !rest.is_empty()
+            && tokens.contains(rest)
+        {
+            return Ok((init.to_string(), Some(rest.to_string())));
         }
     }
     // 无标准拆分：整个音节应是 tokens 中的韵母或特殊音节

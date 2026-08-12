@@ -90,7 +90,7 @@ fn cmd_config() -> Result<String, String> {
 /// greet 命令
 fn cmd_greet(name: &str, count: u32) -> Result<(), String> {
     for _ in 0..count {
-        println!("你好, {}！欢迎使用 ai-rust-starter。", name);
+        println!("你好, {name}！欢迎使用 ai-rust-starter。");
     }
     Ok(())
 }
@@ -106,7 +106,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Some(Commands::Config) => {
             let output = cmd_config()?;
-            println!("{}", output);
+            println!("{output}");
             Ok(())
         }
         Some(Commands::Greet { name, count }) => cmd_greet(&name, count),

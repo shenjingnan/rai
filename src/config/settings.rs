@@ -42,8 +42,7 @@ pub fn resolve_env_ref(value: &str) -> Result<String, String> {
         match std::env::var(env_var) {
             Ok(resolved) => Ok(resolved),
             Err(_) => Err(format!(
-                "环境变量 {} 未设置。请在 {} 中配置或设置环境变量 {}。",
-                env_var, SETTINGS_FILE, env_var
+                "环境变量 {env_var} 未设置。请在 {SETTINGS_FILE} 中配置或设置环境变量 {env_var}。"
             )),
         }
     } else {
@@ -142,8 +141,7 @@ pub fn load_settings() -> Result<Option<AppConfig>, String> {
         Err(_) => return Ok(None),
     };
 
-    let config: AppConfig =
-        toml::from_str(&content).map_err(|e| format!("TOML 格式错误: {}", e))?;
+    let config: AppConfig = toml::from_str(&content).map_err(|e| format!("TOML 格式错误: {e}"))?;
 
     Ok(Some(config))
 }

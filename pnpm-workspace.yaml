@@ -1,0 +1,6 @@
+packages:
+  - docs
+
+# pnpm 10 默认阻止依赖的构建脚本；Next.js 构建需要 esbuild
+onlyBuiltDependencies:
+  - esbuild

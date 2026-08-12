@@ -1,0 +1,14 @@
+---
+title: 模型来源与校验
+description: 模型不随代码分发，按 manifest.json 清单下载并校验
+---
+
+# 模型来源与校验
+
+模型**不随代码分发**，由 `scripts/download-kws-model.sh` 按 `models/manifest.json` 清单下载：
+
+- **清单** `models/manifest.json`（随仓库）记录每个模型的 `name / version / source / sha256 / license`
+- **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型
+- **幂等**：模型已存在且完整则跳过
+- **合规**：第三方来源与许可见 `models/THIRD_PARTY_NOTICES.md`
+- 后续 ASR / TTS 等模型（可能超过 100MB）将沿用同一套清单机制，按需下载

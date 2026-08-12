@@ -27,8 +27,15 @@ settings.local.json
 # Logs
 *.log
 
-# Node (Tauri CLI)
-/node_modules
+# Node (Tauri CLI + docs)
+node_modules/
+
+# Docs (Next.js build output)
+docs/.next/
+docs/out/
+
+# Cloudflare wrangler 本地缓存
+.wrangler/
 
 # Tauri 生成产物（权限 schema 等）
 /src-tauri/gen

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/shenjingnan/zapmomo/compare/v0.1.0...v0.1.1) - 2026-08-12
+
+### Added
+
+- *(docs)* 新增 Fumadocs 中文文档站并部署到 Cloudflare Pages ([#10](https://github.com/shenjingnan/zapmomo/pull/10))
+
+### Other
+
+- *(deps-dev)* bump typescript from 5.9.3 to 7.0.2 ([#19](https://github.com/shenjingnan/zapmomo/pull/19))
+- *(docs)* 部署切换为 Cloudflare Pages Git 集成并修复过期链接 ([#20](https://github.com/shenjingnan/zapmomo/pull/20))
+- 从 npm 迁移到 pnpm ([#9](https://github.com/shenjingnan/zapmomo/pull/9))
+
 ## [0.1.0] - 2026-06-05
 
 ### Added

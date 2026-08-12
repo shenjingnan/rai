@@ -27,6 +27,9 @@ jobs:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
+      - name: Install Linux audio deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,6 +88,10 @@ jobs:
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

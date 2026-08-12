@@ -51,7 +51,7 @@ jobs:
 
       - name: Setup pnpm
         # 版本由根 package.json 的 packageManager 字段决定（pnpm@10.18.2）
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node
         uses: actions/setup-node@v4

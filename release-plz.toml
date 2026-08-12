@@ -5,14 +5,14 @@ git_release_enable = false
 git_tag_enable = false
 
 [[package]]
-name = "ai-rust-starter"
+name = "rai"
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 changelog_update = true
 changelog_path = "CHANGELOG.md"
 
 [[package]]
-name = "ai-rust-starter-app"
+name = "rai-app"
 # 桌面应用 crate：不发布 crates.io，也不单独打 tag（随 workspace 一起 bump 版本）
 release = false
 git_tag_enable = false

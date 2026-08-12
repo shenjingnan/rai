@@ -1,8 +1,8 @@
 {
-  "name": "ai-rust-starter",
+  "name": "rai",
   "private": true,
   "version": "0.1.0",
-  "description": "ai-rust-starter 桌面应用（Tauri 2）",
+  "description": "RAI 桌面应用（Tauri 2）",
   "scripts": {
     "tauri": "tauri"
   },

@@ -18,39 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-rust-starter"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "cpal",
- "pinyin",
- "serde",
- "serde_json",
- "sherpa-onnx",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "toml 1.1.4+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ai-rust-starter-app"
-version = "0.1.0"
-dependencies = [
- "ai-rust-starter",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tracing",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2886,6 +2853,39 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "cpal",
+ "pinyin",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rai-app"
+version = "0.1.0"
+dependencies = [
+ "rai",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tracing",
+]
 
 [[package]]
 name = "raw-window-handle"

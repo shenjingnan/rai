@@ -93,6 +93,9 @@ jobs:
         with:
           components: clippy
 
+      - name: Ensure components for project toolchain
+        run: rustup component add clippy
+
       - name: Lint (app crate)
         run: cargo clippy -p ai-rust-starter-app -- -D warnings
 

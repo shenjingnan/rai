@@ -45,9 +45,9 @@ cargo test                          # 测试
 cargo fmt --check && cargo clippy -- -D warnings && cargo test   # 完整检查
 
 # 桌面应用（Tauri 2，位于 src-tauri/，path 依赖根 crate 库）
-npm install                         # 首次：安装 @tauri-apps/cli
-npm run tauri dev                   # 开发模式（KWS 控制面板）
-npm run tauri build                 # 构建当前平台安装包（macOS: .app/.dmg）
+pnpm install                        # 首次：安装 @tauri-apps/cli
+pnpm tauri dev                      # 开发模式（KWS 控制面板）
+pnpm tauri build                    # 构建当前平台安装包（macOS: .app/.dmg）
 cargo check -p zapmomo-app              # 仅检查 tauri crate（Linux 需 webkit 依赖）
 cargo clippy -p zapmomo-app -- -D warnings   # tauri crate Lint
 

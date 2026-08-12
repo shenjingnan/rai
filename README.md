@@ -126,13 +126,13 @@ cargo test -- --test-threads=1
 
 ```bash
 # 安装 Tauri CLI（首次）
-npm install
+pnpm install
 
 # 开发模式（热重载，需已下载模型：./scripts/download-kws-model.sh）
-npm run tauri dev
+pnpm tauri dev
 
 # 构建当前平台的安装包（macOS 产出 .app/.dmg）
-npm run tauri build
+pnpm tauri build
 ```
 
 > 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在

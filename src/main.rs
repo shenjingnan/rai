@@ -9,7 +9,7 @@ async fn main() {
     let result = cli::run(cli).await;
 
     if let Err(err) = result {
-        eprintln!("{}", err);
+        eprintln!("{err}");
         std::process::exit(1);
     }
 }

@@ -31,7 +31,7 @@ cpal = "0.15"
 sherpa-onnx = "1.13"
 
 # 汉字 → 带声调拼音（把用户输入的原始中文关键词转成模型可编码的 ppinyin token）
-pinyin = "0.10"
+pinyin = "0.11"
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

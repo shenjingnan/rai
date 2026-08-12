@@ -1,4 +1,4 @@
-# RAI
+# ZapMomo
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
 
@@ -75,7 +75,7 @@ cargo run -- kws devices
 
 ### 配置
 
-可在 `~/.rai/settings.toml` 中添加 `[kws]` 段覆盖默认值（全部可选）：
+可在 `~/.zapmomo/settings.toml` 中添加 `[kws]` 段覆盖默认值（全部可选）：
 
 ```toml
 [kws]
@@ -136,7 +136,7 @@ npm run tauri build
 ```
 
 > 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在
-> `~/.rai/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
+> `~/.zapmomo/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。
 

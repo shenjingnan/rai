@@ -1,10 +1,10 @@
-# CLAUDE.md - RAI
+# CLAUDE.md - ZapMomo
 
 本文档为 Claude Code 提供项目上下文和开发规范。
 
 ## 项目概述
 
-**RAI** 是一个开源的实时桌面 AI 伴侣（An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character），提供语音交互（KWS 唤醒词）、Tauri 2 桌面 GUI 与通用工具模块。
+**ZapMomo** 是一个开源的实时桌面 AI 伴侣（An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character），提供语音交互（KWS 唤醒词）、Tauri 2 桌面 GUI 与通用工具模块。
 
 ## 技术栈
 
@@ -48,8 +48,8 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo test   # 完整检查
 npm install                         # 首次：安装 @tauri-apps/cli
 npm run tauri dev                   # 开发模式（KWS 控制面板）
 npm run tauri build                 # 构建当前平台安装包（macOS: .app/.dmg）
-cargo check -p rai-app              # 仅检查 tauri crate（Linux 需 webkit 依赖）
-cargo clippy -p rai-app -- -D warnings   # tauri crate Lint
+cargo check -p zapmomo-app              # 仅检查 tauri crate（Linux 需 webkit 依赖）
+cargo clippy -p zapmomo-app -- -D warnings   # tauri crate Lint
 
 # 构建
 cargo build                         # 调试构建（默认只构建根 CLI crate）

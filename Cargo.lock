@@ -2855,39 +2855,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "rai"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "cpal",
- "pinyin",
- "serde",
- "serde_json",
- "sherpa-onnx",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "toml 1.1.4+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rai-app"
-version = "0.1.0"
-dependencies = [
- "rai",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tracing",
-]
-
-[[package]]
 name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5363,6 +5330,39 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
+]
+
+[[package]]
+name = "zapmomo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "cpal",
+ "pinyin",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "zapmomo-app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tracing",
+ "zapmomo",
 ]
 
 [[package]]

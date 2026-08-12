@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RAI",
+  "productName": "ZapMomo",
   "version": "0.1.0",
-  "identifier": "com.rai",
+  "identifier": "com.zapmomo",
   "build": {
     "frontendDist": "frontend",
     "devUrl": null
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "RAI · KWS 控制面板",
+        "title": "ZapMomo · KWS 控制面板",
         "width": 760,
         "height": 600,
         "resizable": true

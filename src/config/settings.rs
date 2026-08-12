@@ -1,11 +1,11 @@
 /// Settings - TOML 配置管理
 ///
 /// 提供通用的配置读写功能，支持 ${env.VAR} 环境变量引用。
-/// 配置文件存储在 `~/.rai/settings.toml`。
+/// 配置文件存储在 `~/.zapmomo/settings.toml`。
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const PROJECT_DIR: &str = ".rai";
+const PROJECT_DIR: &str = ".zapmomo";
 const SETTINGS_FILE: &str = "settings.toml";
 
 /// 获取用户 home 目录（跨平台：macOS/Linux 用 $HOME，Windows 用 %USERPROFILE%）
@@ -129,7 +129,7 @@ impl Default for AppConfig {
     }
 }
 
-/// 加载 ~/.rai/settings.toml
+/// 加载 ~/.zapmomo/settings.toml
 ///
 /// 文件不存在时返回 None，不报错。
 pub fn load_settings() -> Result<Option<AppConfig>, String> {
@@ -161,7 +161,7 @@ mod tests {
     fn test_get_settings_path() {
         run_with_temp_home(|home| {
             let path = get_settings_path();
-            assert_eq!(path, home.join(".rai/settings.toml"));
+            assert_eq!(path, home.join(".zapmomo/settings.toml"));
         });
     }
 
@@ -169,7 +169,7 @@ mod tests {
     fn test_get_settings_dir() {
         run_with_temp_home(|home| {
             let dir = get_settings_dir();
-            assert_eq!(dir, home.join(".rai"));
+            assert_eq!(dir, home.join(".zapmomo"));
         });
     }
 

@@ -1,15 +1,15 @@
-//! RAI 桌面应用（Tauri 2）。
+//! ZapMomo 桌面应用（Tauri 2）。
 //!
-//! 复用根 crate `rai` 的 KWS / 音频 / 配置逻辑：
+//! 复用根 crate `zapmomo` 的 KWS / 音频 / 配置逻辑：
 //! - 通过 Tauri command 暴露设备列表、KWS 配置、开始/停止监听；
 //! - 监听循环跑在独立 `std::thread`，检测到唤醒词经 `TauriReaction`
 //!   以 `kws-detected` 事件推给前端；结束（正常/出错/手动停止）发 `kws-stopped`。
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rai::kws::{KwsResult, Reaction, ReactionOutcome};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 
 /// 监听线程状态：共享停止标志 + 线程句柄。
 struct ListenState {
@@ -65,7 +65,7 @@ fn get_app_info() -> AppInfo {
 /// 列出可用麦克风输入设备。
 #[tauri::command]
 fn list_devices() -> Vec<String> {
-    rai::audio::list_input_devices()
+    zapmomo::audio::list_input_devices()
 }
 
 /// GUI 展示用的 KWS 配置信息。
@@ -83,9 +83,9 @@ struct KwsConfigInfo {
 /// 读取合并后的 KWS 配置（settings.toml + 默认值），并给出模型是否就绪。
 #[tauri::command]
 fn get_kws_config() -> Result<KwsConfigInfo, String> {
-    let settings = rai::config::settings::load_settings()?;
+    let settings = zapmomo::config::settings::load_settings()?;
     let kws_settings = settings.as_ref().and_then(|s| s.kws.clone());
-    let cfg = rai::kws::config::resolve(kws_settings.as_ref(), None)?;
+    let cfg = zapmomo::kws::config::resolve(kws_settings.as_ref(), None)?;
 
     let files = [
         &cfg.encoder,
@@ -95,7 +95,8 @@ fn get_kws_config() -> Result<KwsConfigInfo, String> {
         &cfg.keywords_file,
     ];
     let models_present = files.iter().all(|p| p.is_file());
-    let keywords = rai::kws::config::parse_keywords_file(&cfg.keywords_file).unwrap_or_default();
+    let keywords =
+        zapmomo::kws::config::parse_keywords_file(&cfg.keywords_file).unwrap_or_default();
 
     Ok(KwsConfigInfo {
         model_dir: cfg.model_dir.display().to_string(),
@@ -104,7 +105,7 @@ fn get_kws_config() -> Result<KwsConfigInfo, String> {
         sample_rate: cfg.sample_rate,
         keywords,
         models_present,
-        settings_path: rai::config::settings::get_settings_path()
+        settings_path: zapmomo::config::settings::get_settings_path()
             .display()
             .to_string(),
     })
@@ -125,13 +126,13 @@ fn start_listen(
         return Err("已在监听中".to_string());
     }
 
-    let settings = rai::config::settings::load_settings()?;
+    let settings = zapmomo::config::settings::load_settings()?;
     let kws_settings = settings.as_ref().and_then(|s| s.kws.clone());
-    let cfg = rai::kws::config::resolve(kws_settings.as_ref(), None)?;
+    let cfg = zapmomo::kws::config::resolve(kws_settings.as_ref(), None)?;
 
     // 同步校验/编码附加关键词（原始中文自动转 ppinyin），避免编码失败时空指针崩溃
     if let Some(k) = keywords.as_deref() {
-        rai::kws::token::encode_custom_keywords(k, &cfg.tokens)?;
+        zapmomo::kws::token::encode_custom_keywords(k, &cfg.tokens)?;
     }
 
     // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
@@ -146,7 +147,7 @@ fn start_listen(
         return Err(format!(
             "缺少模型文件: {}\n\n请在 {} 中配置 [kws] model_dir，\n或先在项目目录运行 scripts/download-kws-model.sh 下载模型。",
             missing.display(),
-            rai::config::settings::get_settings_path().display()
+            zapmomo::config::settings::get_settings_path().display()
         ));
     }
 
@@ -156,7 +157,7 @@ fn start_listen(
     let handle = std::thread::spawn(move || {
         tracing::info!("KWS listen thread started");
         let mut reaction = TauriReaction { app: thread_app };
-        let result = rai::kws::run_realtime_with(
+        let result = zapmomo::kws::run_realtime_with(
             &cfg,
             device.as_deref(),
             None,
@@ -205,7 +206,7 @@ fn is_listening(state: State<'_, ListenState>) -> bool {
 
 /// Tauri 应用入口。
 pub fn run() {
-    rai::logging::init_logging();
+    zapmomo::logging::init_logging();
     tauri::Builder::default()
         .manage(ListenState::new())
         .invoke_handler(tauri::generate_handler![

@@ -1,6 +1,6 @@
 use clap::Parser;
 /// 集成测试示例
-use rai::cli::{self, Cli};
+use zapmomo::cli::{self, Cli};
 
 #[test]
 fn test_cli_greet_output() {
@@ -32,7 +32,7 @@ async fn test_run_greet_returns_ok() {
 
 #[test]
 fn test_datetime_iso_format() {
-    let now = rai::datetime::iso_timestamp_now();
+    let now = zapmomo::datetime::iso_timestamp_now();
     assert!(
         now.contains('T'),
         "ISO 8601 timestamp should contain T separator"
@@ -42,5 +42,5 @@ fn test_datetime_iso_format() {
 #[test]
 fn test_logging_init() {
     // 初始化日志不应 panic
-    rai::logging::init_logging();
+    zapmomo::logging::init_logging();
 }

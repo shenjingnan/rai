@@ -1,0 +1,12 @@
+{
+  "name": "ai-rust-starter",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ai-rust-starter 桌面应用（Tauri 2）",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

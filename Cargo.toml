@@ -1,10 +1,23 @@
-[package]
-name = "ai-rust-starter"
+[workspace]
+members = ["src-tauri"]
+default-members = ["."]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# tauri 2 的部分传递依赖（darling/plist/serde_with/time 等）要求 rustc 1.88
+rust-version = "1.88"
 description = "A Rust project starter template"
 license = "MIT"
+
+[package]
+name = "ai-rust-starter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+license.workspace = true
 
 [dependencies]
 # CLI 框架
@@ -16,6 +29,9 @@ cpal = "0.15"
 
 # 关键词检测（KWS），默认 static 特性：构建时下载预编译库
 sherpa-onnx = "1.13"
+
+# 汉字 → 带声调拼音（把用户输入的原始中文关键词转成模型可编码的 ppinyin token）
+pinyin = "0.10"
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -44,6 +60,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 [dev-dependencies]
 tempfile = "3"
 
-[profile.dist]
-inherits = "release"
+# 发布构建：减小编译产物/安装包体积
+[profile.release]
 lto = "thin"
+strip = "symbols"

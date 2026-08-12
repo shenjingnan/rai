@@ -10,11 +10,12 @@
 
 | 技术           | 版本  | 用途                         |
 | -------------- | ----- | ---------------------------- |
-| Rust           | 1.85+ | 编程语言 / 编译 / 测试 / Lint / Format |
+| Rust           | 1.88+ | 编程语言 / 编译 / 测试 / Lint / Format |
 | clap           | 4.x   | CLI 参数解析                 |
 | tokio          | 1.x   | 异步运行时                   |
 | serde          | 1.x   | JSON/TOML 序列化/反序列化    |
 | tracing        | 0.1   | 日志和诊断                   |
+| Tauri          | 2.x   | 桌面应用框架（workspace 成员 `src-tauri/`） |
 
 ## 快速命令参考
 
@@ -37,8 +38,15 @@ cargo clippy -- -D warnings         # 严格 Lint 检查
 cargo test                          # 测试
 cargo fmt --check && cargo clippy -- -D warnings && cargo test   # 完整检查
 
+# 桌面应用（Tauri 2，位于 src-tauri/，path 依赖根 crate 库）
+npm install                         # 首次：安装 @tauri-apps/cli
+npm run tauri dev                   # 开发模式（KWS 控制面板）
+npm run tauri build                 # 构建当前平台安装包（macOS: .app/.dmg）
+cargo check -p ai-rust-starter-app  # 仅检查 tauri crate（Linux 需 webkit 依赖）
+cargo clippy -p ai-rust-starter-app -- -D warnings   # tauri crate Lint
+
 # 构建
-cargo build                         # 调试构建
+cargo build                         # 调试构建（默认只构建根 CLI crate）
 cargo build --release               # 发布构建
 
 # 文档
@@ -69,7 +77,7 @@ cargo tarpaulin                     # 生成覆盖率报告
 ## 项目结构
 
 ```
-├── Cargo.toml           # 项目配置和依赖
+├── Cargo.toml           # 项目配置和依赖（workspace 根）
 ├── rust-toolchain.toml  # Rust 工具链版本
 ├── src/
 │   ├── main.rs          # 入口文件
@@ -80,10 +88,24 @@ cargo tarpaulin                     # 生成覆盖率报告
 │   │   └── settings.rs  # TOML 配置管理
 │   ├── logging.rs       # tracing 双层日志
 │   └── datetime.rs      # 日期时间工具
+├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
+│   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
+│   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
+│   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
+│   ├── capabilities/    # 权限声明
+│   └── icons/           # 应用图标
 ├── tests/               # 集成测试
-├── .github/             # CI/CD 配置
+├── package.json         # Tauri CLI（@tauri-apps/cli）
+├── scripts/             # 模型下载 / 图标生成等脚本
+├── .github/             # CI/CD 配置（含 release.yml 发布流水线）
 └── .githooks/           # Git hooks
 ```
+
+## 发布流程（桌面安装包）
+
+`release-plz` 负责版本/tag/changelog/crates.io；push `vX.Y.Z` tag 后由
+`.github/workflows/release.yml`（tauri-action）在 Windows/macOS/Linux 原生 runner
+构建安装包并附到草稿 Release。详见 README「发布流程」。
 
 ## 自定义指南
 

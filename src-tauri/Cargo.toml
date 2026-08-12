@@ -1,0 +1,25 @@
+[package]
+name = "ai-rust-starter-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+license.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 桌面框架
+tauri = { version = "2", features = [] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 日志（复用根 crate 的 init_logging 初始化双层 tracing）
+tracing = "0.1"
+
+# 复用根 crate 的 KWS / 音频 / 配置逻辑
+ai-rust-starter = { path = ".." }

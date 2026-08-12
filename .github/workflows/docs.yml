@@ -1,15 +1,9 @@
 name: Docs
 
-# 构建 Fumadocs 文档站并部署到 Cloudflare Pages（zapmomo-docs）。
-# 仅在 docs/ 相关文件变更时触发；PR 只构建验证，push main 才部署。
+# 构建验证 Fumadocs 文档站（静态导出）。
+# 实际部署由 Cloudflare Pages Git 集成完成（仓库关联 zapmomo-docs 项目），
+# 此处保留 PR 构建校验作为 GitHub 侧快速反馈。
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'docs/**'
-      - 'pnpm-workspace.yaml'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
   pull_request:
     branches: [main]
     paths:
@@ -24,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & Deploy Docs
+    name: Build Docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,12 +38,3 @@ jobs:
 
       - name: Build docs (static export)
         run: pnpm --filter zapmomo-docs build
-
-      - name: Deploy to Cloudflare Pages
-        if: github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy out --project-name=zapmomo-docs
-          workingDirectory: docs

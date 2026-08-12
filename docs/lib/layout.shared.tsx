@@ -5,12 +5,11 @@ export function baseOptions(): BaseLayoutProps {
     nav: {
       title: 'ZapMomo 文档',
     },
-    // TODO: 仓库由 RAI 重命名为 ZapMomo 后更新为新 remote URL
-    githubUrl: 'https://github.com/shenjingnan/rai',
+    githubUrl: 'https://github.com/shenjingnan/zapmomo',
     links: [
       {
         text: 'GitHub',
-        url: 'https://github.com/shenjingnan/rai',
+        url: 'https://github.com/shenjingnan/zapmomo',
       },
     ],
   };

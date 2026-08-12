@@ -8,11 +8,11 @@ version = "0.1.0"
 edition = "2024"
 # tauri 2 的部分传递依赖（darling/plist/serde_with/time 等）要求 rustc 1.88
 rust-version = "1.88"
-description = "A Rust project starter template"
+description = "An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character."
 license = "MIT"
 
 [package]
-name = "ai-rust-starter"
+name = "rai"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

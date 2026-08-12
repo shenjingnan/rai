@@ -1,11 +1,15 @@
-# ai-rust-starter
+# RAI
 
-一个开箱即用的 **Rust 项目快速启动模板**。
+An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
+
+开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
 ## 特性
 
+- **语音唤醒（KWS）** — 基于 sherpa-onnx 的 zipformer 唤醒词检测，支持实时麦克风监听与离线 wav 检测；自定义关键词直接输中文，自动转拼音 token
+- **桌面应用** — 基于 Tauri 2 的 GUI（KWS 控制面板），Windows / macOS / Linux 三平台安装包
+- **音频采集** — 基于 cpal 的麦克风采集 + 自动重采样（设备采样率 → 16k）
 - **CLI 骨架** — 基于 clap 的命令行参数解析，支持子命令和 Shell 补全生成
-- **桌面应用** — 基于 Tauri 2 的 GUI 壳（KWS 控制面板），Windows / macOS / Linux 三平台安装包
 - **异步运行时** — 集成 tokio，开箱即用的 async/await 支持
 - **配置管理** — TOML 格式的配置文件读写，支持 `${env.VAR}` 环境变量引用
 - **双层日志** — 基于 tracing 的日志系统，同时输出到文件和 stderr
@@ -65,34 +69,46 @@ cargo run -- kws devices
 
 | 命令 | 说明 |
 |------|------|
-| `kws run` | 实时监听麦克风，检测唤醒词。`--duration 秒` 限时、`--device 名称` 指定设备、`--keywords` 附加关键词 |
+| `kws run` | 实时监听麦克风，检测唤醒词。`--duration 秒` 限时、`--device 名称` 指定设备、`--keywords` 附加关键词（直接输中文，多个用 `/` 分隔） |
 | `kws test` | 离线检测 wav（默认模型自带 `test_wavs/zh_3.wav`）。`--wav` 指定文件 |
 | `kws devices` | 列出可用输入设备 |
 
 ### 配置
 
-可在 `~/.ai-rust-starter/settings.toml` 中添加 `[kws]` 段覆盖默认值：
+可在 `~/.rai/settings.toml` 中添加 `[kws]` 段覆盖默认值（全部可选）：
 
 ```toml
 [kws]
-model_dir = "/path/to/model"        # 模型目录（支持 ${env.VAR}）
-num_threads = 4                      # 推理线程数，默认 2
-chunk_size = 3200                    # 每次喂给模型的采样数（@16k），默认 3200
-keywords_threshold = 0.25            # 触发阈值：越大越不容易误触发（0.15~0.5）
-encoder = "encoder-...-chunk-16-left-64.int8.onnx"   # 可用 int8 变体
-keywords_file = "/path/to/keywords.txt"              # 自定义关键词文件
+model_dir = "/path/to/model"              # 模型目录（支持 ${env.VAR}）
+provider = "cpu"                           # 推理后端，默认 cpu
+num_threads = 4                            # 推理线程数，默认 2
+chunk_size = 3200                          # 每次喂给模型的采样数（@16k），默认 3200
+sample_rate = 16000                        # 模型输入采样率，默认 16000
+keywords_score = 1.0                       # 关键词 boosting 分数
+keywords_threshold = 0.25                  # 触发阈值：越大越不容易误触发（0.15~0.5）
+encoder = "encoder-...-chunk-16-left-64.int8.onnx"   # 模型目录内带 int8 变体可选
+decoder = "decoder-...-chunk-16-left-64.onnx"
+joiner  = "joiner-...-chunk-16-left-64.onnx"
+tokens  = "tokens.txt"
+keywords_file = "/path/to/keywords.txt"    # 自定义关键词文件
+debug = false
 ```
 
 ### 自定义唤醒词
 
-keywords 文件每行一个，格式为「拼音/音素 token + `@显示词`」：
+**直接输入中文即可**：`--keywords 你好小智` 会由内置的拼音转换（`src/kws/token.rs`）自动把汉字拆成模型
+可编码的 ppinyin token（`你好小智` → `n ǐ h ǎo x iǎo zh ì`），无需任何外部工具；多个关键词用 `/` 或换行分隔。
+
+keywords 文件（默认 `<model_dir>/test_wavs/keywords.txt`，可用 `[kws] keywords_file` 覆盖）每行一个关键词，
+同样支持直接写中文，也支持精确的「token + `@显示词`」格式：
 
 ```
-w én s ēn t è k ǎ s uǒ @文森特卡索     # 中文：拼音首字母+带调韵母
+你好小智 @你好小智                      # 中文：直接写，自动转 ppinyin
+w én s ēn t è k ǎ s uǒ @文森特卡索     # 中文：精确 token（声母+带调韵母）
 L AY1 T AH1 P @LIGHT_UP                  # 英文：ARPAbet 音素
 ```
 
-中文原始词转拼音 token 需 sherpa-onnx 的 `text2token --tokens-type ppinyin` 工具（Python CLI）。v1 默认使用模型自带的关键词集。
+v1 默认使用模型自带的中英混合关键词集（见 `test_wavs/keywords.txt`）。
 
 ### 测试
 
@@ -106,7 +122,7 @@ cargo test -- --test-threads=1
 
 ## 桌面应用（Tauri 2）
 
-复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、实时显示检测结果、查看模型配置）。代码在 `src-tauri/`，前端为原生 HTML/CSS/JS（无构建链）。
+复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、附加关键词直接输中文、实时显示检测结果、查看模型配置与缺失提示）。代码在 `src-tauri/`，前端为原生 HTML/CSS/JS（无构建链）。
 
 ```bash
 # 安装 Tauri CLI（首次）
@@ -120,7 +136,7 @@ npm run tauri build
 ```
 
 > 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在
-> `~/.ai-rust-starter/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
+> `~/.rai/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。
 
@@ -130,15 +146,15 @@ npm run tauri build
 
 1. 合入 `main` 后，`publish.yml` 里的 release-plz 自动创建「版本发布 PR」（bump 版本 + 更新 changelog）。
 2. 合并该 PR 后，release-plz 打出 `vX.Y.Z` tag 并发布到 crates.io。
-3. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`），统一附到一个**草稿 Release**。
+3. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.app.tar.gz` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`），统一附到一个**草稿 Release**。
 4. 人工确认草稿后点击「发布」即为正式 Release。
 
 发布产物矩阵：
 
 | 平台 | 安装包 |
 |------|--------|
-| macOS (Apple Silicon) | `.dmg` |
-| macOS (Intel) | `.dmg` |
+| macOS (Apple Silicon) | `.dmg` + `.app.tar.gz` |
+| macOS (Intel) | `.dmg` + `.app.tar.gz` |
 | Windows x64 | `.msi` + `.exe`（NSIS） |
 | Linux x64 | `.deb` + `.rpm` + `.AppImage` |
 
@@ -153,13 +169,22 @@ npm run tauri build
 ├── rust-toolchain.toml  # Rust 工具链版本（1.88）
 ├── src/
 │   ├── main.rs          # 入口文件
-│   ├── lib.rs           # 库入口 + 测试工具
+│   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
 │   ├── cli.rs           # CLI 命令定义
 │   ├── config/
 │   │   ├── mod.rs       # 配置模块入口
-│   │   └── settings.rs  # TOML 配置管理
+│   │   └── settings.rs  # TOML 配置管理（含 [kws] 段）
+│   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
+│   │   ├── mod.rs       # KwsEngine + 离线/实时检测
+│   │   ├── config.rs    # KWS 配置解析与默认值
+│   │   ├── token.rs     # 汉字 → ppinyin token 转换
+│   │   └── reaction.rs  # Reaction 可插拔反应（控制台 / GUI / 测试）
+│   ├── audio.rs         # cpal 麦克风采集 + 重采样
 │   ├── logging.rs       # tracing 双层日志
 │   └── datetime.rs      # 日期时间工具
+├── models/              # 模型资产（本体不入库，按清单下载）
+│   ├── manifest.json    # 模型清单（source / sha256 / license）
+│   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
 │   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
 │   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
@@ -168,30 +193,24 @@ npm run tauri build
 │   └── icons/           # 应用图标
 ├── tests/               # 集成测试
 ├── package.json         # Tauri CLI（@tauri-apps/cli）
-├── scripts/             # 模型下载 / 图标生成等脚本
-├── .github/workflows/   # CI / 发布流水线
+├── scripts/             # 模型下载 / 模型测试 / 图标生成等脚本
+├── .github/             # CI / 发布流水线 / Issue 模板
 └── .githooks/           # Git hooks
 ```
-
-## 使用此模板
-
-1. 基于此仓库创建新项目
-2. 全局搜索替换 `ai-rust-starter` 为你的项目名
-3. 修改 `Cargo.toml` 中的项目元信息（name, version, description）
-4. 按需调整依赖（`Cargo.toml` 中的可选依赖已注释说明）
-5. 在 `src/cli.rs` 中定义你的命令
-6. 开始编写业务代码
 
 ## 依赖说明
 
 | 分类 | Crate | 用途 |
 |------|-------|------|
-| 核心 | clap | CLI 参数解析 |
+| 核心 | clap / clap_complete | CLI 参数解析 / Shell 补全生成 |
 | 核心 | tokio | 异步运行时 |
 | 核心 | serde / serde_json / toml | 序列化 |
 | 核心 | chrono | 日期时间处理 |
 | 核心 | tracing / tracing-subscriber | 日志 |
 | 核心 | thiserror / anyhow | 错误处理 |
+| KWS | sherpa-onnx | 关键词唤醒词检测（zipformer，预编译库） |
+| KWS | cpal | 麦克风音频采集 |
+| KWS | pinyin | 汉字 → 带声调拼音（自定义关键词自动转换） |
 | 可选 | reqwest | HTTP 客户端（按需引入） |
 
 ## 许可

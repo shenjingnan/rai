@@ -1,5 +1,5 @@
 [package]
-name = "ai-rust-starter-app"
+name = "rai-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,4 +22,4 @@ serde_json = "1"
 tracing = "0.1"
 
 # 复用根 crate 的 KWS / 音频 / 配置逻辑
-ai-rust-starter = { path = ".." }
+rai = { path = ".." }

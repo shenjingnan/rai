@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ai-rust-starter",
+  "productName": "RAI",
   "version": "0.1.0",
-  "identifier": "com.ai-rust-starter",
+  "identifier": "com.rai",
   "build": {
     "frontendDist": "frontend",
     "devUrl": null
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ai-rust-starter · KWS 控制面板",
+        "title": "RAI · KWS 控制面板",
         "width": 760,
         "height": 600,
         "resizable": true

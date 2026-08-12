@@ -1,10 +1,10 @@
-# CLAUDE.md - ai-rust-starter
+# CLAUDE.md - RAI
 
 本文档为 Claude Code 提供项目上下文和开发规范。
 
 ## 项目概述
 
-**ai-rust-starter** 是一个 Rust 项目快速启动模板，提供开箱即用的工程化配置和通用工具模块。
+**RAI** 是一个开源的实时桌面 AI 伴侣（An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character），提供语音交互（KWS 唤醒词）、Tauri 2 桌面 GUI 与通用工具模块。
 
 ## 技术栈
 
@@ -13,6 +13,7 @@
 | Rust           | 1.88+ | 编程语言 / 编译 / 测试 / Lint / Format |
 | clap           | 4.x   | CLI 参数解析                 |
 | tokio          | 1.x   | 异步运行时                   |
+| sherpa-onnx    | 1.x   | 关键词唤醒词检测（KWS）       |
 | serde          | 1.x   | JSON/TOML 序列化/反序列化    |
 | tracing        | 0.1   | 日志和诊断                   |
 | Tauri          | 2.x   | 桌面应用框架（workspace 成员 `src-tauri/`） |
@@ -25,6 +26,11 @@ cargo run                           # 直接运行（无参进入帮助）
 cargo run -- config                 # 显示配置
 cargo run -- greet --name World     # 向用户问好
 cargo run -- completion bash        # 生成 shell 补全
+
+# KWS 唤醒词
+cargo run -- kws test               # 离线检测 wav（需先下载模型）
+cargo run -- kws run                # 实时监听麦克风
+cargo run -- kws devices            # 列出输入设备
 
 # 测试
 cargo test                          # 运行测试
@@ -42,8 +48,8 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo test   # 完整检查
 npm install                         # 首次：安装 @tauri-apps/cli
 npm run tauri dev                   # 开发模式（KWS 控制面板）
 npm run tauri build                 # 构建当前平台安装包（macOS: .app/.dmg）
-cargo check -p ai-rust-starter-app  # 仅检查 tauri crate（Linux 需 webkit 依赖）
-cargo clippy -p ai-rust-starter-app -- -D warnings   # tauri crate Lint
+cargo check -p rai-app              # 仅检查 tauri crate（Linux 需 webkit 依赖）
+cargo clippy -p rai-app -- -D warnings   # tauri crate Lint
 
 # 构建
 cargo build                         # 调试构建（默认只构建根 CLI crate）
@@ -78,16 +84,25 @@ cargo tarpaulin                     # 生成覆盖率报告
 
 ```
 ├── Cargo.toml           # 项目配置和依赖（workspace 根）
-├── rust-toolchain.toml  # Rust 工具链版本
+├── rust-toolchain.toml  # Rust 工具链版本（1.88）
 ├── src/
 │   ├── main.rs          # 入口文件
-│   ├── lib.rs           # 库入口 + 测试工具
+│   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
 │   ├── cli.rs           # CLI 命令定义
 │   ├── config/
 │   │   ├── mod.rs       # 配置模块入口
-│   │   └── settings.rs  # TOML 配置管理
+│   │   └── settings.rs  # TOML 配置管理（含 [kws] 段）
+│   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
+│   │   ├── mod.rs       # KwsEngine + 离线/实时检测
+│   │   ├── config.rs    # KWS 配置解析与默认值
+│   │   ├── token.rs     # 汉字 → ppinyin token 转换
+│   │   └── reaction.rs  # Reaction 可插拔反应（控制台 / GUI / 测试）
+│   ├── audio.rs         # cpal 麦克风采集 + 重采样
 │   ├── logging.rs       # tracing 双层日志
 │   └── datetime.rs      # 日期时间工具
+├── models/              # 模型资产（本体不入库，按清单下载）
+│   ├── manifest.json    # 模型清单（source / sha256 / license）
+│   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
 │   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
 │   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
@@ -96,7 +111,7 @@ cargo tarpaulin                     # 生成覆盖率报告
 │   └── icons/           # 应用图标
 ├── tests/               # 集成测试
 ├── package.json         # Tauri CLI（@tauri-apps/cli）
-├── scripts/             # 模型下载 / 图标生成等脚本
+├── scripts/             # 模型下载 / 模型测试 / 图标生成等脚本
 ├── .github/             # CI/CD 配置（含 release.yml 发布流水线）
 └── .githooks/           # Git hooks
 ```
@@ -106,14 +121,6 @@ cargo tarpaulin                     # 生成覆盖率报告
 `release-plz` 负责版本/tag/changelog/crates.io；push `vX.Y.Z` tag 后由
 `.github/workflows/release.yml`（tauri-action）在 Windows/macOS/Linux 原生 runner
 构建安装包并附到草稿 Release。详见 README「发布流程」。
-
-## 自定义指南
-
-1. 修改 `Cargo.toml` 中的 `name`、`version`、`description`
-2. 更新 `src/cli.rs` 中的命令名称和子命令
-3. 在 `src/config/settings.rs` 中修改 `PROJECT_DIR` 常量（`.{{project_name}}`）
-4. 在 `src/logging.rs` 中修改日志路径
-5. 更新 `AGENTS.md` 中的项目名称和描述
 
 ## Git 工作流
 
@@ -144,13 +151,3 @@ cargo tarpaulin                     # 生成覆盖率报告
 - `perf` - 性能优化
 - `test` - 测试相关
 - `chore` - 构建/工具
-
-## 模板使用
-
-### 开始新项目
-
-1. 克隆此仓库或 fork
-2. 全局搜索替换 `ai-rust-starter` 为你的项目名
-3. 搜索替换 `.ai-rust-starter` 为你的配置目录名
-4. 修改 `Cargo.toml` 中的项目元信息
-5. 开始编写你的业务代码

@@ -5,9 +5,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(
-    name = "ai-rust-starter",
+    name = "rai",
     version = VERSION,
-    about = "A Rust project starter template",
+    about = "An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character",
     subcommand_required = true,
     arg_required_else_help = true,
     disable_help_subcommand = true,
@@ -90,7 +90,7 @@ fn cmd_config() -> Result<String, String> {
 /// greet 命令
 fn cmd_greet(name: &str, count: u32) -> Result<(), String> {
     for _ in 0..count {
-        println!("你好, {name}！欢迎使用 ai-rust-starter。");
+        println!("你好, {name}！欢迎使用 RAI。");
     }
     Ok(())
 }
@@ -98,7 +98,7 @@ fn cmd_greet(name: &str, count: u32) -> Result<(), String> {
 /// completion 命令
 fn cmd_completion<W: std::io::Write>(shell: clap_complete::Shell, writer: &mut W) {
     let mut cmd = Cli::command();
-    clap_complete::generate(shell, &mut cmd, "ai-rust-starter", writer);
+    clap_complete::generate(shell, &mut cmd, "rai", writer);
 }
 
 /// CLI 入口

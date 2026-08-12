@@ -1,9 +1,9 @@
-use ai_rust_starter::cli::{self, Cli};
 use clap::Parser;
+use rai::cli::{self, Cli};
 
 #[tokio::main]
 async fn main() {
-    ai_rust_starter::logging::init_logging();
+    rai::logging::init_logging();
 
     let cli = Cli::parse();
     let result = cli::run(cli).await;

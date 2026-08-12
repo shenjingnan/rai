@@ -150,7 +150,7 @@ npm run tauri build
 
 ```
 ├── Cargo.toml           # 项目配置和依赖（workspace 根）
-├── rust-toolchain.toml  # Rust 工具链版本（1.85）
+├── rust-toolchain.toml  # Rust 工具链版本（1.88）
 ├── src/
 │   ├── main.rs          # 入口文件
 │   ├── lib.rs           # 库入口 + 测试工具

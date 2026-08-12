@@ -5,6 +5,7 @@
 ## 特性
 
 - **CLI 骨架** — 基于 clap 的命令行参数解析，支持子命令和 Shell 补全生成
+- **桌面应用** — 基于 Tauri 2 的 GUI 壳（KWS 控制面板），Windows / macOS / Linux 三平台安装包
 - **异步运行时** — 集成 tokio，开箱即用的 async/await 支持
 - **配置管理** — TOML 格式的配置文件读写，支持 `${env.VAR}` 环境变量引用
 - **双层日志** — 基于 tracing 的日志系统，同时输出到文件和 stderr
@@ -103,10 +104,52 @@ cargo test -- --test-threads=1
 ./scripts/run-kws-model-tests.sh
 ```
 
+## 桌面应用（Tauri 2）
+
+复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、实时显示检测结果、查看模型配置）。代码在 `src-tauri/`，前端为原生 HTML/CSS/JS（无构建链）。
+
+```bash
+# 安装 Tauri CLI（首次）
+npm install
+
+# 开发模式（热重载，需已下载模型：./scripts/download-kws-model.sh）
+npm run tauri dev
+
+# 构建当前平台的安装包（macOS 产出 .app/.dmg）
+npm run tauri build
+```
+
+> 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在
+> `~/.ai-rust-starter/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
+> macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
+> `xattr -dr com.apple.quarantine <应用路径>`。
+
+## 发布流程
+
+每次发布新版本会自动构建 **Windows / macOS（Intel+Apple Silicon）/ Linux** 安装包并合并到一个 GitHub Release 草稿：
+
+1. 合入 `main` 后，`publish.yml` 里的 release-plz 自动创建「版本发布 PR」（bump 版本 + 更新 changelog）。
+2. 合并该 PR 后，release-plz 打出 `vX.Y.Z` tag 并发布到 crates.io。
+3. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`），统一附到一个**草稿 Release**。
+4. 人工确认草稿后点击「发布」即为正式 Release。
+
+发布产物矩阵：
+
+| 平台 | 安装包 |
+|------|--------|
+| macOS (Apple Silicon) | `.dmg` |
+| macOS (Intel) | `.dmg` |
+| Windows x64 | `.msi` + `.exe`（NSIS） |
+| Linux x64 | `.deb` + `.rpm` + `.AppImage` |
+
+> 签名：当前为未签名构建，适合内部/测试分发。正式对外发布时在仓库 Secrets 配置
+> Apple Developer ID 证书（`APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID`）
+> 与 Windows 证书后，tauri-action 会自动签名/公证。
+
 ## 项目结构
 
 ```
-├── Cargo.toml           # 项目配置和依赖
+├── Cargo.toml           # 项目配置和依赖（workspace 根）
 ├── rust-toolchain.toml  # Rust 工具链版本（1.85）
 ├── src/
 │   ├── main.rs          # 入口文件
@@ -117,8 +160,16 @@ cargo test -- --test-threads=1
 │   │   └── settings.rs  # TOML 配置管理
 │   ├── logging.rs       # tracing 双层日志
 │   └── datetime.rs      # 日期时间工具
+├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
+│   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
+│   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
+│   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
+│   ├── capabilities/    # 权限声明
+│   └── icons/           # 应用图标
 ├── tests/               # 集成测试
-├── .github/workflows/   # CI/CD
+├── package.json         # Tauri CLI（@tauri-apps/cli）
+├── scripts/             # 模型下载 / 图标生成等脚本
+├── .github/workflows/   # CI / 发布流水线
 └── .githooks/           # Git hooks
 ```
 

@@ -1,12 +1,15 @@
 /// 唤醒词检测结果与「反应」接口。
 ///
 /// `Reaction` trait 是可插拔的唤醒反应钩子：检测到唤醒词后由 KWS 引擎调用。
-/// 默认实现 `ConsoleReaction` 打印到控制台并写 tracing 日志；未来桌面 GUI 可
-/// 实现自己的 `Reaction`（弹窗、播放提示音等）接入。
+/// 默认实现 `ConsoleReaction` 打印到控制台并写 tracing 日志；桌面 GUI（Tauri）
+/// 实现自己的 `Reaction`（弹窗、播放提示音、发事件给前端）接入。
+use serde::Serialize;
 use sherpa_onnx::KeywordResult;
 
 /// 一次唤醒词检测结果（owned 结构，避免把 sherpa 类型泄漏到公开 API）。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Serialize` 供桌面 GUI 通过 Tauri 事件把结果发给前端。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct KwsResult {
     /// 显示词（如「文森特卡索」）
     pub keyword: String,

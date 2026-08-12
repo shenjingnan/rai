@@ -27,6 +27,13 @@ settings.local.json
 # Logs
 *.log
 
+# Node (Tauri CLI)
+/node_modules
+
+# Tauri 生成产物（权限 schema 等）
+/src-tauri/gen
+/src-tauri/icon-source.png
+
 # Rust
 **/*.rs.bk
 *.pdb

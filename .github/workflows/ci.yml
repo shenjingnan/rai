@@ -3,10 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**']
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json']
   pull_request:
     branches: [main]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**']
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json']
 
 env:
   CARGO_TERM_COLOR: always
@@ -72,6 +72,32 @@ jobs:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  app-check:
+    name: Tauri App Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache sherpa-onnx prebuilt libs
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Linux deps
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Lint (app crate)
+        run: cargo clippy -p ai-rust-starter-app -- -D warnings
+
+      - name: Check (app crate)
+        run: cargo check -p ai-rust-starter-app
 
   test:
     name: Test (${{ matrix.os }})

@@ -4,11 +4,13 @@
 /// 离线对 wav 检测（`run_offline`）与实时麦克风监听（`run_realtime`）。
 pub mod config;
 pub mod reaction;
+pub mod token;
 
 use crate::audio::Resampler;
 use config::ResolvedKwsConfig;
 use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig, OnlineStream, Wave};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use reaction::{CollectReaction, ConsoleReaction, KwsResult, Reaction, ReactionOutcome};
 
@@ -112,7 +114,11 @@ pub fn run_offline(
 ) -> Result<(), String> {
     let engine = KwsEngine::new(cfg.clone())?;
     let stream = match keywords {
-        Some(k) => engine.create_stream_with_keywords(k),
+        Some(k) => {
+            // 原始中文会自动转成模型可编码的 ppinyin token；校验失败返回清晰错误
+            let encoded = token::encode_custom_keywords(k, &cfg.tokens)?;
+            engine.create_stream_with_keywords(&encoded)
+        }
         None => engine.create_stream(),
     };
     let wave = Wave::read(&wav.to_string_lossy())
@@ -136,30 +142,57 @@ pub fn run_offline(
     Ok(())
 }
 
-/// 实时监听麦克风，检测唤醒词。
+/// 实时监听麦克风，检测唤醒词（默认反应 + 不可取消，供 CLI 使用）。
 ///
-/// 线程模型：cpal 采集在系统音频线程，经 `mpsc` 送到主线程；
-/// 主线程内做重采样 + 检测循环（sherpa 类型不跨线程）。
+/// 等价于 `run_realtime_with(cfg, device, duration, keywords, ConsoleReaction, None)`。
 pub fn run_realtime(
     cfg: &ResolvedKwsConfig,
     device: Option<&str>,
     duration: Option<u64>,
     keywords: Option<&str>,
 ) -> Result<(), String> {
+    let mut reaction = ConsoleReaction;
+    run_realtime_with(cfg, device, duration, keywords, &mut reaction, None)
+}
+
+/// 实时监听麦克风，检测唤醒词。
+///
+/// 线程模型：cpal 采集在系统音频线程，经 `mpsc` 送到调用线程；
+/// 调用线程内做重采样 + 检测循环（sherpa 类型不跨线程）。
+///
+/// `reaction` 为可插拔唤醒反应（GUI 可实现自己的 `Reaction` 发事件给前端）；
+/// `should_stop` 为非空时，每次迭代检查该标志，置位则干净退出（返回 `Ok(())`），
+/// 供桌面 GUI 的「停止监听」使用。
+pub fn run_realtime_with(
+    cfg: &ResolvedKwsConfig,
+    device: Option<&str>,
+    duration: Option<u64>,
+    keywords: Option<&str>,
+    reaction: &mut dyn Reaction,
+    should_stop: Option<&AtomicBool>,
+) -> Result<(), String> {
     let engine = KwsEngine::new(cfg.clone())?;
     let stream = match keywords {
-        Some(k) => engine.create_stream_with_keywords(k),
+        Some(k) => {
+            // 原始中文会自动转成模型可编码的 ppinyin token；校验失败返回清晰错误
+            let encoded = token::encode_custom_keywords(k, &cfg.tokens)?;
+            engine.create_stream_with_keywords(&encoded)
+        }
         None => engine.create_stream(),
     };
 
     let mut mic = crate::audio::start_capture(device)?;
     let mut resampler = Resampler::new(mic.device_sample_rate() as i32, cfg.sample_rate)?;
     let mut pending: Vec<f32> = Vec::with_capacity(cfg.chunk_size * 2);
-    let mut reaction = ConsoleReaction;
     let start = std::time::Instant::now();
     let deadline = duration.map(|secs| start + std::time::Duration::from_secs(secs));
 
+    // should_stop 标志语义为 `running`（true = 正在监听）；因此「应停止」= 标志为 false。
+    // CLI 传 None 时恒为 false（不主动停止，由 Ctrl-C / --duration 控制）。
+    let stop_requested = || should_stop.is_some_and(|f| !f.load(Ordering::Relaxed));
+
     println!("开始监听唤醒词... (Ctrl-C 退出; --duration 可限制时长)");
+    let mut chunks_received: u64 = 0;
     let mut process =
         |raw: Vec<f32>, engine: &KwsEngine, stream: &OnlineStream| -> Result<bool, String> {
             let out = resampler.process(&raw, false);
@@ -167,14 +200,21 @@ pub fn run_realtime(
             while pending.len() >= cfg.chunk_size {
                 let chunk: Vec<f32> = pending.drain(..cfg.chunk_size).collect();
                 engine.feed(stream, &chunk);
-                if engine.detect(stream, &mut reaction) == ReactionOutcome::Stop {
+                if engine.detect(stream, reaction) == ReactionOutcome::Stop {
                     return Ok(true); // 应停止
+                }
+                if stop_requested() {
+                    return Ok(true); // GUI 请求停止
                 }
             }
             Ok(false)
         };
 
     loop {
+        if stop_requested() {
+            tracing::warn!("KWS 监听退出：收到停止请求（共收到 {chunks_received} 块）");
+            break;
+        }
         let raw = if let Some(dl) = deadline {
             if std::time::Instant::now() >= dl {
                 break;
@@ -185,13 +225,20 @@ pub fn run_realtime(
             match mic.recv_chunk_timeout(timeout) {
                 Ok(raw) => Some(raw),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::warn!("KWS 监听退出：麦克风通道断开（共收到 {chunks_received} 块）");
+                    break;
+                }
             }
         } else {
             mic.recv_chunk()
         };
 
-        let Some(raw) = raw else { break };
+        let Some(raw) = raw else {
+            tracing::warn!("KWS 监听退出：麦克风返回 None（共收到 {chunks_received} 块）");
+            break;
+        };
+        chunks_received += 1;
         if process(raw, &engine, &stream)? {
             return Ok(());
         }

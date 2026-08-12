@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1](https://github.com/shenjingnan/zapmomo/compare/v0.1.0...v0.1.1) - 2026-08-12
+
+### Other
+
+- 从 npm 迁移到 pnpm ([#9](https://github.com/shenjingnan/zapmomo/pull/9))
+
 ## [0.1.0] - 2026-06-05
 
 ### Added

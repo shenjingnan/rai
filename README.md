@@ -30,6 +30,79 @@ cargo fmt --check
 cargo clippy -- -D warnings
 ```
 
+## 关键词唤醒词（KWS）
+
+接入 sherpa-onnx 关键词检测模型（zipformer 中英混合），实现「说出唤醒词 → 程序反应」。
+
+### 快速开始
+
+```bash
+# 1. 下载模型（约 31MB，存入 ./models/，不入库）
+./scripts/download-kws-model.sh
+
+# 2. 离线验证（无需麦克风）：对模型自带 wav 检测出「文森特卡索」「法国」
+cargo run -- kws test
+
+# 3. 实时监听：说出唤醒词，控制台打印反应（首次运行需授权麦克风）
+cargo run -- kws run
+
+# 4. 查看可用麦克风设备
+cargo run -- kws devices
+```
+
+### 模型来源与校验
+
+模型**不随代码分发**，由 `scripts/download-kws-model.sh` 按 `models/manifest.json` 清单下载：
+
+- **清单** `models/manifest.json`（随仓库）记录每个模型的 `name / version / source / sha256 / license`
+- **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型
+- **幂等**：模型已存在且完整则跳过
+- **合规**：第三方来源与许可见 `models/THIRD_PARTY_NOTICES.md`
+- 后续 ASR / TTS 等模型（可能超过 100MB）将沿用同一套清单机制，按需下载
+
+### 命令说明
+
+| 命令 | 说明 |
+|------|------|
+| `kws run` | 实时监听麦克风，检测唤醒词。`--duration 秒` 限时、`--device 名称` 指定设备、`--keywords` 附加关键词 |
+| `kws test` | 离线检测 wav（默认模型自带 `test_wavs/zh_3.wav`）。`--wav` 指定文件 |
+| `kws devices` | 列出可用输入设备 |
+
+### 配置
+
+可在 `~/.ai-rust-starter/settings.toml` 中添加 `[kws]` 段覆盖默认值：
+
+```toml
+[kws]
+model_dir = "/path/to/model"        # 模型目录（支持 ${env.VAR}）
+num_threads = 4                      # 推理线程数，默认 2
+chunk_size = 3200                    # 每次喂给模型的采样数（@16k），默认 3200
+keywords_threshold = 0.25            # 触发阈值：越大越不容易误触发（0.15~0.5）
+encoder = "encoder-...-chunk-16-left-64.int8.onnx"   # 可用 int8 变体
+keywords_file = "/path/to/keywords.txt"              # 自定义关键词文件
+```
+
+### 自定义唤醒词
+
+keywords 文件每行一个，格式为「拼音/音素 token + `@显示词`」：
+
+```
+w én s ēn t è k ǎ s uǒ @文森特卡索     # 中文：拼音首字母+带调韵母
+L AY1 T AH1 P @LIGHT_UP                  # 英文：ARPAbet 音素
+```
+
+中文原始词转拼音 token 需 sherpa-onnx 的 `text2token --tokens-type ppinyin` 工具（Python CLI）。v1 默认使用模型自带的关键词集。
+
+### 测试
+
+```bash
+# 常规测试（不依赖模型）
+cargo test -- --test-threads=1
+
+# 模型相关测试（需先下载模型）
+./scripts/run-kws-model-tests.sh
+```
+
 ## 项目结构
 
 ```

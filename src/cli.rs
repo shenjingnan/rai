@@ -1,4 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand};
+use std::path::PathBuf;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -37,6 +38,43 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// 关键词唤醒词检测（KWS）
+    Kws {
+        #[command(subcommand)]
+        cmd: KwsCmd,
+    },
+}
+
+/// KWS 子命令
+#[derive(Subcommand)]
+pub enum KwsCmd {
+    /// 实时监听麦克风，检测唤醒词
+    Run {
+        /// 模型目录（覆盖 settings.toml 的 kws.model_dir）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 运行时附加关键词（tokenized 格式，多个用 / 分隔）
+        #[arg(long)]
+        keywords: Option<String>,
+        /// 指定输入设备名（包含匹配），默认系统默认麦克风
+        #[arg(long)]
+        device: Option<String>,
+        /// 监听时长（秒），默认无限
+        #[arg(long)]
+        duration: Option<u64>,
+    },
+    /// 离线检测 wav 文件中的关键词（不需要麦克风）
+    Test {
+        /// wav 路径；默认 <model_dir>/test_wavs/zh_3.wav
+        #[arg(long)]
+        wav: Option<PathBuf>,
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        #[arg(long)]
+        keywords: Option<String>,
+    },
+    /// 列出可用的麦克风输入设备
+    Devices,
 }
 
 /// config 命令
@@ -76,8 +114,54 @@ pub async fn run(cli: Cli) -> Result<(), String> {
             cmd_completion(shell, &mut std::io::stdout());
             Ok(())
         }
+        Some(Commands::Kws { cmd }) => cmd_kws(cmd).await,
         None => unreachable!(),
     }
+}
+
+/// KWS 命令入口
+async fn cmd_kws(cmd: KwsCmd) -> Result<(), String> {
+    match cmd {
+        KwsCmd::Run {
+            model_dir,
+            keywords,
+            device,
+            duration,
+        } => {
+            let cfg = kws_config(model_dir.as_ref())?;
+            crate::kws::run_realtime(&cfg, device.as_deref(), duration, keywords.as_deref())
+        }
+        KwsCmd::Test {
+            wav,
+            model_dir,
+            keywords,
+        } => {
+            let cfg = kws_config(model_dir.as_ref())?;
+            let wav_path = wav.unwrap_or_else(|| cfg.model_dir.join("test_wavs/zh_3.wav"));
+            crate::kws::run_offline(&cfg, &wav_path, keywords.as_deref())
+        }
+        KwsCmd::Devices => {
+            let devices = crate::audio::list_input_devices();
+            if devices.is_empty() {
+                println!("未找到任何输入设备。");
+            } else {
+                println!("可用输入设备:");
+                for name in devices {
+                    println!("  {name}");
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 读取 settings 并解析 KWS 配置
+fn kws_config(
+    cli_model_dir: Option<&PathBuf>,
+) -> Result<crate::kws::config::ResolvedKwsConfig, String> {
+    let settings = crate::config::settings::load_settings()?;
+    let kws_settings = settings.as_ref().and_then(|s| s.kws.clone());
+    crate::kws::config::resolve(kws_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
 }
 
 #[cfg(test)]
@@ -247,5 +331,40 @@ mod tests {
     fn test_cli_parse_config() {
         let cli = Cli::try_parse_from(&["test", "config"]).unwrap();
         assert!(matches!(cli.command.unwrap(), Commands::Config));
+    }
+
+    #[test]
+    fn test_cli_parse_kws_test() {
+        let cli = Cli::try_parse_from(&["test", "kws", "test"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Kws { cmd } => assert!(matches!(cmd, KwsCmd::Test { .. })),
+            _ => panic!("Expected Kws command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_kws_run() {
+        let cli = Cli::try_parse_from(&["test", "kws", "run", "--duration", "10"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Kws { cmd } => {
+                assert!(matches!(
+                    cmd,
+                    KwsCmd::Run {
+                        duration: Some(10),
+                        ..
+                    }
+                ))
+            }
+            _ => panic!("Expected Kws command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_kws_devices() {
+        let cli = Cli::try_parse_from(&["test", "kws", "devices"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Kws { cmd } => assert!(matches!(cmd, KwsCmd::Devices)),
+            _ => panic!("Expected Kws command"),
+        }
     }
 }

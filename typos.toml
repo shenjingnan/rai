@@ -1,1 +1,10 @@
 [default.extend-words]
+sherpa = "sherpa"
+onnx = "onnx"
+cpal = "cpal"
+kws = "kws"
+zipformer = "zipformer"
+wenetspeech = "wenetspeech"
+ppinyin = "ppinyin"
+arpabet = "arpabet"
+onnxruntime = "onnxruntime"

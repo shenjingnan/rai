@@ -1,8 +1,8 @@
 name: Release
 
 # 每次 release-plz 创建 vX.Y.Z tag（推送）后，在原生 runner 上构建
-# Windows / macOS（双架构）/ Linux 的安装包，合并到一个草稿 GitHub Release。
-# 发布人确认草稿后即为正式 Release。
+# Windows / macOS（双架构）/ Linux 的安装包，合并到一个 GitHub Release。
+# 构建成功后自动发布为正式 Release。
 on:
   push:
     tags:
@@ -115,7 +115,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          draft: true
+          draft: false
           prerelease: false
           generate_release_notes: true
           files: |

@@ -419,12 +419,13 @@ mod tests {
         assert!(!a.name.is_empty());
         assert!(a.source.starts_with("http"));
         assert_eq!(a.sha256.len(), 64);
-        // 与仓库 models/ 目录名一致（单一事实来源）
+        // 默认资产应为清单中 role == "wake-word" 的条目（自洽校验，不依赖模型文件是否已下载）
+        let m = manifest();
         assert!(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("models")
-                .join(&a.name)
-                .is_dir()
+            m.assets
+                .iter()
+                .any(|x| x.name == a.name && x.role == "wake-word"),
+            "default_asset 不在清单中"
         );
     }
 

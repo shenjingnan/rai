@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.5](https://github.com/shenjingnan/zapmomo/compare/v0.1.4...v0.1.5) - 2026-08-13
+
+### Other
+
+- 更新 README，清理过时内容 ([#29](https://github.com/shenjingnan/zapmomo/pull/29))
+
 ## [0.1.4](https://github.com/shenjingnan/zapmomo/compare/v0.1.3...v0.1.4) - 2026-08-13
 
 ### Other

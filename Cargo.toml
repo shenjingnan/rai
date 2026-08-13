@@ -4,7 +4,7 @@ default-members = ["."]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 # tauri 2 的部分传递依赖（darling/plist/serde_with/time 等）要求 rustc 1.88
 rust-version = "1.88"

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2](https://github.com/shenjingnan/zapmomo/compare/v0.1.1...v0.1.2) - 2026-08-13
+
+### Added
+
+- *(kws)* 内置模型自动下载并修复打包路径失效 ([#23](https://github.com/shenjingnan/zapmomo/pull/23))
+
 ## [0.1.1](https://github.com/shenjingnan/zapmomo/compare/v0.1.0...v0.1.1) - 2026-08-13
 
 ### Added

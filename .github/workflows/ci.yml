@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Cache sherpa-onnx prebuilt libs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Cache sherpa-onnx prebuilt libs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Cache sherpa-onnx prebuilt libs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}

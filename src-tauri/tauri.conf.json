@@ -4,17 +4,23 @@
   "version": "0.1.0",
   "identifier": "com.zapmomo",
   "build": {
-    "frontendDist": "frontend",
-    "devUrl": null
+    "beforeDevCommand": "pnpm --dir src-tauri/frontend dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --dir src-tauri/frontend build",
+    "frontendDist": "frontend/dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
+    "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "ZapMomo · KWS 控制面板",
+        "title": "ZapMomo",
         "width": 760,
         "height": 600,
-        "resizable": true
+        "resizable": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

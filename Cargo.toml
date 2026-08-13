@@ -6,8 +6,8 @@ resolver = "2"
 [workspace.package]
 version = "0.1.5"
 edition = "2024"
-# tauri 2 的部分传递依赖（darling/plist/serde_with/time 等）要求 rustc 1.88
-rust-version = "1.88"
+# 统一使用固定工具链 1.97.1（见 rust-toolchain.toml）；最低支持版本 1.97
+rust-version = "1.97"
 description = "An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character."
 license = "MIT"
 

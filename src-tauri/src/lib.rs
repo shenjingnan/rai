@@ -286,6 +286,17 @@ pub fn run() {
             is_listening,
             download_kws_model
         ])
+        .setup(|app| {
+            // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。
+            // 用 cfg! 而非 #[cfg]，让非 macOS 分支在所有平台都被编译检查。
+            if !cfg!(target_os = "macos") {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_decorations(false)?;
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

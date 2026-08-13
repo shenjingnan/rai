@@ -29,6 +29,8 @@ settings.local.json
 
 # Node (Tauri CLI + docs)
 node_modules/
+dist/
+*.tsbuildinfo
 
 # Docs (Next.js build output)
 docs/.next/

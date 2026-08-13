@@ -10,13 +10,14 @@
 
 | 技术           | 版本  | 用途                         |
 | -------------- | ----- | ---------------------------- |
-| Rust           | 1.88+ | 编程语言 / 编译 / 测试 / Lint / Format |
+| Rust           | 1.97 | 编程语言 / 编译 / 测试 / Lint / Format |
 | clap           | 4.x   | CLI 参数解析                 |
 | tokio          | 1.x   | 异步运行时                   |
 | sherpa-onnx    | 1.x   | 关键词唤醒词检测（KWS）       |
 | serde          | 1.x   | JSON/TOML 序列化/反序列化    |
 | tracing        | 0.1   | 日志和诊断                   |
 | Tauri          | 2.x   | 桌面应用框架（workspace 成员 `src-tauri/`） |
+| React + Vite   | 19.x  | 桌面 GUI 前端（`src-tauri/frontend/`，Tailwind + shadcn/ui） |
 
 ## 快速命令参考
 
@@ -84,7 +85,7 @@ cargo tarpaulin                     # 生成覆盖率报告
 
 ```
 ├── Cargo.toml           # 项目配置和依赖（workspace 根）
-├── rust-toolchain.toml  # Rust 工具链版本（1.88）
+├── rust-toolchain.toml  # Rust 工具链版本（1.97.1）
 ├── src/
 │   ├── main.rs          # 入口文件
 │   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
@@ -105,7 +106,7 @@ cargo tarpaulin                     # 生成覆盖率报告
 │   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
 │   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
-│   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
+│   ├── frontend/        # React + Vite + TypeScript 控制面板（Tailwind + shadcn/ui）
 │   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
 │   ├── capabilities/    # 权限声明
 │   └── icons/           # 应用图标

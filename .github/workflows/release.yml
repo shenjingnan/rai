@@ -73,14 +73,13 @@ jobs:
         run: pnpm install --filter . --frozen-lockfile
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Install macOS cross-compile targets
         if: matrix.platform == 'macos-latest'
-        # 交叉编译 target 必须装到 rust-toolchain.toml（channel = "1.88"）实际激活的工具链上。
-        # 注意：不能用 dtolnay/rust-toolchain 的 targets 输入——它会按精确版本（1.88.0）安装，
-        # 而 rust-toolchain.toml 产生的 "1.88" 在 rustup 中是另一个工具链实体，装上去不生效。
-        # rustup target add 运行于项目目录，会遵循 rust-toolchain.toml 的 override。
+        # 安装 macOS 交叉编译 target（aarch64 + x86_64）。
+        # dtolnay 装的工具链（1.97.1）与 rust-toolchain.toml 一致；
+        # rustup target add 运行于项目目录，遵循 override 装到激活的工具链上。
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Cache sherpa-onnx prebuilt libs

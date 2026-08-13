@@ -45,7 +45,11 @@ pub fn start_capture(device_name: Option<&str>) -> Result<MicHandle, String> {
         Some(name) => host
             .input_devices()
             .map_err(|e| format!("无法枚举输入设备: {e}"))?
-            .find(|d| d.name().map(|n| n.contains(name)).unwrap_or(false))
+            .find(|d| {
+                d.description()
+                    .map(|desc| desc.name().contains(name))
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| format!("未找到输入设备: {name}（可用 kws list-devices 查看）"))?,
         None => host
             .default_input_device()
@@ -57,7 +61,7 @@ pub fn start_capture(device_name: Option<&str>) -> Result<MicHandle, String> {
         .map_err(|e| format!("无法获取默认输入配置: {e}"))?;
     let config = supported.config();
     let channels = config.channels as usize;
-    let sample_rate = config.sample_rate.0;
+    let sample_rate = config.sample_rate;
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
 
     let stream = match supported.sample_format() {
@@ -79,7 +83,11 @@ pub fn start_capture(device_name: Option<&str>) -> Result<MicHandle, String> {
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.input_devices()
-        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .map(|devices| {
+            devices
+                .filter_map(|d| d.description().map(|desc| desc.name().to_string()).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -94,10 +102,10 @@ fn build_stream<T>(
 where
     T: SizedSample + Sample<Float = f32>,
 {
-    let err_fn = |e: cpal::StreamError| eprintln!("[audio] 采集错误: {e}");
+    let err_fn = |e: cpal::Error| eprintln!("[audio] 采集错误: {e}");
     device
         .build_input_stream(
-            config,
+            *config,
             move |data: &[T], _| {
                 let mono = to_mono_f32(data, channels);
                 // 消费者退出后忽略发送错误

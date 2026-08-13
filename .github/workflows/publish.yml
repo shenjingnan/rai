@@ -22,6 +22,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install Linux audio deps
+        # cargo publish 会编译验证打包后的 crate，cpal 的 Linux 后端（alsa-sys）需要 ALSA 系统库
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4](https://github.com/shenjingnan/zapmomo/compare/v0.1.3...v0.1.4) - 2026-08-13
+
+### Other
+
+- *(ci)* Release 构建成功后自动发布，不再停留在草稿
+
 ## [0.1.3](https://github.com/shenjingnan/zapmomo/compare/v0.1.2...v0.1.3) - 2026-08-13
 
 ### Other

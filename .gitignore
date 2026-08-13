@@ -52,3 +52,4 @@ docs/out/
 /models/*
 !/models/manifest.json
 !/models/THIRD_PARTY_NOTICES.md
+tmp

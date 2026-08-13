@@ -1,4 +1,6 @@
-# ZapMomo
+<div align="center">
+  <img src="docs/public/logo.svg" alt="ZapMomo Logo" width="300" />
+</div>
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
 

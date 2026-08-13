@@ -6,7 +6,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
-> 📚 中文文档：[Fumadocs 文档站](docs/)，含快速开始、KWS、配置、桌面应用与开发指南。
+> 📚 中文文档：[文档站](docs/)，含快速开始、KWS、配置、桌面应用与开发指南。
 
 ## 特性
 
@@ -21,7 +21,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **测试支持** — 集成 tempfile 的测试隔离辅助工具
 - **代码质量** — cargo fmt / clippy / typos / tarpaulin / codecov 一站式配置
 - **CI/CD** — GitHub Actions 自动化测试、发布、覆盖率报告
-- **Shell 补全** — 支持 bash / zsh / fish / powershell 自动补全
+- **Shell 补全** — 支持 bash / zsh / fish / powershell / elvish 自动补全
 
 ## 快速开始
 
@@ -147,12 +147,11 @@ pnpm tauri build
 
 ## 发布流程
 
-每次发布新版本会自动构建 **Windows / macOS（Intel+Apple Silicon）/ Linux** 安装包并合并到一个 GitHub Release 草稿：
+每次发布新版本会自动构建 **Windows / macOS（Intel+Apple Silicon）/ Linux** 安装包并合并到一个 GitHub Release：
 
-1. 合入 `main` 后，`publish.yml` 里的 release-plz 自动创建「版本发布 PR」（bump 版本 + 更新 changelog）。
-2. 合并该 PR 后，release-plz 打出 `vX.Y.Z` tag 并发布到 crates.io。
-3. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.app.tar.gz` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`），统一附到一个**草稿 Release**。
-4. 人工确认草稿后点击「发布」即为正式 Release。
+1. 合入 `main` 后，`publish.yml` 中的 release-plz 自动 bump 版本、更新 changelog，打出 `vX.Y.Z` tag 并发布到 crates.io，同时维护「版本发布 PR」。
+2. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.app.tar.gz` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`）。
+3. 构建成功后自动发布为正式 Release（`draft: false`，不再停留在草稿）。
 
 发布产物矩阵：
 
@@ -182,6 +181,7 @@ pnpm tauri build
 │   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
 │   │   ├── mod.rs       # KwsEngine + 离线/实时检测
 │   │   ├── config.rs    # KWS 配置解析与默认值
+│   │   ├── model.rs     # 模型下载 / sha256 校验 / 解压安装
 │   │   ├── token.rs     # 汉字 → ppinyin token 转换
 │   │   └── reaction.rs  # Reaction 可插拔反应（控制台 / GUI / 测试）
 │   ├── audio.rs         # cpal 麦克风采集 + 重采样
@@ -212,11 +212,13 @@ pnpm tauri build
 | 核心 | serde / serde_json / toml | 序列化 |
 | 核心 | chrono | 日期时间处理 |
 | 核心 | tracing / tracing-subscriber | 日志 |
-| 核心 | thiserror / anyhow | 错误处理 |
+| 核心 | thiserror | 错误处理 |
 | KWS | sherpa-onnx | 关键词唤醒词检测（zipformer，预编译库） |
 | KWS | cpal | 麦克风音频采集 |
 | KWS | pinyin | 汉字 → 带声调拼音（自定义关键词自动转换） |
-| 可选 | reqwest | HTTP 客户端（按需引入） |
+| 模型下载 | ureq | HTTP 客户端（模型下载） |
+| 模型下载 | sha2 / hex | 下载模型的 sha256 校验 |
+| 模型下载 | tar / bzip2 | 解压 tar.bz2 模型包 |
 
 ## 许可
 

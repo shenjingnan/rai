@@ -30,6 +30,36 @@ impl ListenState {
     }
 }
 
+/// 模型下载状态：防重入标志。
+struct DownloadState {
+    in_progress: Arc<AtomicBool>,
+}
+
+impl Default for DownloadState {
+    fn default() -> Self {
+        Self {
+            in_progress: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// 下载进度事件载荷（推给前端）。
+#[derive(Clone, Serialize)]
+struct DownloadProgressPayload {
+    stage: String,
+    percent: f64,
+    message: String,
+}
+
+/// 退出作用域（含 panic / 命令取消）时复位下载标志。
+struct ResetOnDrop(Arc<AtomicBool>);
+
+impl Drop for ResetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 /// 把唤醒词检测结果通过 Tauri 事件发给前端。
 struct TauriReaction {
     app: AppHandle,
@@ -77,12 +107,13 @@ struct KwsConfigInfo {
     sample_rate: i32,
     keywords: Vec<String>,
     models_present: bool,
+    model_downloading: bool,
     settings_path: String,
 }
 
 /// 读取合并后的 KWS 配置（settings.toml + 默认值），并给出模型是否就绪。
 #[tauri::command]
-fn get_kws_config() -> Result<KwsConfigInfo, String> {
+fn get_kws_config(state: State<'_, DownloadState>) -> Result<KwsConfigInfo, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let kws_settings = settings.as_ref().and_then(|s| s.kws.clone());
     let cfg = zapmomo::kws::config::resolve(kws_settings.as_ref(), None)?;
@@ -105,6 +136,7 @@ fn get_kws_config() -> Result<KwsConfigInfo, String> {
         sample_rate: cfg.sample_rate,
         keywords,
         models_present,
+        model_downloading: state.in_progress.load(Ordering::Relaxed),
         settings_path: zapmomo::config::settings::get_settings_path()
             .display()
             .to_string(),
@@ -145,9 +177,8 @@ fn start_listen(
     ];
     if let Some(missing) = files.iter().find(|p| !p.is_file()) {
         return Err(format!(
-            "缺少模型文件: {}\n\n请在 {} 中配置 [kws] model_dir，\n或先在项目目录运行 scripts/download-kws-model.sh 下载模型。",
-            missing.display(),
-            zapmomo::config::settings::get_settings_path().display()
+            "缺少模型文件: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo kws install-model` 下载模型。",
+            missing.display()
         ));
     }
 
@@ -204,18 +235,56 @@ fn is_listening(state: State<'_, ListenState>) -> bool {
     state.is_listening()
 }
 
+/// 下载并安装 KWS 模型（默认安装到 `~/.zapmomo/models/<模型名>`）。
+///
+/// 防重入；下载在阻塞线程池执行，进度经 `kws-model-download-progress` 事件推给前端。
+#[tauri::command]
+async fn download_kws_model(app: AppHandle, state: State<'_, DownloadState>) -> Result<(), String> {
+    let flag = state.in_progress.clone();
+    if flag.swap(true, Ordering::SeqCst) {
+        return Err("模型下载已在进行中，请稍候".to_string());
+    }
+    let dest = zapmomo::kws::model::user_model_dir();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ResetOnDrop(flag);
+        let mut progress = |p: zapmomo::kws::model::DownloadProgress| {
+            let stage = match p.stage {
+                zapmomo::kws::model::DownloadStage::Downloading => "downloading",
+                zapmomo::kws::model::DownloadStage::Verifying => "verifying",
+                zapmomo::kws::model::DownloadStage::Extracting => "extracting",
+                zapmomo::kws::model::DownloadStage::Done => "done",
+            };
+            let _ = app.emit(
+                "kws-model-download-progress",
+                DownloadProgressPayload {
+                    stage: stage.to_string(),
+                    percent: p.percent,
+                    message: p.message,
+                },
+            );
+        };
+        zapmomo::kws::model::install_model_to(&dest, false, &mut progress)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("下载任务异常: {e}"))?
+}
+
 /// Tauri 应用入口。
 pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
         .manage(ListenState::new())
+        .manage(DownloadState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
             get_kws_config,
             start_listen,
             stop_listen,
-            is_listening
+            is_listening,
+            download_kws_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

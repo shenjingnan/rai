@@ -102,6 +102,28 @@ select, input[type="text"] {
 }
 .hidden { display: none; }
 
+#model-hint { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+#model-hint.hidden { display: none; }
+.progress-track {
+  display: inline-block;
+  width: 160px;
+  height: 8px;
+  background: rgba(146, 64, 14, 0.2);
+  border-radius: 999px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--primary);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+#model-progress { display: flex; align-items: center; gap: 8px; }
+#model-progress.hidden { display: none; }
+
 dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
 dt { color: var(--muted); }
 dd { margin: 0; }

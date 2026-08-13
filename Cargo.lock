@@ -5230,20 +5230,25 @@ name = "zapmomo"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "bzip2",
  "chrono",
  "clap",
  "clap_complete",
  "cpal",
+ "hex",
  "pinyin",
  "serde",
  "serde_json",
+ "sha2",
  "sherpa-onnx",
+ "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]

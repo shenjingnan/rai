@@ -36,7 +36,14 @@
     <section class="card">
       <h2>配置</h2>
       <dl id="config"></dl>
-      <p id="model-hint" class="warn hidden"></p>
+      <p id="model-hint" class="warn hidden">
+        <span id="model-hint-text"></span>
+        <button id="download-model" class="btn primary">下载模型（约 33MB）</button>
+        <span id="model-progress" class="hidden">
+          <span class="progress-track"><span id="model-progress-bar" class="progress-fill"></span></span>
+          <span id="model-progress-label" class="muted"></span>
+        </span>
+      </p>
     </section>
 
     <section class="card">

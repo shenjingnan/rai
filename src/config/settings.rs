@@ -26,6 +26,11 @@ pub fn get_settings_path() -> PathBuf {
     get_settings_dir().join(SETTINGS_FILE)
 }
 
+/// 获取模型目录路径：`~/.zapmomo/models`（模型统一安装到用户目录，不随仓库/安装包分发）
+pub fn get_models_dir() -> PathBuf {
+    get_settings_dir().join("models")
+}
+
 /// 解析 ${env.VAR} 引用
 ///
 /// - "${env.MY_VAR}" → 从环境变量 MY_VAR 读取

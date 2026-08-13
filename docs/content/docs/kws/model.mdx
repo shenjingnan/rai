@@ -5,7 +5,7 @@ description: 模型不随代码分发，按 manifest.json 清单下载并校验
 
 # 模型来源与校验
 
-模型**不随代码分发**，由 `scripts/download-kws-model.sh` 按 `models/manifest.json` 清单下载：
+模型**不随代码分发**，由 CLI 内置的 `kws install-model` 命令（或 `scripts/download-kws-model.sh`）按 `models/manifest.json` 清单下载：
 
 - **清单** `models/manifest.json`（随仓库）记录每个模型的 `name / version / source / sha256 / license`
 - **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型

@@ -44,8 +44,8 @@ cargo clippy -- -D warnings
 ### 快速开始
 
 ```bash
-# 1. 下载模型（约 31MB，存入 ./models/，不入库）
-./scripts/download-kws-model.sh
+# 1. 下载模型（约 31MB，默认安装到 ~/.zapmomo/models/<模型名>，不入库）
+cargo run -- kws install-model
 
 # 2. 离线验证（无需麦克风）：对模型自带 wav 检测出「文森特卡索」「法国」
 cargo run -- kws test
@@ -59,7 +59,7 @@ cargo run -- kws devices
 
 ### 模型来源与校验
 
-模型**不随代码分发**，由 `scripts/download-kws-model.sh` 按 `models/manifest.json` 清单下载：
+模型**不随代码分发**，由 CLI 内置的 `kws install-model` 命令（或 `scripts/download-kws-model.sh`）按 `models/manifest.json` 清单下载：
 
 - **清单** `models/manifest.json`（随仓库）记录每个模型的 `name / version / source / sha256 / license`
 - **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型
@@ -74,6 +74,7 @@ cargo run -- kws devices
 | `kws run` | 实时监听麦克风，检测唤醒词。`--duration 秒` 限时、`--device 名称` 指定设备、`--keywords` 附加关键词（直接输中文，多个用 `/` 分隔） |
 | `kws test` | 离线检测 wav（默认模型自带 `test_wavs/zh_3.wav`）。`--wav` 指定文件 |
 | `kws devices` | 列出可用输入设备 |
+| `kws install-model` | 下载并安装唤醒词模型（默认 `~/.zapmomo/models/<模型名>`）。`--model-dir` 指定目录、`--force` 强制重装 |
 
 ### 配置
 
@@ -130,15 +131,15 @@ cargo test -- --test-threads=1
 # 安装 Tauri CLI（首次）
 pnpm install
 
-# 开发模式（热重载，需已下载模型：./scripts/download-kws-model.sh）
+# 开发模式（热重载，需已下载模型：cargo run -- kws install-model）
 pnpm tauri dev
 
 # 构建当前平台的安装包（macOS 产出 .app/.dmg）
 pnpm tauri build
 ```
 
-> 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在
-> `~/.zapmomo/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
+> 打包版内置「下载模型」按钮：首次监听时若缺模型，在「配置」面板点击即可自动
+> 下载到 `~/.zapmomo/models/<模型名>`（也可用 `zapmomo kws install-model`）。
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。
 

@@ -11,14 +11,14 @@ description: KWS 控制面板的桌面 GUI，三平台安装包
 # 安装 Tauri CLI（首次）
 pnpm install
 
-# 开发模式（热重载，需已下载模型：./scripts/download-kws-model.sh）
+# 开发模式（热重载，需已下载模型：cargo run -- kws install-model）
 pnpm tauri dev
 
 # 构建当前平台的安装包（macOS 产出 .app/.dmg）
 pnpm tauri build
 ```
 
-> 打包版的默认模型目录（`CARGO_MANIFEST_DIR` 烘焙）在用户机器上不存在，需在
-> `~/.zapmomo/settings.toml` 的 `[kws] model_dir` 指定模型位置；GUI 会提示。
+> 打包版内置「下载模型」按钮：首次监听时若缺模型，在「配置」面板点击即可自动
+> 下载到 `~/.zapmomo/models/<模型名>`（也可用 `zapmomo kws install-model`）。
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。

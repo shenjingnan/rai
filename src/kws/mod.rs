@@ -3,6 +3,7 @@
 /// 使用 sherpa-onnx 的 `KeywordSpotter`（zipformer 唤醒词模型）实现：
 /// 离线对 wav 检测（`run_offline`）与实时麦克风监听（`run_realtime`）。
 pub mod config;
+pub mod model;
 pub mod reaction;
 pub mod token;
 
@@ -36,7 +37,7 @@ impl KwsEngine {
         for (name, path) in required {
             if !path.is_file() {
                 return Err(format!(
-                    "缺少模型文件 {name}: {}\n请先运行 scripts/download-kws-model.sh 下载模型。",
+                    "缺少模型文件 {name}: {}\n请运行 `zapmomo kws install-model`（源码仓库亦可运行 scripts/download-kws-model.sh）下载模型。",
                     path.display()
                 ));
             }
@@ -258,7 +259,7 @@ mod tests {
         cfg.model_dir = PathBuf::from("/nonexistent/model");
         cfg.encoder = cfg.model_dir.join("encoder.onnx");
         let err = KwsEngine::new(cfg.clone()).err().unwrap();
-        assert!(err.contains("download-kws-model.sh"), "err: {err}");
+        assert!(err.contains("install-model"), "err: {err}");
     }
 
     #[test]

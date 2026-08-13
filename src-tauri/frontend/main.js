@@ -50,12 +50,30 @@ async function refreshConfig() {
   const hint = $("model-hint");
   if (cfg.models_present) {
     hint.classList.add("hidden");
+    $("model-progress").classList.add("hidden");
   } else {
     hint.classList.remove("hidden");
-    hint.textContent =
-      `⚠ 模型文件缺失（${cfg.model_dir}）。请在 ${cfg.settings_path} 配置 [kws] model_dir，` +
-      `或在项目目录运行 scripts/download-kws-model.sh 下载模型后再开始监听。`;
+    $("model-hint-text").textContent =
+      `⚠ 模型文件缺失（${cfg.model_dir}）。点击下方按钮下载后即可开始监听。`;
+    $("download-model").disabled = cfg.model_downloading;
+    if (cfg.model_downloading) {
+      $("model-progress").classList.remove("hidden");
+      $("model-progress-label").textContent = "正在下载...";
+    }
   }
+}
+
+/** 更新模型下载进度条。 */
+function setDownloadProgress(p) {
+  const label = $("model-progress-label");
+  $("model-progress").classList.remove("hidden");
+  if (p.stage === "downloading") {
+    const pct = Math.max(0, Math.min(100, p.percent));
+    $("model-progress-bar").style.width = `${pct}%`;
+  } else {
+    $("model-progress-bar").style.width = "100%";
+  }
+  label.textContent = p.message;
 }
 
 function setListening(on) {
@@ -90,6 +108,27 @@ function init() {
     setListening(false);
     if (e.payload && e.payload.error) {
       showError(e.payload.error);
+    }
+  });
+
+  // 模型下载进度事件
+  listen("kws-model-download-progress", (e) => setDownloadProgress(e.payload));
+
+  // 下载模型按钮：完成后刷新配置（models_present 变 true，按钮消失）
+  $("download-model").addEventListener("click", async () => {
+    const btn = $("download-model");
+    btn.disabled = true;
+    $("model-progress").classList.remove("hidden");
+    $("model-progress-label").textContent = "开始下载...";
+    try {
+      await invoke("download_kws_model");
+      await refreshConfig();
+    } catch (e) {
+      showError(String(e));
+    } finally {
+      btn.disabled = false;
+      $("model-progress").classList.add("hidden");
+      await refreshConfig();
     }
   });
 

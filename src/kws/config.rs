@@ -54,12 +54,37 @@ impl Default for ResolvedKwsConfig {
     }
 }
 
-/// 默认模型目录：`<仓库根>/models/<模型名>`，用 `CARGO_MANIFEST_DIR` 定位，
-/// 不受进程当前工作目录影响。
-pub fn default_model_dir() -> PathBuf {
+/// 用户默认模型目录：`~/.zapmomo/models/<模型名>`
+pub fn user_default_model_dir() -> PathBuf {
+    crate::kws::model::user_model_dir()
+}
+
+/// 源码仓库中的模型目录（开发者 `./models/<模型名>`，仅作开发回退）。
+///
+/// 打包后的 app 中该路径在用户机器上不存在，`choose_default_model_dir` 会因
+/// `is_file()` 失败而回落，因此不会产生「CI 路径泄漏」。
+fn repo_models_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("models")
-        .join("sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20")
+        .join(&crate::kws::model::default_asset().name)
+}
+
+/// 默认模型目录选择：用户已安装 > 源码仓库已下载（开发便利）> 用户默认。
+///
+/// 纯决策函数（不访问真实文件系统），便于测试注入路径。
+fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
+    if user.join(DEFAULT_TOKENS).is_file() {
+        user.to_path_buf()
+    } else if repo.join(DEFAULT_TOKENS).is_file() {
+        repo.to_path_buf()
+    } else {
+        user.to_path_buf()
+    }
+}
+
+/// 默认模型目录（运行时解析：优先用户目录，源码开发时回退到仓库 `./models/`）。
+pub fn default_model_dir() -> PathBuf {
+    choose_default_model_dir(&user_default_model_dir(), &repo_models_dir())
 }
 
 /// 展开 settings 中的路径字符串（支持 `${env.VAR}`），未配置时用默认文件名。
@@ -97,7 +122,8 @@ fn resolve_model_dir(
         return Ok(if p.is_absolute() {
             p
         } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(p)
+            // 相对路径锚定用户配置目录（~/.zapmomo），不再依赖编译期仓库路径
+            crate::config::settings::get_settings_dir().join(p)
         });
     }
     Ok(default_model_dir())
@@ -170,6 +196,7 @@ pub fn parse_keywords_file(path: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     use crate::config::settings::KwsSettings;
+    use crate::test_util::run_with_temp_home;
     use std::io::Write;
 
     fn temp_keywords_file(content: &str) -> tempfile::NamedTempFile {
@@ -180,17 +207,65 @@ mod tests {
 
     #[test]
     fn test_default_config_points_to_default_model_dir() {
+        // 不依赖本机仓库/用户目录状态：只校验目录名来自内嵌清单、文件名为常量
         let cfg = ResolvedKwsConfig::default();
         assert_eq!(
-            cfg.model_dir,
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("models")
-                .join("sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20")
+            cfg.model_dir
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string()),
+            Some(crate::kws::model::default_asset().name.clone())
         );
         assert_eq!(cfg.encoder.file_name().unwrap(), DEFAULT_ENCODER);
+        assert_eq!(cfg.decoder.file_name().unwrap(), DEFAULT_DECODER);
+        assert_eq!(cfg.joiner.file_name().unwrap(), DEFAULT_JOINER);
+        assert_eq!(cfg.tokens.file_name().unwrap(), DEFAULT_TOKENS);
         assert_eq!(cfg.sample_rate, 16000);
         assert_eq!(cfg.chunk_size, 3200);
         assert_eq!(cfg.keywords_threshold, 0.25);
+    }
+
+    #[test]
+    fn test_user_default_model_dir() {
+        run_with_temp_home(|home| {
+            let dir = super::user_default_model_dir();
+            assert_eq!(
+                dir,
+                home.join(".zapmomo/models")
+                    .join(crate::kws::model::default_asset().name.as_str())
+            );
+        });
+    }
+
+    #[test]
+    fn test_choose_default_model_dir_priority() {
+        let base = tempfile::tempdir().unwrap();
+        let user = base.path().join("user-model");
+        let repo = base.path().join("repo-model");
+
+        // 都未安装 → 用户目录
+        assert_eq!(choose_default_model_dir(&user, &repo), user);
+
+        // 仅仓库有 → 仓库（开发回退）
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join(DEFAULT_TOKENS), b"t").unwrap();
+        assert_eq!(choose_default_model_dir(&user, &repo), repo);
+
+        // 用户也有 → 用户优先
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(user.join(DEFAULT_TOKENS), b"t").unwrap();
+        assert_eq!(choose_default_model_dir(&user, &repo), user);
+    }
+
+    #[test]
+    fn test_resolve_relative_model_dir_anchored_to_user_dir() {
+        run_with_temp_home(|home| {
+            let settings = KwsSettings {
+                model_dir: Some("models/my-model".to_string()),
+                ..KwsSettings::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(cfg.model_dir, home.join(".zapmomo/models/my-model"));
+        });
     }
 
     #[test]

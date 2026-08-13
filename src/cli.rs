@@ -75,6 +75,15 @@ pub enum KwsCmd {
     },
     /// 列出可用的麦克风输入设备
     Devices,
+    /// 下载并安装唤醒词模型（默认安装到 ~/.zapmomo/models/<模型名>）
+    InstallModel {
+        /// 安装目标模型目录（默认 ~/.zapmomo/models/<模型名>）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 已安装也强制重新下载
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// config 命令
@@ -150,6 +159,24 @@ async fn cmd_kws(cmd: KwsCmd) -> Result<(), String> {
                     println!("  {name}");
                 }
             }
+            Ok(())
+        }
+        KwsCmd::InstallModel { model_dir, force } => {
+            use crate::kws::model::{
+                DownloadProgress, DownloadStage, install_model_to, user_model_dir,
+            };
+            let dest = model_dir.unwrap_or_else(user_model_dir);
+            let mut progress = |p: DownloadProgress| {
+                let stage = match p.stage {
+                    DownloadStage::Downloading => "下载",
+                    DownloadStage::Verifying => "校验",
+                    DownloadStage::Extracting => "解压",
+                    DownloadStage::Done => "完成",
+                };
+                println!("[{stage}] {}", p.message);
+            };
+            install_model_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
+            println!("模型已就绪: {}", dest.display());
             Ok(())
         }
     }
@@ -365,6 +392,37 @@ mod tests {
         match cli.command.unwrap() {
             Commands::Kws { cmd } => assert!(matches!(cmd, KwsCmd::Devices)),
             _ => panic!("Expected Kws command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_kws_install_model() {
+        let cli = Cli::try_parse_from(&["test", "kws", "install-model", "--force"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Kws { cmd } => assert!(matches!(
+                cmd,
+                KwsCmd::InstallModel {
+                    force: true,
+                    model_dir: None
+                }
+            )),
+            _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_kws_install_model_with_dir() {
+        let cli = Cli::try_parse_from(&["test", "kws", "install-model", "--model-dir", "/tmp/zm"])
+            .unwrap();
+        match cli.command.unwrap() {
+            Commands::Kws { cmd } => assert!(matches!(
+                cmd,
+                KwsCmd::InstallModel {
+                    model_dir: Some(_),
+                    force: false
+                }
+            )),
+            _ => panic!("Expected InstallModel command"),
         }
     }
 }

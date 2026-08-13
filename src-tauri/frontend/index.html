@@ -1,57 +1,12 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ZapMomo · KWS 控制面板</title>
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <header>
-    <h1>ZapMomo</h1>
-    <span id="app-version" class="muted"></span>
-    <span id="status" class="status idle">空闲</span>
-  </header>
-
-  <main>
-    <section class="card">
-      <h2>实时监听</h2>
-      <div class="row">
-        <label for="device">麦克风</label>
-        <select id="device"></select>
-        <button id="refresh-devices" class="btn ghost">刷新</button>
-      </div>
-      <div class="row">
-        <label for="keywords">附加关键词</label>
-        <input id="keywords" type="text"
-          placeholder="可选：直接输入中文（如 你好小智），多个用 / 分隔" />
-      </div>
-      <div class="row">
-        <button id="start" class="btn primary">开始监听</button>
-        <button id="stop" class="btn danger" disabled>停止监听</button>
-      </div>
-      <p id="listen-error" class="error hidden"></p>
-    </section>
-
-    <section class="card">
-      <h2>配置</h2>
-      <dl id="config"></dl>
-      <p id="model-hint" class="warn hidden">
-        <span id="model-hint-text"></span>
-        <button id="download-model" class="btn primary">下载模型（约 33MB）</button>
-        <span id="model-progress" class="hidden">
-          <span class="progress-track"><span id="model-progress-bar" class="progress-fill"></span></span>
-          <span id="model-progress-label" class="muted"></span>
-        </span>
-      </p>
-    </section>
-
-    <section class="card">
-      <h2>检测结果</h2>
-      <ul id="results" class="results"></ul>
-    </section>
-  </main>
-
-  <script src="main.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZapMomo · KWS 控制面板</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

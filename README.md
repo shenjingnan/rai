@@ -127,7 +127,7 @@ cargo test -- --test-threads=1
 
 ## 桌面应用（Tauri 2）
 
-复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、附加关键词直接输中文、实时显示检测结果、查看模型配置与缺失提示）。代码在 `src-tauri/`，前端为原生 HTML/CSS/JS（无构建链）。
+复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、附加关键词直接输中文、实时显示检测结果、查看模型配置与缺失提示）。代码在 `src-tauri/`，前端为 React + Vite + TypeScript（Tailwind CSS + shadcn/ui，构建产物打包进应用）。
 
 ```bash
 # 安装 Tauri CLI（首次）
@@ -170,7 +170,7 @@ pnpm tauri build
 
 ```
 ├── Cargo.toml           # 项目配置和依赖（workspace 根）
-├── rust-toolchain.toml  # Rust 工具链版本（1.88）
+├── rust-toolchain.toml  # Rust 工具链版本（1.97.1）
 ├── src/
 │   ├── main.rs          # 入口文件
 │   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
@@ -192,7 +192,7 @@ pnpm tauri build
 │   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
 │   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
-│   ├── frontend/        # 原生 HTML/CSS/JS 控制面板
+│   ├── frontend/        # React + Vite + TypeScript 控制面板（Tailwind + shadcn/ui）
 │   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
 │   ├── capabilities/    # 权限声明
 │   └── icons/           # 应用图标

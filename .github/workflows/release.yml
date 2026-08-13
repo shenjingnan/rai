@@ -69,8 +69,9 @@ jobs:
           cache: pnpm
 
       - name: Install frontend deps
-        # 只装根包（@tauri-apps/cli），不装 docs workspace 的 Next.js 依赖
-        run: pnpm install --filter . --frozen-lockfile
+        # 安装除 docs（Next.js）外的所有 workspace：根包（@tauri-apps/cli）+ frontend（React）
+        # 注意：--filter 按包名匹配，docs workspace 的包名为 zapmomo-docs
+        run: pnpm install --filter '!zapmomo-docs' --frozen-lockfile
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.1

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6](https://github.com/shenjingnan/zapmomo/compare/v0.1.5...v0.1.6) - 2026-08-13
+
+### Added
+
+- *(app)* 前端迁移到 React 并升级为无边框透明窗口 ([#31](https://github.com/shenjingnan/zapmomo/pull/31))
+
 ## [0.1.5](https://github.com/shenjingnan/zapmomo/compare/v0.1.4...v0.1.5) - 2026-08-13
 
 ### Other

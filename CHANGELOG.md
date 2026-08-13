@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7](https://github.com/shenjingnan/zapmomo/compare/v0.1.6...v0.1.7) - 2026-08-13
+
+### Fixed
+
+- *(ci)* 修复 Release 工作流漏装 frontend 依赖导致构建失败 ([#34](https://github.com/shenjingnan/zapmomo/pull/34))
+
 ## [0.1.6](https://github.com/shenjingnan/zapmomo/compare/v0.1.5...v0.1.6) - 2026-08-13
 
 ### Added

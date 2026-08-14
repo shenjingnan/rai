@@ -12,8 +12,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri 桌面框架
-# macos-private-api：macOS 透明窗口需要，配合 tauri.conf.json 的 app.macOSPrivateApi
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2" }
 
 # 序列化
 serde = { version = "1", features = ["derive"] }

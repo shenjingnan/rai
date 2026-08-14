@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppInfo,
+  AsrConfigInfo,
+  AsrResult,
   DownloadProgress,
   KwsConfigInfo,
   KwsResult,
@@ -18,6 +20,11 @@ export const api = {
   stopListen: () => invoke<void>("stop_listen"),
   isListening: () => invoke<boolean>("is_listening"),
   downloadKwsModel: () => invoke<void>("download_kws_model"),
+  getAsrConfig: () => invoke<AsrConfigInfo>("get_asr_config"),
+  startAsrListen: (args: { device: string | null }) => invoke<void>("start_asr_listen", args),
+  stopAsrListen: () => invoke<void>("stop_asr_listen"),
+  isAsrListening: () => invoke<boolean>("is_asr_listening"),
+  downloadAsrModel: () => invoke<void>("download_asr_model"),
 };
 
 /** 类型安全的事件订阅（返回的 Promise resolve 后得到取消订阅函数）。 */
@@ -33,4 +40,18 @@ export function onDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("kws-model-download-progress", (e) => handler(e.payload));
+}
+
+export function onAsrResult(handler: (result: AsrResult) => void): Promise<UnlistenFn> {
+  return listen<AsrResult>("asr-result", (e) => handler(e.payload));
+}
+
+export function onAsrStopped(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("asr-stopped", (e) => handler(e.payload));
+}
+
+export function onAsrDownloadProgress(
+  handler: (payload: DownloadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<DownloadProgress>("asr-model-download-progress", (e) => handler(e.payload));
 }

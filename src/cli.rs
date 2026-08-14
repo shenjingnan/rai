@@ -43,6 +43,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: KwsCmd,
     },
+    /// 语音识别（ASR）
+    Asr {
+        #[command(subcommand)]
+        cmd: AsrCmd,
+    },
 }
 
 /// KWS 子命令
@@ -76,6 +81,48 @@ pub enum KwsCmd {
     /// 列出可用的麦克风输入设备
     Devices,
     /// 下载并安装唤醒词模型（默认安装到 ~/.zapmomo/models/<模型名>）
+    InstallModel {
+        /// 安装目标模型目录（默认 ~/.zapmomo/models/<模型名>）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 已安装也强制重新下载
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// ASR 子命令
+#[derive(Subcommand)]
+pub enum AsrCmd {
+    /// 实时监听麦克风并转写
+    Run {
+        /// 模型目录（覆盖 settings.toml 的 asr.model_dir）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 指定输入设备名（包含匹配），默认系统默认麦克风
+        #[arg(long)]
+        device: Option<String>,
+        /// 监听时长（秒），默认无限
+        #[arg(long)]
+        duration: Option<u64>,
+        /// 热词（空格分隔，中文直接写），提升专有名词识别
+        #[arg(long)]
+        hotwords: Option<String>,
+    },
+    /// 离线转写 wav 文件（不需要麦克风）
+    Test {
+        /// wav 路径；默认 <model_dir>/test_wavs/0.wav
+        #[arg(long)]
+        wav: Option<PathBuf>,
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 热词（空格分隔，中文直接写），提升专有名词识别
+        #[arg(long)]
+        hotwords: Option<String>,
+    },
+    /// 列出可用的麦克风输入设备
+    Devices,
+    /// 下载并安装 ASR 模型（默认安装到 ~/.zapmomo/models/<模型名>）
     InstallModel {
         /// 安装目标模型目录（默认 ~/.zapmomo/models/<模型名>）
         #[arg(long)]
@@ -124,6 +171,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Some(Commands::Kws { cmd }) => cmd_kws(cmd).await,
+        Some(Commands::Asr { cmd }) => cmd_asr(cmd).await,
         None => unreachable!(),
     }
 }
@@ -189,6 +237,83 @@ fn kws_config(
     let settings = crate::config::settings::load_settings()?;
     let kws_settings = settings.as_ref().and_then(|s| s.kws.clone());
     crate::kws::config::resolve(kws_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
+}
+
+/// ASR 命令入口
+async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
+    match cmd {
+        AsrCmd::Run {
+            model_dir,
+            device,
+            duration,
+            hotwords,
+        } => {
+            let mut cfg = asr_config(model_dir.as_ref())?;
+            if hotwords.is_some() {
+                cfg.hotwords = hotwords;
+            }
+            crate::asr::run_realtime(&cfg, device.as_deref(), duration)
+        }
+        AsrCmd::Test {
+            wav,
+            model_dir,
+            hotwords,
+        } => {
+            let mut cfg = asr_config(model_dir.as_ref())?;
+            if hotwords.is_some() {
+                cfg.hotwords = hotwords;
+            }
+            let wav_path = wav.unwrap_or_else(|| cfg.model_dir.join("test_wavs/0.wav"));
+            crate::asr::run_offline(&cfg, &wav_path)
+        }
+        AsrCmd::Devices => {
+            let devices = crate::audio::list_input_devices();
+            if devices.is_empty() {
+                println!("未找到任何输入设备。");
+            } else {
+                println!("可用输入设备:");
+                for name in devices {
+                    println!("  {name}");
+                }
+            }
+            Ok(())
+        }
+        AsrCmd::InstallModel { model_dir, force } => {
+            use crate::asr::{
+                DownloadProgress, DownloadStage, install_model_to, install_punctuation_model_to,
+                punctuation_user_model_dir, user_model_dir,
+            };
+            let dest = model_dir.unwrap_or_else(user_model_dir);
+            let mut progress = |p: DownloadProgress| {
+                let stage = match p.stage {
+                    DownloadStage::Downloading => "下载",
+                    DownloadStage::Verifying => "校验",
+                    DownloadStage::Extracting => "解压",
+                    DownloadStage::Done => "完成",
+                };
+                println!("[{stage}] {}", p.message);
+            };
+            install_model_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
+            println!("ASR 模型已就绪: {}", dest.display());
+
+            // 顺带安装标点模型（自动开启）；失败仅警告，不阻断 ASR。
+            let punct_dest = punctuation_user_model_dir();
+            match install_punctuation_model_to(&punct_dest, force, &mut progress) {
+                Ok(()) => println!("标点模型已就绪: {}", punct_dest.display()),
+                Err(e) => eprintln!("警告：标点模型安装失败（ASR 仍可用，仅无标点）: {e}"),
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 读取 settings 并解析 ASR 配置
+fn asr_config(
+    cli_model_dir: Option<&PathBuf>,
+) -> Result<crate::asr::config::ResolvedAsrConfig, String> {
+    let settings = crate::config::settings::load_settings()?;
+    let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
+    crate::asr::config::resolve(asr_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
 }
 
 #[cfg(test)]
@@ -420,6 +545,54 @@ mod tests {
                 KwsCmd::InstallModel {
                     model_dir: Some(_),
                     force: false
+                }
+            )),
+            _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_test() {
+        let cli = Cli::try_parse_from(&["test", "asr", "test"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(cmd, AsrCmd::Test { .. })),
+            _ => panic!("Expected Asr command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_run() {
+        let cli = Cli::try_parse_from(&["test", "asr", "run", "--duration", "10"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(
+                cmd,
+                AsrCmd::Run {
+                    duration: Some(10),
+                    ..
+                }
+            )),
+            _ => panic!("Expected Asr command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_devices() {
+        let cli = Cli::try_parse_from(&["test", "asr", "devices"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(cmd, AsrCmd::Devices)),
+            _ => panic!("Expected Asr command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_install_model() {
+        let cli = Cli::try_parse_from(&["test", "asr", "install-model", "--force"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(
+                cmd,
+                AsrCmd::InstallModel {
+                    force: true,
+                    model_dir: None
                 }
             )),
             _ => panic!("Expected InstallModel command"),

@@ -50,14 +50,26 @@ fn manifest() -> &'static ModelManifest {
     CACHE.get_or_init(|| serde_json::from_str(MANIFEST_JSON).expect("内嵌模型清单无效"))
 }
 
+/// 按 role 查找模型资产（如 "wake-word" / "asr"）。
+pub fn asset_by_role(role: &str) -> Option<&'static ModelAsset> {
+    manifest().assets.iter().find(|a| a.role == role)
+}
+
 /// 默认唤醒词模型资产（清单中第一个 `role == "wake-word"` 的资产，找不到则取首个）。
 pub fn default_asset() -> &'static ModelAsset {
-    manifest()
-        .assets
-        .iter()
-        .find(|a| a.role == "wake-word")
+    asset_by_role("wake-word")
         .or_else(|| manifest().assets.first())
         .expect("模型清单为空")
+}
+
+/// ASR 模型资产（清单中 `role == "asr"` 的资产）。
+pub fn asr_asset() -> &'static ModelAsset {
+    asset_by_role("asr").expect("模型清单缺少 asr 资产")
+}
+
+/// 标点恢复模型资产（清单中 `role == "punctuation"` 的资产）。
+pub fn punctuation_asset() -> &'static ModelAsset {
+    asset_by_role("punctuation").expect("模型清单缺少 punctuation 资产")
 }
 
 /// 用户模型根目录：`~/.zapmomo/models`
@@ -65,9 +77,19 @@ pub fn user_models_dir() -> PathBuf {
     get_models_dir()
 }
 
-/// 默认模型安装目录：`~/.zapmomo/models/<name>`
+/// 默认 KWS 模型安装目录：`~/.zapmomo/models/<name>`
 pub fn user_model_dir() -> PathBuf {
     get_models_dir().join(&default_asset().name)
+}
+
+/// 默认 ASR 模型安装目录：`~/.zapmomo/models/<name>`
+pub fn asr_user_model_dir() -> PathBuf {
+    get_models_dir().join(&asr_asset().name)
+}
+
+/// 默认标点模型安装目录：`~/.zapmomo/models/<name>`
+pub fn punctuation_user_model_dir() -> PathBuf {
+    get_models_dir().join(&punctuation_asset().name)
 }
 
 /// 下载/安装阶段（CLI 打日志 / GUI 推事件共用）。
@@ -107,17 +129,23 @@ pub enum ModelError {
     Io(#[from] std::io::Error),
 }
 
-/// 目标目录是否已装好模型（5 个核心文件齐全）。
+/// KWS 模型安装完成所需的文件（相对目标目录）。
+const KWS_REQUIRED_FILES: [&str; 5] = [
+    DEFAULT_ENCODER,
+    DEFAULT_DECODER,
+    DEFAULT_JOINER,
+    DEFAULT_TOKENS,
+    DEFAULT_KEYWORDS_REL,
+];
+
+/// 目标目录是否已包含给定的一组文件。
+pub fn has_required_files(dest_dir: &Path, required: &[&str]) -> bool {
+    required.iter().all(|f| dest_dir.join(f).is_file())
+}
+
+/// 目标目录是否已装好 KWS 模型（5 个核心文件齐全）。
 pub fn is_installed(dest_dir: &Path) -> bool {
-    [
-        DEFAULT_ENCODER,
-        DEFAULT_DECODER,
-        DEFAULT_JOINER,
-        DEFAULT_TOKENS,
-        DEFAULT_KEYWORDS_REL,
-    ]
-    .iter()
-    .all(|f| dest_dir.join(f).is_file())
+    has_required_files(dest_dir, &KWS_REQUIRED_FILES)
 }
 
 /// 安装默认唤醒词模型到 `dest_dir`（默认 `~/.zapmomo/models/<name>`）。
@@ -128,21 +156,46 @@ pub fn install_model_to(
     force: bool,
     on_progress: &mut ProgressFn,
 ) -> Result<(), ModelError> {
-    install_asset_to(default_asset(), dest_dir, force, on_progress)
+    install_asset_to(
+        default_asset(),
+        dest_dir,
+        force,
+        on_progress,
+        &KWS_REQUIRED_FILES,
+    )
 }
 
-/// 按指定资产安装（测试/多模型可复用）。
-fn install_asset_to(
+/// 安装标点模型到 `dest_dir`（默认 `~/.zapmomo/models/<标点模型名>`）。
+///
+/// 幂等：已安装且 `force` 为假时直接返回。`required_files` 用于幂等性判断。
+pub fn install_punctuation_model_to(
+    dest_dir: &Path,
+    force: bool,
+    on_progress: &mut ProgressFn,
+    required_files: &[&str],
+) -> Result<(), ModelError> {
+    install_asset_to(
+        punctuation_asset(),
+        dest_dir,
+        force,
+        on_progress,
+        required_files,
+    )
+}
+
+/// 按指定资产安装（测试/多模型可复用）。`required_files` 用于幂等性判断。
+pub fn install_asset_to(
     asset: &ModelAsset,
     dest_dir: &Path,
     force: bool,
     on_progress: &mut ProgressFn,
+    required_files: &[&str],
 ) -> Result<(), ModelError> {
     let parent = dest_dir
         .parent()
         .ok_or_else(|| ModelError::Extract("目标目录缺少父目录".to_string()))?;
 
-    if !force && is_installed(dest_dir) {
+    if !force && has_required_files(dest_dir, required_files) {
         on_progress(progress(DownloadStage::Done, 100.0, dest_dir, "模型已安装"));
         return Ok(());
     }
@@ -430,6 +483,39 @@ mod tests {
     }
 
     #[test]
+    fn test_manifest_asr_asset() {
+        let a = asr_asset();
+        assert!(!a.name.is_empty());
+        assert!(a.source.starts_with("http"));
+        assert_eq!(a.sha256.len(), 64);
+        // asr_asset 应为清单中 role == "asr" 的条目（自洽校验，不依赖模型文件是否已下载）
+        let m = manifest();
+        assert!(
+            m.assets.iter().any(|x| x.name == a.name && x.role == "asr"),
+            "asr_asset 不在清单中"
+        );
+        // asset_by_role 应与 asr_asset 一致
+        assert_eq!(asset_by_role("asr").unwrap().name, a.name);
+    }
+
+    #[test]
+    fn test_manifest_punctuation_asset() {
+        let a = punctuation_asset();
+        assert!(!a.name.is_empty());
+        assert!(a.source.starts_with("http"));
+        assert_eq!(a.sha256.len(), 64);
+        // punctuation_asset 应为清单中 role == "punctuation" 的条目（自洽校验）
+        let m = manifest();
+        assert!(
+            m.assets
+                .iter()
+                .any(|x| x.name == a.name && x.role == "punctuation"),
+            "punctuation_asset 不在清单中"
+        );
+        assert_eq!(asset_by_role("punctuation").unwrap().name, a.name);
+    }
+
+    #[test]
     fn test_verify_sha256_ok_and_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("blob");
@@ -465,7 +551,14 @@ mod tests {
 
         let dest = dir.path().join("test-kws-model");
         let mut stages = Vec::new();
-        install_asset_to(&asset, &dest, false, &mut |p| stages.push(p.stage)).unwrap();
+        install_asset_to(
+            &asset,
+            &dest,
+            false,
+            &mut |p| stages.push(p.stage),
+            &KWS_REQUIRED_FILES,
+        )
+        .unwrap();
         assert!(is_installed(&dest));
 
         let expected = [
@@ -490,9 +583,13 @@ mod tests {
         std::fs::write(dest.join(DEFAULT_KEYWORDS_REL), b"k").unwrap();
 
         let mut stages = Vec::new();
-        install_asset_to(&default_asset(), &dest, false, &mut |p| {
-            stages.push(p.stage)
-        })
+        install_asset_to(
+            &default_asset(),
+            &dest,
+            false,
+            &mut |p| stages.push(p.stage),
+            &KWS_REQUIRED_FILES,
+        )
         .unwrap();
         assert_eq!(stages, vec![DownloadStage::Done]);
     }
@@ -506,9 +603,16 @@ mod tests {
         let dest = dir.path().join("test-kws-model");
 
         // 先装好，再 force 重装 → 应重新走完整流程
-        install_asset_to(&asset, &dest, false, &mut |_| {}).unwrap();
+        install_asset_to(&asset, &dest, false, &mut |_| {}, &KWS_REQUIRED_FILES).unwrap();
         let mut stages = Vec::new();
-        install_asset_to(&asset, &dest, true, &mut |p| stages.push(p.stage)).unwrap();
+        install_asset_to(
+            &asset,
+            &dest,
+            true,
+            &mut |p| stages.push(p.stage),
+            &KWS_REQUIRED_FILES,
+        )
+        .unwrap();
         assert!(is_installed(&dest));
         assert!(stages.contains(&DownloadStage::Downloading));
     }
@@ -520,7 +624,8 @@ mod tests {
         let url = serve_many(bytes);
         let asset = asset_for(&url, &"0".repeat(64), "mini.tar.bz2");
         let dest = dir.path().join("test-kws-model");
-        let err = install_asset_to(&asset, &dest, false, &mut |_| {}).unwrap_err();
+        let err =
+            install_asset_to(&asset, &dest, false, &mut |_| {}, &KWS_REQUIRED_FILES).unwrap_err();
         assert!(matches!(err, ModelError::Sha256Mismatch { .. }));
         assert!(!dest.exists());
     }

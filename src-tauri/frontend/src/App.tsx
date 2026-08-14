@@ -1,11 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AsrCard } from "@/components/AsrCard";
 import { ConfigCard } from "@/components/ConfigCard";
+import { DeviceCard } from "@/components/DeviceCard";
 import { Header } from "@/components/Header";
 import { ListenCard } from "@/components/ListenCard";
 import { ResultsCard } from "@/components/ResultsCard";
 import { useAppInfo } from "@/hooks/useAppInfo";
+import { useAsrListening } from "@/hooks/useAsrListening";
 import { useDevices } from "@/hooks/useDevices";
 import { useKwsConfig } from "@/hooks/useKwsConfig";
 import { useListening } from "@/hooks/useListening";
@@ -18,10 +20,15 @@ export default function App() {
   const config = useKwsConfig();
   const listening = useListening();
   const results = useResults();
+  const asrListening = useAsrListening();
+  const [device, setDevice] = useState("");
 
   // macOS 为非透明原生窗口（tauri.macos.conf.json），圆角由系统绘制；
   // 其它平台仍是透明窗口，需要 CSS 圆角裁出圆角。
   const isMac = navigator.userAgent.includes("Macintosh");
+
+  // 任一识别/监听进行中时，禁止切换输入设备。
+  const anyListening = listening.isListening || asrListening.isListening;
 
   useEffect(() => {
     if (info) document.title = `${info.product_name} · KWS 控制面板`;
@@ -39,23 +46,29 @@ export default function App() {
         !isMac && "rounded-xl",
       )}
     >
-      <Header info={info} isListening={listening.isListening} />
+      <Header info={info} isListening={anyListening} />
       <main className="mx-auto grid w-full max-w-3xl flex-1 gap-4 overflow-y-auto p-5">
-        <ListenCard
+        <DeviceCard
           devices={devices.devices}
-          devicesError={devices.error}
-          onRefreshDevices={devices.refresh}
+          error={devices.error}
+          value={device}
+          onChange={setDevice}
+          onRefresh={devices.refresh}
+          disabled={anyListening}
+        />
+        <ListenCard
           isListening={listening.isListening}
           error={listening.error}
-          onStart={listening.start}
+          onStart={(keywords) => listening.start(device || null, keywords)}
           onStop={listening.stop}
         />
         <ConfigCard config={config.config} error={config.error} onRefresh={config.refresh} />
         <ResultsCard results={results} />
         <AsrCard
-          devices={devices.devices}
-          devicesError={devices.error}
-          onRefreshDevices={devices.refresh}
+          isListening={asrListening.isListening}
+          error={asrListening.error}
+          onStart={() => asrListening.start(device || null)}
+          onStop={asrListening.stop}
         />
       </main>
     </div>

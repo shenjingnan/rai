@@ -1,39 +1,21 @@
-import {
-  AlertTriangle,
-  CircleAlert,
-  Download,
-  Play,
-  RefreshCw,
-  Square,
-  Subtitles,
-} from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, CircleAlert, Download, Play, Square, Subtitles } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useAsrConfig } from "@/hooks/useAsrConfig";
-import { useAsrListening } from "@/hooks/useAsrListening";
 import { useAsrModelDownload } from "@/hooks/useAsrModelDownload";
 import { useAsrResults } from "@/hooks/useAsrResults";
 
 interface AsrCardProps {
-  devices: string[];
-  devicesError: string | null;
-  onRefreshDevices: () => void;
+  isListening: boolean;
+  error: string | null;
+  onStart: () => void;
+  onStop: () => void;
 }
 
-export function AsrCard({ devices, devicesError, onRefreshDevices }: AsrCardProps) {
+export function AsrCard({ isListening, error, onStart, onStop }: AsrCardProps) {
   const config = useAsrConfig();
-  const listening = useAsrListening();
   const results = useAsrResults();
   const {
     downloading,
@@ -42,12 +24,10 @@ export function AsrCard({ devices, devicesError, onRefreshDevices }: AsrCardProp
     download,
   } = useAsrModelDownload(config.refresh);
 
-  const [device, setDevice] = useState("");
-  const shownError = listening.error ?? devicesError ?? config.error;
-
   const percent =
     progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;
   const busy = downloading || (config.config?.model_downloading ?? false);
+  const shownError = error ?? config.error;
 
   return (
     <Card>
@@ -59,43 +39,12 @@ export function AsrCard({ devices, devicesError, onRefreshDevices }: AsrCardProp
         <CardDescription>实时转写麦克风语音</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex items-end gap-2">
-          <div className="flex-1 space-y-2">
-            <Label htmlFor="asr-device">麦克风</Label>
-            <Select
-              value={device}
-              onValueChange={setDevice}
-              disabled={listening.isListening || devices.length === 0}
-            >
-              <SelectTrigger id="asr-device">
-                <SelectValue placeholder={devices.length === 0 ? "未找到输入设备" : "选择麦克风"} />
-              </SelectTrigger>
-              <SelectContent>
-                {devices.map((d) => (
-                  <SelectItem key={d} value={d}>
-                    {d}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={onRefreshDevices}
-            disabled={listening.isListening}
-            aria-label="刷新设备列表"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
-
         <div className="flex gap-2">
-          <Button onClick={() => listening.start(device || null)} disabled={listening.isListening}>
+          <Button onClick={onStart} disabled={isListening}>
             <Play className="h-4 w-4" />
             开始识别
           </Button>
-          <Button variant="destructive" onClick={listening.stop} disabled={!listening.isListening}>
+          <Button variant="destructive" onClick={onStop} disabled={!isListening}>
             <Square className="h-4 w-4" />
             停止识别
           </Button>
@@ -107,7 +56,7 @@ export function AsrCard({ devices, devicesError, onRefreshDevices }: AsrCardProp
             <p className="text-sm">{results.partial}</p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              {listening.isListening ? "聆听中…" : "点击「开始识别」后，这里会实时显示转写文本"}
+              {isListening ? "聆听中…" : "点击「开始识别」后，这里会实时显示转写文本"}
             </p>
           )}
         </div>

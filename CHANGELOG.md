@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/shenjingnan/zapmomo/compare/v0.1.7...v0.1.8) - 2026-08-14
+
+### Added
+
+- *(app)* macOS 窗口改用原生阴影并优化启动体验 ([#38](https://github.com/shenjingnan/zapmomo/pull/38))
+- *(kws)* 英文关键词自动转 ARPAbet 音素 ([#36](https://github.com/shenjingnan/zapmomo/pull/36))
+
 ## [0.1.7](https://github.com/shenjingnan/zapmomo/compare/v0.1.6...v0.1.7) - 2026-08-13
 
 ### Fixed

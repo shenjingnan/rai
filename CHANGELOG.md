@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9](https://github.com/shenjingnan/zapmomo/compare/v0.1.8...v0.1.9) - 2026-08-14
+
+### Added
+
+- *(asr)* 集成 sherpa-onnx 流式语音识别（中英双语） ([#40](https://github.com/shenjingnan/zapmomo/pull/40))
+
 ## [0.1.8](https://github.com/shenjingnan/zapmomo/compare/v0.1.7...v0.1.8) - 2026-08-14
 
 ### Added

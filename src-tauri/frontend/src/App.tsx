@@ -5,6 +5,7 @@ import { ConfigCard } from "@/components/ConfigCard";
 import { DeviceCard } from "@/components/DeviceCard";
 import { Header } from "@/components/Header";
 import { ListenCard } from "@/components/ListenCard";
+import { Live2dCard } from "@/components/Live2dCard";
 import { ResultsCard } from "@/components/ResultsCard";
 import { useAppInfo } from "@/hooks/useAppInfo";
 import { useAsrListening } from "@/hooks/useAsrListening";
@@ -70,6 +71,7 @@ export default function App() {
           onStart={() => asrListening.start(device || null)}
           onStop={asrListening.stop}
         />
+        <Live2dCard />
       </main>
     </div>
   );

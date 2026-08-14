@@ -63,3 +63,19 @@ export interface AsrResult {
   start_time: number | null;
   is_final: boolean;
 }
+
+/** `get_live2d_config` 返回 */
+export interface Live2dConfigInfo {
+  model_dir: string | null;
+  model_file: string | null;
+  format: string | null;
+  models_present: boolean;
+  settings_path: string;
+}
+
+/** `set_live2d_model` 返回 */
+export interface Live2dModelInfo {
+  model_dir: string;
+  model_file: string;
+  format: string;
+}

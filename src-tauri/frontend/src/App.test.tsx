@@ -10,6 +10,7 @@ const { invokeMock, listeners } = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
+  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -25,6 +26,15 @@ vi.mock("@tauri-apps/api/window", () => ({
     toggleMaximize: vi.fn(),
     close: vi.fn(),
   })),
+}));
+
+// Live2D 渲染依赖 WebGL 与 Cubism Core（jsdom 环境不可用），测试里替换为空组件。
+vi.mock("@/pet/Live2dStage", () => ({
+  Live2dStage: () => null,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(() => Promise.resolve(null)),
 }));
 
 const DEFAULT_CONFIG = {
@@ -50,6 +60,14 @@ beforeEach(() => {
         return Promise.resolve(["内置麦克风", "USB 麦克风"]);
       case "get_kws_config":
         return Promise.resolve(DEFAULT_CONFIG);
+      case "get_live2d_config":
+        return Promise.resolve({
+          model_dir: null,
+          model_file: null,
+          format: null,
+          models_present: false,
+          settings_path: "/home/user/.zapmomo/settings.toml",
+        });
       case "is_listening":
         return Promise.resolve(false);
       case "start_listen":

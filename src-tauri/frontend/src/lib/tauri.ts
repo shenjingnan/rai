@@ -8,6 +8,8 @@ import type {
   KwsConfigInfo,
   KwsResult,
   ListenStopped,
+  Live2dConfigInfo,
+  Live2dModelInfo,
 } from "@/types/tauri";
 
 /** 类型安全的 Tauri command 封装。 */
@@ -25,6 +27,8 @@ export const api = {
   stopAsrListen: () => invoke<void>("stop_asr_listen"),
   isAsrListening: () => invoke<boolean>("is_asr_listening"),
   downloadAsrModel: () => invoke<void>("download_asr_model"),
+  getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
+  setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
 };
 
 /** 类型安全的事件订阅（返回的 Promise resolve 后得到取消订阅函数）。 */

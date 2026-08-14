@@ -105,6 +105,9 @@ pub enum AsrCmd {
         /// 监听时长（秒），默认无限
         #[arg(long)]
         duration: Option<u64>,
+        /// 热词（空格分隔，中文直接写），提升专有名词识别
+        #[arg(long)]
+        hotwords: Option<String>,
     },
     /// 离线转写 wav 文件（不需要麦克风）
     Test {
@@ -113,6 +116,9 @@ pub enum AsrCmd {
         wav: Option<PathBuf>,
         #[arg(long)]
         model_dir: Option<PathBuf>,
+        /// 热词（空格分隔，中文直接写），提升专有名词识别
+        #[arg(long)]
+        hotwords: Option<String>,
     },
     /// 列出可用的麦克风输入设备
     Devices,
@@ -240,12 +246,23 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             model_dir,
             device,
             duration,
+            hotwords,
         } => {
-            let cfg = asr_config(model_dir.as_ref())?;
+            let mut cfg = asr_config(model_dir.as_ref())?;
+            if hotwords.is_some() {
+                cfg.hotwords = hotwords;
+            }
             crate::asr::run_realtime(&cfg, device.as_deref(), duration)
         }
-        AsrCmd::Test { wav, model_dir } => {
-            let cfg = asr_config(model_dir.as_ref())?;
+        AsrCmd::Test {
+            wav,
+            model_dir,
+            hotwords,
+        } => {
+            let mut cfg = asr_config(model_dir.as_ref())?;
+            if hotwords.is_some() {
+                cfg.hotwords = hotwords;
+            }
             let wav_path = wav.unwrap_or_else(|| cfg.model_dir.join("test_wavs/0.wav"));
             crate::asr::run_offline(&cfg, &wav_path)
         }
@@ -262,7 +279,10 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             Ok(())
         }
         AsrCmd::InstallModel { model_dir, force } => {
-            use crate::asr::{DownloadProgress, DownloadStage, install_model_to, user_model_dir};
+            use crate::asr::{
+                DownloadProgress, DownloadStage, install_model_to, install_punctuation_model_to,
+                punctuation_user_model_dir, user_model_dir,
+            };
             let dest = model_dir.unwrap_or_else(user_model_dir);
             let mut progress = |p: DownloadProgress| {
                 let stage = match p.stage {
@@ -274,7 +294,14 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
                 println!("[{stage}] {}", p.message);
             };
             install_model_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
-            println!("模型已就绪: {}", dest.display());
+            println!("ASR 模型已就绪: {}", dest.display());
+
+            // 顺带安装标点模型（自动开启）；失败仅警告，不阻断 ASR。
+            let punct_dest = punctuation_user_model_dir();
+            match install_punctuation_model_to(&punct_dest, force, &mut progress) {
+                Ok(()) => println!("标点模型已就绪: {}", punct_dest.display()),
+                Err(e) => eprintln!("警告：标点模型安装失败（ASR 仍可用，仅无标点）: {e}"),
+            }
             Ok(())
         }
     }

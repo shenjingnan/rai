@@ -324,6 +324,7 @@ struct AsrConfigInfo {
     num_threads: i32,
     sample_rate: i32,
     models_present: bool,
+    punctuation_present: bool,
     model_downloading: bool,
     settings_path: String,
 }
@@ -337,6 +338,7 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
 
     let files = [&cfg.encoder, &cfg.decoder, &cfg.joiner, &cfg.tokens];
     let models_present = files.iter().all(|p| p.is_file());
+    let punctuation_present = cfg.punctuation_model.is_file();
 
     Ok(AsrConfigInfo {
         model_dir: cfg.model_dir.display().to_string(),
@@ -344,6 +346,7 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
         num_threads: cfg.num_threads,
         sample_rate: cfg.sample_rate,
         models_present,
+        punctuation_present,
         model_downloading: state.in_progress.load(Ordering::Relaxed),
         settings_path: zapmomo::config::settings::get_settings_path()
             .display()
@@ -445,6 +448,7 @@ async fn download_asr_model(
         return Err("模型下载已在进行中，请稍候".to_string());
     }
     let dest = zapmomo::asr::user_model_dir();
+    let punct_dest = zapmomo::asr::punctuation_user_model_dir();
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = ResetOnDrop(flag);
@@ -464,7 +468,14 @@ async fn download_asr_model(
                 },
             );
         };
-        zapmomo::asr::install_model_to(&dest, false, &mut progress).map_err(|e| e.to_string())
+        zapmomo::asr::install_model_to(&dest, false, &mut progress).map_err(|e| e.to_string())?;
+        // 顺带安装标点模型（自动开启）；失败仅警告，不阻断 ASR 下载成功。
+        if let Err(e) =
+            zapmomo::asr::install_punctuation_model_to(&punct_dest, false, &mut progress)
+        {
+            tracing::warn!("标点模型安装失败（ASR 仍可用，仅无标点）: {e}");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("下载任务异常: {e}"))?

@@ -173,6 +173,15 @@ pub struct AsrSettings {
     /// 空白符惩罚，缺省 0.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blank_penalty: Option<f32>,
+    /// 热词（空格分隔，中文直接写），缺省无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotwords: Option<String>,
+    /// 是否对最终结果自动加标点，缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_punctuation: Option<bool>,
+    /// 标点模型 onnx 路径（相对路径锚定标点模型目录）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub punctuation_model: Option<String>,
     /// 调试输出，缺省 false
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,

@@ -22,6 +22,12 @@ pub const REQUIRED_FILES: [&str; 4] = [
     DEFAULT_TOKENS,
 ];
 
+/// 标点模型包内文件名（CT Transformer 单文件）。
+pub const DEFAULT_PUNCT_MODEL: &str = "model.onnx";
+
+/// 标点模型安装完成所需的文件（相对目标目录）。
+pub const PUNCT_REQUIRED_FILES: [&str; 1] = [DEFAULT_PUNCT_MODEL];
+
 /// 解析后的完整 ASR 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAsrConfig {
@@ -44,6 +50,12 @@ pub struct ResolvedAsrConfig {
     pub rule3_min_utterance_length: f32,
     /// transducer 空白符惩罚（通常 0.0）
     pub blank_penalty: f32,
+    /// 热词（空格分隔，中文直接写），提升专有名词识别
+    pub hotwords: Option<String>,
+    /// 是否对最终结果自动加标点
+    pub enable_punctuation: bool,
+    /// 标点模型 onnx 路径
+    pub punctuation_model: PathBuf,
     pub debug: bool,
 }
 
@@ -67,6 +79,10 @@ impl Default for ResolvedAsrConfig {
             rule2_min_trailing_silence: 1.2,
             rule3_min_utterance_length: 20.0,
             blank_penalty: 0.0,
+            hotwords: None,
+            enable_punctuation: true,
+            punctuation_model: crate::kws::model::punctuation_user_model_dir()
+                .join(DEFAULT_PUNCT_MODEL),
             debug: false,
         }
     }
@@ -184,6 +200,21 @@ pub fn resolve(
     cfg.rule2_min_trailing_silence = s.and_then(|s| s.rule2_min_trailing_silence).unwrap_or(1.2);
     cfg.rule3_min_utterance_length = s.and_then(|s| s.rule3_min_utterance_length).unwrap_or(20.0);
     cfg.blank_penalty = s.and_then(|s| s.blank_penalty).unwrap_or(0.0);
+    cfg.hotwords = s.and_then(|s| s.hotwords.clone());
+    cfg.enable_punctuation = s.and_then(|s| s.enable_punctuation).unwrap_or(true);
+    cfg.punctuation_model = match s.and_then(|s| s.punctuation_model.as_deref()) {
+        Some(v) => {
+            let expanded = resolve_env_ref(v)?;
+            let p = PathBuf::from(&expanded);
+            if p.is_absolute() {
+                p
+            } else {
+                // 相对路径锚定到标点模型目录
+                crate::kws::model::punctuation_user_model_dir().join(p)
+            }
+        }
+        None => crate::kws::model::punctuation_user_model_dir().join(DEFAULT_PUNCT_MODEL),
+    };
     cfg.debug = s.and_then(|s| s.debug).unwrap_or(false);
 
     Ok(cfg)
@@ -305,5 +336,28 @@ mod tests {
         assert_eq!(cfg.chunk_size, 1600);
         assert!(!cfg.enable_endpoint);
         assert_eq!(cfg.rule1_min_trailing_silence, 3.0);
+    }
+
+    #[test]
+    fn test_default_punctuation_and_hotwords() {
+        let cfg = ResolvedAsrConfig::default();
+        assert_eq!(cfg.hotwords, None);
+        assert!(cfg.enable_punctuation);
+        assert_eq!(
+            cfg.punctuation_model,
+            crate::kws::model::punctuation_user_model_dir().join(DEFAULT_PUNCT_MODEL)
+        );
+    }
+
+    #[test]
+    fn test_resolve_hotwords_and_punctuation_overrides() {
+        let settings = AsrSettings {
+            hotwords: Some("你好小智 文森特卡索".to_string()),
+            enable_punctuation: Some(false),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.hotwords, Some("你好小智 文森特卡索".to_string()));
+        assert!(!cfg.enable_punctuation);
     }
 }

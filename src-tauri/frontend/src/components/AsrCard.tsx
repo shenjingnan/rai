@@ -84,7 +84,7 @@ export function AsrCard({ isListening, error, onStart, onStop }: AsrCardProps) {
             <div className="flex flex-col gap-2">
               <Button onClick={download} disabled={busy}>
                 <Download className="h-4 w-4" />
-                {busy ? "下载中…" : "下载模型（约 500MB）"}
+                {busy ? "下载中…" : "下载模型（约 790MB）"}
               </Button>
               {progress && (
                 <div className="space-y-1">

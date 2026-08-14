@@ -132,10 +132,10 @@ cargo test -- --test-threads=1
 ### 快速开始
 
 ```bash
-# 1. 下载模型（约 500MB，int8 量化，默认安装到 ~/.zapmomo/models/<模型名>，不入库）
+# 1. 下载模型（约 790MB：ASR int8 + 标点，默认安装到 ~/.zapmomo/models/<模型名>，不入库）
 cargo run -- asr install-model
 
-# 2. 离线转写（无需麦克风）：对模型自带 wav 输出转写文本
+# 2. 离线转写（无需麦克风）：对模型自带 wav 输出转写文本（最终结果自动加标点）
 cargo run -- asr test
 
 # 3. 实时转写：说话即出字幕（首次运行需授权麦克风，Ctrl-C 退出）
@@ -147,14 +147,19 @@ cargo run -- asr devices
 
 模型来源、sha256 校验、幂等安装与 `[kws]` 完全一致（见上文「模型来源与校验」）。
 
+### 标点与热词
+
+- **标点恢复（自动开启）**：`install-model` 会同时下载标点模型，识别出的**最终结果自动加标点**（如「昨天是 Monday，是星期三。」）。标点模型缺失时 ASR 仍可用，仅无标点（降级不报错）。
+- **热词增强**：对专有名词/易错词提权。命令行用 `--hotwords "尼日尔河 文森特卡索"`（空格分隔、中文直接写），或写入 `settings.toml` 的 `[asr] hotwords`。
+
 ### 命令说明
 
 | 命令 | 说明 |
 |------|------|
-| `asr run` | 实时监听麦克风并转写。`--duration 秒` 限时、`--device 名称` 指定设备 |
-| `asr test` | 离线转写 wav（默认模型自带 `test_wavs/0.wav`）。`--wav` 指定文件 |
+| `asr run` | 实时监听麦克风并转写。`--duration 秒` 限时、`--device 名称` 指定设备、`--hotwords "词1 词2"` 热词 |
+| `asr test` | 离线转写 wav（默认模型自带 `test_wavs/0.wav`）。`--wav` 指定文件、`--hotwords` 热词 |
 | `asr devices` | 列出可用输入设备 |
-| `asr install-model` | 下载并安装 ASR 模型（默认 `~/.zapmomo/models/<模型名>`）。`--model-dir` 指定目录、`--force` 强制重装 |
+| `asr install-model` | 下载并安装 ASR + 标点模型（默认 `~/.zapmomo/models/<模型名>`）。`--model-dir` 指定目录、`--force` 强制重装 |
 
 ### 配置
 
@@ -170,6 +175,9 @@ enable_endpoint = true                     # 端点检测（静音自动断句�
 rule1_min_trailing_silence = 2.4          # 断句静音阈值（秒）
 rule2_min_trailing_silence = 1.2
 rule3_min_utterance_length = 20.0
+hotwords = "你好小智 文森特卡索"          # 热词（空格分隔、中文直接写），可选
+enable_punctuation = true                  # 最终结果自动加标点，默认 true
+punctuation_model = "model.onnx"           # 标点模型文件名（相对标点模型目录）
 encoder = "encoder-epoch-99-avg-1.int8.onnx"
 decoder = "decoder-epoch-99-avg-1.onnx"    # 官方 int8 配方：fp32 decoder
 joiner  = "joiner-epoch-99-avg-1.int8.onnx"

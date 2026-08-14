@@ -50,6 +50,7 @@ export interface AsrConfigInfo {
   num_threads: number;
   sample_rate: number;
   models_present: boolean;
+  punctuation_present: boolean;
   model_downloading: boolean;
   settings_path: string;
 }

@@ -67,6 +67,11 @@ pub fn asr_asset() -> &'static ModelAsset {
     asset_by_role("asr").expect("模型清单缺少 asr 资产")
 }
 
+/// 标点恢复模型资产（清单中 `role == "punctuation"` 的资产）。
+pub fn punctuation_asset() -> &'static ModelAsset {
+    asset_by_role("punctuation").expect("模型清单缺少 punctuation 资产")
+}
+
 /// 用户模型根目录：`~/.zapmomo/models`
 pub fn user_models_dir() -> PathBuf {
     get_models_dir()
@@ -80,6 +85,11 @@ pub fn user_model_dir() -> PathBuf {
 /// 默认 ASR 模型安装目录：`~/.zapmomo/models/<name>`
 pub fn asr_user_model_dir() -> PathBuf {
     get_models_dir().join(&asr_asset().name)
+}
+
+/// 默认标点模型安装目录：`~/.zapmomo/models/<name>`
+pub fn punctuation_user_model_dir() -> PathBuf {
+    get_models_dir().join(&punctuation_asset().name)
 }
 
 /// 下载/安装阶段（CLI 打日志 / GUI 推事件共用）。
@@ -152,6 +162,24 @@ pub fn install_model_to(
         force,
         on_progress,
         &KWS_REQUIRED_FILES,
+    )
+}
+
+/// 安装标点模型到 `dest_dir`（默认 `~/.zapmomo/models/<标点模型名>`）。
+///
+/// 幂等：已安装且 `force` 为假时直接返回。`required_files` 用于幂等性判断。
+pub fn install_punctuation_model_to(
+    dest_dir: &Path,
+    force: bool,
+    on_progress: &mut ProgressFn,
+    required_files: &[&str],
+) -> Result<(), ModelError> {
+    install_asset_to(
+        punctuation_asset(),
+        dest_dir,
+        force,
+        on_progress,
+        required_files,
     )
 }
 
@@ -468,6 +496,23 @@ mod tests {
         );
         // asset_by_role 应与 asr_asset 一致
         assert_eq!(asset_by_role("asr").unwrap().name, a.name);
+    }
+
+    #[test]
+    fn test_manifest_punctuation_asset() {
+        let a = punctuation_asset();
+        assert!(!a.name.is_empty());
+        assert!(a.source.starts_with("http"));
+        assert_eq!(a.sha256.len(), 64);
+        // punctuation_asset 应为清单中 role == "punctuation" 的条目（自洽校验）
+        let m = manifest();
+        assert!(
+            m.assets
+                .iter()
+                .any(|x| x.name == a.name && x.role == "punctuation"),
+            "punctuation_asset 不在清单中"
+        );
+        assert_eq!(asset_by_role("punctuation").unwrap().name, a.name);
     }
 
     #[test]

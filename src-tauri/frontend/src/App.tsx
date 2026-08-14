@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
+import { AsrCard } from "@/components/AsrCard";
 import { ConfigCard } from "@/components/ConfigCard";
 import { Header } from "@/components/Header";
 import { ListenCard } from "@/components/ListenCard";
@@ -51,6 +52,11 @@ export default function App() {
         />
         <ConfigCard config={config.config} error={config.error} onRefresh={config.refresh} />
         <ResultsCard results={results} />
+        <AsrCard
+          devices={devices.devices}
+          devicesError={devices.error}
+          onRefreshDevices={devices.refresh}
+        />
       </main>
     </div>
   );

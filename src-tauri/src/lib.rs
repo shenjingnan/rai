@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 
 /// 监听线程状态：共享停止标志 + 线程句柄。
@@ -271,12 +272,212 @@ async fn download_kws_model(app: AppHandle, state: State<'_, DownloadState>) -> 
     .map_err(|e| format!("下载任务异常: {e}"))?
 }
 
+/// ASR 监听线程状态：共享停止标志 + 线程句柄。
+struct AsrListenState {
+    running: Arc<AtomicBool>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl AsrListenState {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: Mutex::new(None),
+        }
+    }
+
+    fn is_listening(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
+/// ASR 模型下载状态：防重入标志。
+struct AsrDownloadState {
+    in_progress: Arc<AtomicBool>,
+}
+
+impl Default for AsrDownloadState {
+    fn default() -> Self {
+        Self {
+            in_progress: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// 把语音识别结果通过 Tauri 事件发给前端。
+struct TauriAsrReaction {
+    app: AppHandle,
+}
+
+impl AsrReaction for TauriAsrReaction {
+    fn on_result(&mut self, result: &AsrResult) -> ReactionOutcome {
+        let _ = self.app.emit("asr-result", result);
+        ReactionOutcome::Continue
+    }
+}
+
+/// GUI 展示用的 ASR 配置信息。
+#[derive(Serialize)]
+struct AsrConfigInfo {
+    model_dir: String,
+    provider: String,
+    num_threads: i32,
+    sample_rate: i32,
+    models_present: bool,
+    model_downloading: bool,
+    settings_path: String,
+}
+
+/// 读取合并后的 ASR 配置（settings.toml + 默认值），并给出模型是否就绪。
+#[tauri::command]
+fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
+    let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
+
+    let files = [&cfg.encoder, &cfg.decoder, &cfg.joiner, &cfg.tokens];
+    let models_present = files.iter().all(|p| p.is_file());
+
+    Ok(AsrConfigInfo {
+        model_dir: cfg.model_dir.display().to_string(),
+        provider: cfg.provider.clone(),
+        num_threads: cfg.num_threads,
+        sample_rate: cfg.sample_rate,
+        models_present,
+        model_downloading: state.in_progress.load(Ordering::Relaxed),
+        settings_path: zapmomo::config::settings::get_settings_path()
+            .display()
+            .to_string(),
+    })
+}
+
+/// 开始实时语音识别。
+///
+/// 校验模型文件后启动独立线程跑 `run_realtime_with`，识别结果经
+/// `asr-result` 事件发给前端；线程结束发 `asr-stopped`。
+#[tauri::command]
+fn start_asr_listen(
+    app: AppHandle,
+    state: State<'_, AsrListenState>,
+    device: Option<String>,
+) -> Result<(), String> {
+    if state.is_listening() {
+        return Err("已在识别中".to_string());
+    }
+
+    let settings = zapmomo::config::settings::load_settings()?;
+    let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
+    let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
+
+    // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
+    let files = [&cfg.encoder, &cfg.decoder, &cfg.joiner, &cfg.tokens];
+    if let Some(missing) = files.iter().find(|p| !p.is_file()) {
+        return Err(format!(
+            "缺少模型文件: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo asr install-model` 下载模型。",
+            missing.display()
+        ));
+    }
+
+    let running = state.running.clone();
+    running.store(true, Ordering::Relaxed);
+    let thread_app = app.clone();
+    let handle = std::thread::spawn(move || {
+        tracing::info!("ASR listen thread started");
+        let mut reaction = TauriAsrReaction { app: thread_app };
+        let result = zapmomo::asr::run_realtime_with(
+            &cfg,
+            device.as_deref(),
+            None,
+            &mut reaction,
+            Some(&running),
+        );
+        running.store(false, Ordering::Relaxed);
+        match &result {
+            Ok(()) => tracing::info!("ASR listen thread finished (clean)"),
+            Err(e) => tracing::error!("ASR listen thread finished with error: {e}"),
+        }
+        let payload = ListenStopped {
+            error: result.err(),
+        };
+        let _ = reaction.app.emit("asr-stopped", payload);
+    });
+    *state
+        .handle
+        .lock()
+        .expect("asr listen handle lock poisoned") = Some(handle);
+    Ok(())
+}
+
+/// 停止实时语音识别：置停止标志并等待线程退出。
+#[tauri::command]
+fn stop_asr_listen(state: State<'_, AsrListenState>) -> Result<(), String> {
+    if !state.is_listening() {
+        return Err("当前没有在识别".to_string());
+    }
+    state.running.store(false, Ordering::Relaxed);
+    let handle = state
+        .handle
+        .lock()
+        .expect("asr listen handle lock poisoned")
+        .take();
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+    Ok(())
+}
+
+/// 当前是否正在识别。
+#[tauri::command]
+fn is_asr_listening(state: State<'_, AsrListenState>) -> bool {
+    state.is_listening()
+}
+
+/// 下载并安装 ASR 模型（默认安装到 `~/.zapmomo/models/<模型名>`）。
+///
+/// 防重入；下载在阻塞线程池执行，进度经 `asr-model-download-progress` 事件推给前端。
+#[tauri::command]
+async fn download_asr_model(
+    app: AppHandle,
+    state: State<'_, AsrDownloadState>,
+) -> Result<(), String> {
+    let flag = state.in_progress.clone();
+    if flag.swap(true, Ordering::SeqCst) {
+        return Err("模型下载已在进行中，请稍候".to_string());
+    }
+    let dest = zapmomo::asr::user_model_dir();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ResetOnDrop(flag);
+        let mut progress = |p: zapmomo::asr::DownloadProgress| {
+            let stage = match p.stage {
+                zapmomo::asr::DownloadStage::Downloading => "downloading",
+                zapmomo::asr::DownloadStage::Verifying => "verifying",
+                zapmomo::asr::DownloadStage::Extracting => "extracting",
+                zapmomo::asr::DownloadStage::Done => "done",
+            };
+            let _ = app.emit(
+                "asr-model-download-progress",
+                DownloadProgressPayload {
+                    stage: stage.to_string(),
+                    percent: p.percent,
+                    message: p.message,
+                },
+            );
+        };
+        zapmomo::asr::install_model_to(&dest, false, &mut progress).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("下载任务异常: {e}"))?
+}
+
 /// Tauri 应用入口。
 pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
         .manage(ListenState::new())
         .manage(DownloadState::default())
+        .manage(AsrListenState::new())
+        .manage(AsrDownloadState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
@@ -284,7 +485,12 @@ pub fn run() {
             start_listen,
             stop_listen,
             is_listening,
-            download_kws_model
+            download_kws_model,
+            get_asr_config,
+            start_asr_listen,
+            stop_asr_listen,
+            is_asr_listening,
+            download_asr_model
         ])
         .setup(|app| {
             // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。

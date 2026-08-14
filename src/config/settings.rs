@@ -70,6 +70,9 @@ pub struct AppConfig {
     /// 唤醒词检测（KWS）配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kws: Option<KwsSettings>,
+    /// 语音识别（ASR）配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr: Option<AsrSettings>,
 }
 
 /// 唤醒词检测（KWS）配置。
@@ -119,6 +122,62 @@ pub struct KwsSettings {
     pub debug: Option<bool>,
 }
 
+/// 语音识别（ASR）配置。
+///
+/// 全部字段可缺省：未配置的项在解析时回退到 `asr::config` 的内置默认值，
+/// 因此这里用 `Option` 以区分「未配置」与「配置了」。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AsrSettings {
+    /// 模型目录（支持 ${env.VAR} 引用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
+    /// encoder onnx 文件名（缺省用 int8 变体）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// decoder onnx 文件名（缺省用 fp32 变体，官方 int8 配方）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    /// joiner onnx 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joiner: Option<String>,
+    /// tokens.txt 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<String>,
+    /// 推理后端，缺省 "cpu"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// 推理线程数，缺省 2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_threads: Option<i32>,
+    /// 每次喂给模型的采样数（@16k），缺省 3200（0.2s）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<usize>,
+    /// 模型输入采样率，缺省 16000
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<i32>,
+    /// 解码方式：greedy_search | modified_beam_search，缺省 greedy_search
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoding_method: Option<String>,
+    /// 端点检测（静音自动断句），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_endpoint: Option<bool>,
+    /// 规则 1 最小尾随静音（秒），缺省 2.4
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule1_min_trailing_silence: Option<f32>,
+    /// 规则 2 最小尾随静音（秒），缺省 1.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule2_min_trailing_silence: Option<f32>,
+    /// 规则 3 最小句长（秒），缺省 20.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule3_min_utterance_length: Option<f32>,
+    /// 空白符惩罚，缺省 0.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blank_penalty: Option<f32>,
+    /// 调试输出，缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<bool>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -130,6 +189,7 @@ impl Default for AppConfig {
             log_level: default_log_level(),
             custom: None,
             kws: None,
+            asr: None,
         }
     }
 }
@@ -277,10 +337,34 @@ mod tests {
             log_level: "warn".to_string(),
             custom: Some(std::collections::HashMap::new()),
             kws: None,
+            asr: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    #[test]
+    fn test_load_settings_with_asr_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[asr]\nnum_threads = 4\nenable_endpoint = false\n");
+            let result = load_settings().unwrap().unwrap();
+            let asr = result.asr.unwrap();
+            assert_eq!(asr.num_threads, Some(4));
+            assert_eq!(asr.enable_endpoint, Some(false));
+            // 未配置的字段保持 None
+            assert_eq!(asr.model_dir, None);
+            assert_eq!(asr.decoding_method, None);
+        });
+    }
+
+    #[test]
+    fn test_load_settings_without_asr_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "debug = true\n");
+            let result = load_settings().unwrap().unwrap();
+            assert!(result.asr.is_none());
+        });
     }
 
     #[test]

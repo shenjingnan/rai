@@ -34,11 +34,31 @@ export interface ListenStopped {
   error: string | null;
 }
 
-/** `kws-model-download-progress` 事件载荷 */
+/** `kws-model-download-progress` / `asr-model-download-progress` 事件载荷 */
 export type DownloadStage = "downloading" | "verifying" | "extracting" | "done";
 
 export interface DownloadProgress {
   stage: DownloadStage;
   percent: number;
   message: string;
+}
+
+/** `get_asr_config` 返回 */
+export interface AsrConfigInfo {
+  model_dir: string;
+  provider: string;
+  num_threads: number;
+  sample_rate: number;
+  models_present: boolean;
+  model_downloading: boolean;
+  settings_path: string;
+}
+
+/** `asr-result` 事件载荷（对应后端 AsrResult） */
+export interface AsrResult {
+  text: string;
+  tokens: string[];
+  timestamps: number[] | null;
+  start_time: number | null;
+  is_final: boolean;
 }

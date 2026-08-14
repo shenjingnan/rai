@@ -67,7 +67,7 @@ cargo run -- kws devices
 - **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型
 - **幂等**：模型已存在且完整则跳过
 - **合规**：第三方来源与许可见 `models/THIRD_PARTY_NOTICES.md`
-- 后续 ASR / TTS 等模型（可能超过 100MB）将沿用同一套清单机制，按需下载
+- ASR 已沿用同一套清单机制（见下文「语音识别」），后续 TTS 等模型亦将沿用
 
 ### 命令说明
 
@@ -123,6 +123,58 @@ cargo test -- --test-threads=1
 
 # 模型相关测试（需先下载模型）
 ./scripts/run-kws-model-tests.sh
+```
+
+## 语音识别（ASR）
+
+接入 sherpa-onnx 流式语音识别模型（zipformer 中英双语），把麦克风语音实时转成文本（支持中英混说）。
+
+### 快速开始
+
+```bash
+# 1. 下载模型（约 500MB，int8 量化，默认安装到 ~/.zapmomo/models/<模型名>，不入库）
+cargo run -- asr install-model
+
+# 2. 离线转写（无需麦克风）：对模型自带 wav 输出转写文本
+cargo run -- asr test
+
+# 3. 实时转写：说话即出字幕（首次运行需授权麦克风，Ctrl-C 退出）
+cargo run -- asr run
+
+# 4. 查看可用麦克风设备
+cargo run -- asr devices
+```
+
+模型来源、sha256 校验、幂等安装与 `[kws]` 完全一致（见上文「模型来源与校验」）。
+
+### 命令说明
+
+| 命令 | 说明 |
+|------|------|
+| `asr run` | 实时监听麦克风并转写。`--duration 秒` 限时、`--device 名称` 指定设备 |
+| `asr test` | 离线转写 wav（默认模型自带 `test_wavs/0.wav`）。`--wav` 指定文件 |
+| `asr devices` | 列出可用输入设备 |
+| `asr install-model` | 下载并安装 ASR 模型（默认 `~/.zapmomo/models/<模型名>`）。`--model-dir` 指定目录、`--force` 强制重装 |
+
+### 配置
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[asr]` 段覆盖默认值（全部可选）：
+
+```toml
+[asr]
+model_dir = "/path/to/model"              # 模型目录（支持 ${env.VAR}）
+provider = "cpu"                           # 推理后端，默认 cpu
+num_threads = 4                            # 推理线程数，默认 2
+decoding_method = "greedy_search"          # greedy_search | modified_beam_search
+enable_endpoint = true                     # 端点检测（静音自动断句）
+rule1_min_trailing_silence = 2.4          # 断句静音阈值（秒）
+rule2_min_trailing_silence = 1.2
+rule3_min_utterance_length = 20.0
+encoder = "encoder-epoch-99-avg-1.int8.onnx"
+decoder = "decoder-epoch-99-avg-1.onnx"    # 官方 int8 配方：fp32 decoder
+joiner  = "joiner-epoch-99-avg-1.int8.onnx"
+tokens  = "tokens.txt"
+debug = false
 ```
 
 ## 桌面应用（Tauri 2）

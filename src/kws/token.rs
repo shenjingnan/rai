@@ -12,6 +12,8 @@ use std::path::Path;
 
 use pinyin::ToPinyin;
 
+use super::english;
+
 /// 双字母声母（先匹配，避免 `zh` 被拆成 `z h`）。
 const INITIALS_2: [&str; 3] = ["zh", "ch", "sh"];
 /// 单字母声母（ppinyin 约定把 `y`/`w` 也当声母，如 `文` = `w én`）。
@@ -116,18 +118,22 @@ fn validate_tokens(token_str: &str, tokens: &HashSet<String>) -> Result<(), Stri
 ///
 /// 支持输入：
 /// - 原始中文（自动转 ppinyin token，显示词取原文）：`你好小智`
+/// - 英文单词/短语（自动转 ARPAbet token，显示词用 `_` 连接）：`hi hello` → `HH AY1 HH AH0 L OW1 @hi_hello`
 /// - 已 tokenized 拼音：`n ǐ h ǎo x iǎo zh ì`
+/// - 已 tokenized 音素：`L AY1 T AH1 P`
 /// - 显式显示词：`n ǐ h ǎo x iǎo zh ì @你好小智`
 /// - 多个关键词：用 `/` 或换行分隔
 pub fn encode_custom_keywords(input: &str, tokens_path: &Path) -> Result<String, String> {
     let tokens = load_token_set(tokens_path)?;
+    // en.phone 与 tokens.txt 同在模型根目录（缺失时英文退化为纯 g2p）
+    let en_phone_path = tokens_path.with_file_name("en.phone");
     let mut lines = Vec::new();
     for raw in input.split(['/', '\n']) {
         let raw = raw.trim();
         if raw.is_empty() {
             continue;
         }
-        lines.push(encode_keyword(raw, &tokens)?);
+        lines.push(encode_keyword(raw, &tokens, &en_phone_path)?);
     }
     if lines.is_empty() {
         return Err("未提供任何关键词".to_string());
@@ -136,7 +142,11 @@ pub fn encode_custom_keywords(input: &str, tokens_path: &Path) -> Result<String,
 }
 
 /// 编码单个关键词。
-fn encode_keyword(raw: &str, tokens: &HashSet<String>) -> Result<String, String> {
+fn encode_keyword(
+    raw: &str,
+    tokens: &HashSet<String>,
+    en_phone_path: &Path,
+) -> Result<String, String> {
     // 拆出 `@` 后的显式显示词（可选）
     let (token_part, display) = match raw.rsplit_once('@') {
         Some((t, d)) => (t.trim(), Some(d.trim().to_string())),
@@ -144,21 +154,50 @@ fn encode_keyword(raw: &str, tokens: &HashSet<String>) -> Result<String, String>
     };
     let token_part_has_cjk = token_part.chars().any(is_cjk);
 
-    // 原始中文 → ppinyin token；否则按原样（已是 token 序列）
-    let token_str = if token_part_has_cjk {
-        hanzi_to_ppinyin(token_part, tokens)?.join(" ")
+    // 原始中文 → ppinyin；已是 token 序列（手写拼音/音素）→ 透传；否则按英文单词转换。
+    // `auto_display` 标记是否自动把原文作为显示词（中文与英文转换均需，纯 token 序列不需）。
+    let (token_str, auto_display) = if token_part_has_cjk {
+        (hanzi_to_ppinyin(token_part, tokens)?.join(" "), true)
+    } else if is_token_sequence(token_part, tokens) {
+        (token_part.to_string(), false)
+    } else if looks_like_english_words(token_part, tokens) {
+        (
+            english::english_phrase_to_tokens(token_part, en_phone_path)?.join(" "),
+            true,
+        )
     } else {
-        token_part.to_string()
+        // 混合/含非字母（如手写音素打错）：透传，交由 validate_tokens 报清晰错误
+        (token_part.to_string(), false)
     };
 
     validate_tokens(&token_str, tokens)?;
 
-    // 显示词缺省时：原始中文作为显示词；纯拼音不附加
-    let display = display.or_else(|| token_part_has_cjk.then(|| token_part.to_string()));
+    // 自动显示词用 `_` 连接（sherpa-onnx 的关键词显示名不能含空格，模型自带如 `LIGHT_UP`）
+    let display = display.or_else(|| {
+        auto_display.then(|| token_part.split_whitespace().collect::<Vec<_>>().join("_"))
+    });
     match display {
         Some(d) => Ok(format!("{token_str} @{d}")),
         None => Ok(token_str),
     }
+}
+
+/// 判断一段非中文输入是否「已是合法 token 序列」（每个空白分隔 token 都在模型 token 集中）。
+fn is_token_sequence(s: &str, tokens: &HashSet<String>) -> bool {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    !parts.is_empty() && parts.iter().all(|p| tokens.contains(*p))
+}
+
+/// 判断一段非中文输入是否「看起来像英文自然词」（每个词都是纯 ASCII 字母且都不在 token 集中）。
+///
+/// 与 `is_token_sequence` 配合区分三种情况：全部合法 → 手写音素/拼音；
+/// 全都不在集且是字母 → 英文单词；混合 → 视为拼写错误，透传交由 `validate_tokens` 报清晰错误。
+fn looks_like_english_words(s: &str, tokens: &HashSet<String>) -> bool {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    !parts.is_empty()
+        && parts.iter().all(|p| {
+            !p.is_empty() && p.chars().all(|c| c.is_ascii_alphabetic()) && !tokens.contains(*p)
+        })
 }
 
 #[cfg(test)]
@@ -228,8 +267,36 @@ mod tests {
     #[test]
     fn test_encode_invalid_token_errors() {
         let f = real_tokens();
-        let err = encode_custom_keywords("L AY1", f.path()).unwrap_err();
-        assert!(err.contains("L"));
+        // 混合：`n` 在 token 集中、`zz` 不在 → 视为手写音素打错，透传后由 validate 报清晰错误
+        let err = encode_custom_keywords("n zz", f.path()).unwrap_err();
+        assert!(err.contains("zz"), "err: {err}");
+    }
+
+    #[test]
+    fn test_encode_english_phrase_via_dict() {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens_path = dir.path().join("tokens.txt");
+        std::fs::write(
+            &tokens_path,
+            "<blk> 0\nHH 36\nAY1 19\nAH0 9\nL 45\nOW1 50\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("en.phone"),
+            "HI HH AY1\nHELLO HH AH0 L OW1\n",
+        )
+        .unwrap();
+
+        // 词典命中：hi → HH AY1、hello → HH AH0 L OW1；显示词取原文
+        let encoded = encode_custom_keywords("hi hello", &tokens_path).unwrap();
+        assert_eq!(encoded, "HH AY1 HH AH0 L OW1 @hi_hello");
+    }
+
+    #[test]
+    fn test_encode_manual_arpabet_passthrough() {
+        let f = temp_tokens("<blk> 0\nL 45\nAY1 19\nT 59\nAH1 10\nP 55\n");
+        let encoded = encode_custom_keywords("L AY1 T AH1 P", f.path()).unwrap();
+        assert_eq!(encoded, "L AY1 T AH1 P");
     }
 
     #[test]

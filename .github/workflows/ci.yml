@@ -125,6 +125,20 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.1
 
+      - name: Diagnose llama CRT (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          LLAMA_STATIC_CRT: "1"
+        run: |
+          echo "=== env 诊断 ==="
+          echo "LLAMA_STATIC_CRT=[${LLAMA_STATIC_CRT:-未设置}]"
+          echo "CMAKE_GENERATOR=[${CMAKE_GENERATOR:-未设置}]"
+          echo "CRATE_CC_NO_DEFAULTS=[${CRATE_CC_NO_DEFAULTS:-未设置}]"
+          echo "=== 强制重编 llama-cpp-sys-2，抓 cmake 命令 ==="
+          cargo clean -p llama-cpp-sys-2 2>/dev/null || true
+          cargo build 2>&1 | grep -E "running:.*cmake" | head -10
+
       - name: Tests
         shell: bash
         env:

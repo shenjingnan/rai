@@ -53,6 +53,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: TtsCmd,
     },
+    /// 本地大语言模型（LLM）
+    Llm {
+        #[command(subcommand)]
+        cmd: LlmCmd,
+    },
 }
 
 /// KWS 子命令
@@ -182,6 +187,26 @@ pub enum TtsCmd {
     },
 }
 
+/// LLM 子命令
+#[derive(Subcommand)]
+pub enum LlmCmd {
+    /// 加载模型并打印信息（验证模型可用）
+    Load {
+        /// GGUF 模型文件路径（覆盖 settings.toml 的 llm.model_path）
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+    /// 单轮对话（加载 + 流式生成）
+    Chat {
+        /// 用户输入文本
+        #[arg(short, long)]
+        text: String,
+        /// GGUF 模型文件路径（覆盖 settings.toml 的 llm.model_path）
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+}
+
 /// config 命令
 fn cmd_config() -> Result<String, String> {
     let config = serde_json::json!({
@@ -222,6 +247,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
         Some(Commands::Kws { cmd }) => cmd_kws(cmd).await,
         Some(Commands::Asr { cmd }) => cmd_asr(cmd).await,
         Some(Commands::Tts { cmd }) => cmd_tts(cmd).await,
+        Some(Commands::Llm { cmd }) => cmd_llm(cmd).await,
         None => unreachable!(),
     }
 }
@@ -439,6 +465,56 @@ fn tts_config(
     let settings = crate::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     crate::tts::config::resolve(tts_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
+}
+
+/// LLM 命令入口
+async fn cmd_llm(cmd: LlmCmd) -> Result<(), String> {
+    use crate::llm::provider::LlmProvider;
+    use crate::llm::types::{ChatMessage, ChatRole, TokenDelta};
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    match cmd {
+        LlmCmd::Load { model_path } => {
+            let cfg = llm_config(model_path.as_ref())?;
+            let mut provider = crate::llm::local::LocalLlamaProvider::new(cfg.clone())
+                .map_err(|e| e.to_string())?;
+            provider.load().map_err(|e| e.to_string())?;
+            println!("模型已加载: {}", cfg.model_path.display());
+            println!("架构: {}", provider.architecture());
+            println!("上下文: {} tokens", cfg.params.context_size);
+            Ok(())
+        }
+        LlmCmd::Chat { text, model_path } => {
+            let cfg = llm_config(model_path.as_ref())?;
+            let mut provider = crate::llm::local::LocalLlamaProvider::new(cfg.clone())
+                .map_err(|e| e.to_string())?;
+            provider.load().map_err(|e| e.to_string())?;
+
+            let messages = vec![ChatMessage::new(ChatRole::User, text)];
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut emit = |delta: TokenDelta| {
+                print!("{}", delta.text);
+                let _ = std::io::stdout().flush();
+            };
+            let reason = provider
+                .generate(&messages, &cfg.params, &mut emit, cancel)
+                .map_err(|e| e.to_string())?;
+            println!();
+            println!("[生成结束: {reason:?}]");
+            Ok(())
+        }
+    }
+}
+
+/// 读取 settings 并解析 LLM 配置
+fn llm_config(
+    cli_model_path: Option<&PathBuf>,
+) -> Result<crate::llm::config::ResolvedLlmConfig, String> {
+    let settings = crate::config::settings::load_settings()?;
+    let llm_settings = settings.as_ref().and_then(|s| s.llm.clone());
+    crate::llm::config::resolve(llm_settings.as_ref(), cli_model_path.map(|p| p.as_path()))
 }
 
 #[cfg(test)]

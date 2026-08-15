@@ -18,8 +18,10 @@ use tauri::{
     WindowEvent,
 };
 use zapmomo::asr::{AsrReaction, AsrResult};
-use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings};
+use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings, LlmSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
+use zapmomo::llm::types::{ChatMessage, ChatRole};
+use zapmomo::llm::{LlmEngine, LlmEvent};
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
 // 使其表现为纯桌面摆件（参考 BongoCat 的 `tauri-nspanel` 方案）。
@@ -795,6 +797,192 @@ async fn download_tts_model(
     .map_err(|e| format!("下载任务异常: {e}"))?
 }
 
+/// 本地 LLM 引擎状态：懒创建的 worker 线程引擎。
+struct LlmState {
+    engine: Arc<Mutex<Option<Arc<LlmEngine>>>>,
+}
+
+impl LlmState {
+    fn new() -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// GUI 展示用的 LLM 配置信息。
+#[derive(Serialize)]
+struct LlmConfigInfo {
+    enabled: bool,
+    provider: String,
+    model_path: String,
+    models_present: bool,
+    ready: bool,
+    enable_thinking: bool,
+    settings_path: String,
+}
+
+/// 加载状态事件载荷。
+#[derive(Clone, Serialize)]
+struct LlmStatusPayload {
+    ready: bool,
+}
+
+/// 读取合并后的 LLM 配置。
+fn llm_resolved_config() -> Result<zapmomo::llm::config::ResolvedLlmConfig, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let llm_settings = settings.as_ref().and_then(|s| s.llm.clone());
+    zapmomo::llm::config::resolve(llm_settings.as_ref(), None)
+}
+
+/// 把 LLM 引擎事件转发为 Tauri 事件，直到 `Finished`/`Error`（`stop_on_status` 时 `Status` 也终止）。
+fn forward_llm_events(app: AppHandle, engine: Arc<LlmEngine>, stop_on_status: bool) {
+    loop {
+        match engine.try_recv() {
+            Some(LlmEvent::Token(delta)) => {
+                let _ = app.emit("llm-token", delta);
+            }
+            Some(LlmEvent::Finished(reason)) => {
+                let _ = app.emit("llm-finished", reason);
+                break;
+            }
+            Some(LlmEvent::Error(e)) => {
+                let _ = app.emit("llm-error", e);
+                break;
+            }
+            Some(LlmEvent::Status { ready }) => {
+                let _ = app.emit("llm-status", LlmStatusPayload { ready });
+                if stop_on_status {
+                    break;
+                }
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+}
+
+/// 读取 LLM 配置信息（模型路径 / 是否就绪 / 是否已下载）。
+#[tauri::command]
+fn get_llm_config(state: State<'_, LlmState>) -> Result<LlmConfigInfo, String> {
+    let cfg = llm_resolved_config()?;
+    let ready = state
+        .engine
+        .lock()
+        .ok()
+        .and_then(|e| e.as_ref().map(|e| e.is_ready()))
+        .unwrap_or(false);
+    Ok(LlmConfigInfo {
+        enabled: cfg.enabled,
+        provider: cfg.provider,
+        model_path: cfg.model_path.display().to_string(),
+        models_present: cfg.model_path.is_file(),
+        ready,
+        enable_thinking: cfg.params.enable_thinking,
+        settings_path: zapmomo::config::settings::get_settings_path()
+            .display()
+            .to_string(),
+    })
+}
+
+/// 加载 LLM 模型（异步：结果经 `llm-status`/`llm-error` 事件返回）。
+#[tauri::command]
+fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
+    let cfg = llm_resolved_config()?;
+    if !cfg.model_path.is_file() {
+        return Err(format!(
+            "模型文件不存在：{}\n\n请下载 GGUF 模型（如 Qwen3-4B-Instruct-2507 Q4_K_M）并在设置中配置路径。",
+            cfg.model_path.display()
+        ));
+    }
+    let engine = Arc::new(zapmomo::llm::LlmEngine::new(cfg).map_err(|e| e.to_string())?);
+    engine.load().map_err(|e| e.to_string())?;
+    *state.engine.lock().expect("llm lock poisoned") = Some(engine.clone());
+    std::thread::spawn(move || forward_llm_events(app, engine, true));
+    Ok(())
+}
+
+/// 卸载 LLM 模型并释放内存。
+#[tauri::command]
+fn unload_llm_model(state: State<'_, LlmState>) -> Result<(), String> {
+    let engine = state.engine.lock().expect("llm lock poisoned").take();
+    if let Some(engine) = engine {
+        engine.unload().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 发起一次流式对话（token 经 `llm-token`，结束经 `llm-finished`）。
+#[tauri::command]
+fn chat_llm(app: AppHandle, state: State<'_, LlmState>, text: String) -> Result<(), String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("文本不能为空".to_string());
+    }
+    let cfg = llm_resolved_config()?;
+    let engine = state
+        .engine
+        .lock()
+        .expect("llm lock poisoned")
+        .clone()
+        .ok_or("模型未加载，请先点击「加载模型」".to_string())?;
+    if !engine.is_ready() {
+        return Err("模型尚未就绪，请稍候".to_string());
+    }
+    let messages = vec![ChatMessage::new(ChatRole::User, text)];
+    engine
+        .generate(messages, cfg.params)
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || forward_llm_events(app, engine, false));
+    Ok(())
+}
+
+/// 取消当前生成。
+#[tauri::command]
+fn stop_llm(state: State<'_, LlmState>) -> Result<(), String> {
+    if let Some(engine) = state.engine.lock().expect("llm lock poisoned").as_ref() {
+        engine.cancel();
+    }
+    Ok(())
+}
+
+/// 模型是否已加载。
+#[tauri::command]
+fn is_llm_ready(state: State<'_, LlmState>) -> bool {
+    state
+        .engine
+        .lock()
+        .ok()
+        .and_then(|e| e.as_ref().map(|e| e.is_ready()))
+        .unwrap_or(false)
+}
+
+/// 持久化用户选择的 LLM 模型路径（GGUF 文件），写入 `[llm].model_path`。
+#[tauri::command]
+fn set_llm_model_path(path: String) -> Result<(), String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    if !path_buf.is_file() {
+        return Err(format!("文件不存在：{path}"));
+    }
+    if !zapmomo::llm::local::llama::is_gguf_file(&path_buf) {
+        return Err("不是有效的 GGUF 模型文件".to_string());
+    }
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let llm = settings.llm.get_or_insert_with(LlmSettings::default);
+    llm.model_path = Some(path);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
+/// 持久化用户对 Qwen3 思考模式的开关，写入 `[llm].enable_thinking`。
+#[tauri::command]
+fn set_llm_thinking(enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let llm = settings.llm.get_or_insert_with(LlmSettings::default);
+    llm.enable_thinking = Some(enabled);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -1048,6 +1236,7 @@ pub fn run() {
         .manage(AsrDownloadState::default())
         .manage(TtsSynthesizeState::new())
         .manage(TtsDownloadState::default())
+        .manage(LlmState::new())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
@@ -1068,6 +1257,14 @@ pub fn run() {
             stop_tts,
             is_tts_synthesizing,
             download_tts_model,
+            get_llm_config,
+            load_llm_model,
+            unload_llm_model,
+            chat_llm,
+            stop_llm,
+            is_llm_ready,
+            set_llm_model_path,
+            set_llm_thinking,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,

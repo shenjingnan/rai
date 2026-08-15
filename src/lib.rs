@@ -6,6 +6,7 @@ pub mod config;
 pub mod datetime;
 pub mod kws;
 pub mod live2d;
+pub mod llm;
 pub mod logging;
 pub mod tts;
 

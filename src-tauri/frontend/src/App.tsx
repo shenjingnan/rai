@@ -5,6 +5,7 @@ import { DeviceCard } from "@/components/DeviceCard";
 import { Header } from "@/components/Header";
 import { ListenCard } from "@/components/ListenCard";
 import { Live2dCard } from "@/components/Live2dCard";
+import { LlmCard } from "@/components/LlmCard";
 import { ResultsCard } from "@/components/ResultsCard";
 import { TtsCard } from "@/components/TtsCard";
 import { useAppInfo } from "@/hooks/useAppInfo";
@@ -67,6 +68,7 @@ export default function App() {
           onStop={asrListening.stop}
         />
         <TtsCard />
+        <LlmCard />
         <Live2dCard />
       </main>
     </div>

@@ -10,6 +10,10 @@ import type {
   ListenStopped,
   Live2dConfigInfo,
   Live2dModelInfo,
+  LlmConfigInfo,
+  LlmFinishReason,
+  LlmStatus,
+  LlmToken,
   TtsConfigInfo,
   TtsProgress,
   TtsResult,
@@ -47,6 +51,14 @@ export const api = {
   stopTts: () => invoke<void>("stop_tts"),
   isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
   downloadTtsModel: () => invoke<void>("download_tts_model"),
+  getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
+  loadLlmModel: () => invoke<void>("load_llm_model"),
+  unloadLlmModel: () => invoke<void>("unload_llm_model"),
+  chatLlm: (args: { text: string }) => invoke<void>("chat_llm", args),
+  stopLlm: () => invoke<void>("stop_llm"),
+  isLlmReady: () => invoke<boolean>("is_llm_ready"),
+  setLlmModelPath: (args: { path: string }) => invoke<void>("set_llm_model_path", args),
+  setLlmThinking: (args: { enabled: boolean }) => invoke<void>("set_llm_thinking", args),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
@@ -111,6 +123,22 @@ export function onLive2dModelChanged(
 
 export function onCompanionScaleChanged(handler: (scale: number) => void): Promise<UnlistenFn> {
   return listen<number>("companion-scale-changed", (e) => handler(e.payload));
+}
+
+export function onLlmToken(handler: (delta: LlmToken) => void): Promise<UnlistenFn> {
+  return listen<LlmToken>("llm-token", (e) => handler(e.payload));
+}
+
+export function onLlmFinished(handler: (reason: LlmFinishReason) => void): Promise<UnlistenFn> {
+  return listen<LlmFinishReason>("llm-finished", (e) => handler(e.payload));
+}
+
+export function onLlmError(handler: (error: string) => void): Promise<UnlistenFn> {
+  return listen<string>("llm-error", (e) => handler(e.payload));
+}
+
+export function onLlmStatus(handler: (status: LlmStatus) => void): Promise<UnlistenFn> {
+  return listen<LlmStatus>("llm-status", (e) => handler(e.payload));
 }
 
 /**

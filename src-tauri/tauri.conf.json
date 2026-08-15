@@ -11,17 +11,7 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": [
-      {
-        "title": "Zap Momo",
-        "width": 760,
-        "height": 600,
-        "resizable": true,
-        "transparent": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
-      }
-    ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:",
       "assetProtocol": {

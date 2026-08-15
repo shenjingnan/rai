@@ -29,6 +29,9 @@ export const api = {
   downloadAsrModel: () => invoke<void>("download_asr_model"),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
+  openSettings: () => invoke<void>("open_settings"),
+  hideCompanion: () => invoke<void>("hide_companion"),
+  quitApp: () => invoke<void>("quit_app"),
 };
 
 /** 类型安全的事件订阅（返回的 Promise resolve 后得到取消订阅函数）。 */
@@ -58,6 +61,12 @@ export function onAsrDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("asr-model-download-progress", (e) => handler(e.payload));
+}
+
+export function onLive2dModelChanged(
+  handler: (info: Live2dModelInfo) => void,
+): Promise<UnlistenFn> {
+  return listen<Live2dModelInfo>("live2d-model-changed", (e) => handler(e.payload));
 }
 
 /**

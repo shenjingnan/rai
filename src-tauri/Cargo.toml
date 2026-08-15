@@ -11,8 +11,9 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri 桌面框架（protocol-asset 用于通过 asset:// 协议把本地模型文件喂给 WebView）
-tauri = { version = "2", features = ["protocol-asset"] }
+# Tauri 桌面框架（protocol-asset 用于通过 asset:// 协议把本地模型文件喂给 WebView；
+# tray-icon 用于常驻托盘图标；macos-private-api 用于 macOS 透明窗口）
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "macos-private-api"] }
 
 # 文件/目录选择对话框（用户加载 Live2D 模型目录）
 tauri-plugin-dialog = "2"

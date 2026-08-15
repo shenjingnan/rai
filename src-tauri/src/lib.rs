@@ -8,7 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{self, Live2dSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
@@ -552,11 +556,65 @@ fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, Stri
     });
     settings::save_settings(&settings)?;
 
-    Ok(Live2dModelInfo {
+    let info = Live2dModelInfo {
         model_dir: dir,
         model_file: model_file.display().to_string(),
         format: format.to_str().to_string(),
-    })
+    };
+    // 通知常驻角色窗口即时重载新模型（同进程事件，跨窗口同步）。
+    let _ = app.emit("live2d-model-changed", &info);
+    Ok(info)
+}
+
+/// 处理应用菜单与托盘菜单事件：打开设置、切换角色显隐、退出。
+fn handle_menu(app: &AppHandle, id: &str) {
+    match id {
+        "show_settings" | "open_settings" => show_settings_window(app),
+        "toggle_companion" => toggle_companion_window(app),
+        "quit" => app.exit(0),
+        _ => {}
+    }
+}
+
+/// 显示设置窗口并聚焦。
+fn show_settings_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 切换常驻角色窗口的显隐。
+fn toggle_companion_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("companion") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(true) {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 打开设置窗口（供角色窗口右键菜单调用）。
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    show_settings_window(&app);
+}
+
+/// 隐藏角色窗口（供角色窗口右键菜单调用）。
+#[tauri::command]
+fn hide_companion(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("companion") {
+        let _ = window.hide();
+    }
+}
+
+/// 退出应用（供角色窗口右键菜单调用）。
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 /// Tauri 应用入口。
@@ -582,18 +640,81 @@ pub fn run() {
             is_asr_listening,
             download_asr_model,
             get_live2d_config,
-            set_live2d_model
+            set_live2d_model,
+            open_settings,
+            hide_companion,
+            quit_app
         ])
         .setup(|app| {
+            // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。
+            WebviewWindowBuilder::new(app, "companion", WebviewUrl::App("companion.html".into()))
+                .title("Zap Momo")
+                .inner_size(360.0, 480.0)
+                .transparent(true)
+                .decorations(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .shadow(false)
+                .build()?;
+
+            // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
+            let mut settings =
+                WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+                    .title("Zap Momo 设置")
+                    .inner_size(760.0, 600.0)
+                    .resizable(true)
+                    .visible(false);
+
             // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。
-            // 用 cfg! 而非 #[cfg]，让非 macOS 分支在所有平台都被编译检查。
-            if !cfg!(target_os = "macos") {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    window.set_decorations(false)?;
-                }
+            // title_bar_style / hidden_title 是 macOS 专属方法（Linux 上不存在），
+            // 必须用 #[cfg] 编译期隔离，而非 cfg! 运行时判断。
+            #[cfg(target_os = "macos")]
+            {
+                // macOS 保留系统红绿灯与阴影；窗口默认不透明。
+                settings = settings
+                    .title_bar_style(TitleBarStyle::Overlay)
+                    .hidden_title(true)
+                    .shadow(true);
             }
+            #[cfg(not(target_os = "macos"))]
+            {
+                settings = settings.decorations(false).transparent(true);
+            }
+            settings.build()?;
+
+            // 应用菜单：偏好设置…（cmd+,）与退出（Cmd+Q）。
+            let show_settings =
+                MenuItem::with_id(app, "show_settings", "偏好设置…", true, Some("CmdOrCtrl+,"))?;
+            let app_menu = Menu::with_items(
+                app,
+                &[&show_settings, &PredefinedMenuItem::quit(app, None)?],
+            )?;
+            app.set_menu(app_menu)?;
+
+            // 托盘菜单：显示/隐藏角色、打开设置、退出。
+            let toggle_companion =
+                MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
+            let open_settings =
+                MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&toggle_companion, &open_settings, &quit])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().expect("缺少默认窗口图标").clone())
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
+                .build(app)?;
+
             Ok(())
+        })
+        .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // 关闭设置/角色窗口时仅隐藏，不退出进程；退出走托盘/菜单 Cmd+Q。
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

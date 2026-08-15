@@ -10,6 +10,10 @@ import type {
   ListenStopped,
   Live2dConfigInfo,
   Live2dModelInfo,
+  TtsConfigInfo,
+  TtsProgress,
+  TtsResult,
+  TtsVoice,
 } from "@/types/tauri";
 
 /** 类型安全的 Tauri command 封装。 */
@@ -29,11 +33,24 @@ export const api = {
   downloadAsrModel: () => invoke<void>("download_asr_model"),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
+  getTtsConfig: () => invoke<TtsConfigInfo>("get_tts_config"),
+  listTtsVoices: () => invoke<TtsVoice[]>("list_tts_voices"),
+  transcribeReferenceAudio: (args: { wavPath: string }) =>
+    invoke<string>("transcribe_reference_audio", args),
+  synthesizeTts: (args: {
+    text: string;
+    speed: number | null;
+    voice: string | null;
+    referenceWav: string | null;
+    referenceText: string | null;
+  }) => invoke<void>("synthesize_tts", args),
+  stopTts: () => invoke<void>("stop_tts"),
+  isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
+  downloadTtsModel: () => invoke<void>("download_tts_model"),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
-  showCompanionMenu: (args: { x: number; y: number }) =>
-    invoke<void>("show_companion_menu", args),
+  showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),
@@ -66,6 +83,24 @@ export function onAsrDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("asr-model-download-progress", (e) => handler(e.payload));
+}
+
+export function onTtsResult(handler: (result: TtsResult) => void): Promise<UnlistenFn> {
+  return listen<TtsResult>("tts-result", (e) => handler(e.payload));
+}
+
+export function onTtsProgress(handler: (p: TtsProgress) => void): Promise<UnlistenFn> {
+  return listen<TtsProgress>("tts-progress", (e) => handler(e.payload));
+}
+
+export function onTtsStopped(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("tts-stopped", (e) => handler(e.payload));
+}
+
+export function onTtsDownloadProgress(
+  handler: (payload: DownloadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<DownloadProgress>("tts-model-download-progress", (e) => handler(e.payload));
 }
 
 export function onLive2dModelChanged(

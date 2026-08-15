@@ -30,6 +30,28 @@
       "sha256": "50f73f8cccffc2303999fda28b785ffcffbd7ea442c47385c30b9d045ee6afc3",
       "size_bytes": 279028058,
       "license": "Apache-2.0"
+    },
+    {
+      "name": "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia",
+      "role": "tts",
+      "version": "distill-int8",
+      "kind": "archive",
+      "archive": "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2",
+      "sha256": "77219c8b40f4ee8d73a7f902305ff6c1128ef9b54461c41b4ca6ed890b6c2803",
+      "size_bytes": 109162785,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia",
+      "role": "tts-vocoder",
+      "version": "distill-int8",
+      "kind": "raw",
+      "archive": "vocos_24khz.onnx",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos_24khz.onnx",
+      "sha256": "bcb3b970e384161c4d634f0bb9e999ff1c471b34c9bc0b1049a5014065ed3cc0",
+      "size_bytes": 54157409,
+      "license": "Apache-2.0"
     }
   ]
 }

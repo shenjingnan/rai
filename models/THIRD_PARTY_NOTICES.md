@@ -26,3 +26,19 @@
 - **发布方**: k2-fsa（sherpa-onnx 项目，源自阿里 DAMO Academy 的 CT-Transformer 标点模型）
 - **许可证**: Apache-2.0（依据 sherpa-onnx 项目整体许可；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `50f73f8cccffc2303999fda28b785ffcffbd7ea442c47385c30b9d045ee6afc3`
+
+## sherpa-onnx-zipvoice-distill-int8-zh-en-emilia
+
+- **用途**: 中英双语文本转语音（TTS，ZipVoice 零样本声音克隆）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目）
+- **许可证**: Apache-2.0（依据 sherpa-onnx 项目整体许可；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `77219c8b40f4ee8d73a7f902305ff6c1128ef9b54461c41b4ca6ed890b6c2803`
+
+## vocos_24khz.onnx（TTS 声码器）
+
+- **用途**: ZipVoice TTS 的声码器（vocoder，把 mel 谱转成波形）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos_24khz.onnx
+- **发布方**: k2-fsa（sherpa-onnx 项目）
+- **许可证**: Apache-2.0（依据 sherpa-onnx 项目整体许可；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `bcb3b970e384161c4d634f0bb9e999ff1c471b34c9bc0b1049a5014065ed3cc0`

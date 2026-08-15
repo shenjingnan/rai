@@ -4,6 +4,7 @@
 //! - 通过 Tauri command 暴露设备列表、KWS 配置、开始/停止监听；
 //! - 监听循环跑在独立 `std::thread`，检测到唤醒词经 `TauriReaction`
 //!   以 `kws-detected` 事件推给前端；结束（正常/出错/手动停止）发 `kws-stopped`。
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -504,6 +505,296 @@ async fn download_asr_model(
     .map_err(|e| format!("下载任务异常: {e}"))?
 }
 
+/// TTS 合成线程状态：共享 busy 标志 + 线程句柄。
+struct TtsSynthesizeState {
+    busy: Arc<AtomicBool>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl TtsSynthesizeState {
+    fn new() -> Self {
+        Self {
+            busy: Arc::new(AtomicBool::new(false)),
+            handle: Mutex::new(None),
+        }
+    }
+
+    fn is_synthesizing(&self) -> bool {
+        self.busy.load(Ordering::Relaxed)
+    }
+}
+
+/// TTS 模型下载状态：防重入标志。
+struct TtsDownloadState {
+    in_progress: Arc<AtomicBool>,
+}
+
+impl Default for TtsDownloadState {
+    fn default() -> Self {
+        Self {
+            in_progress: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// GUI 展示用的 TTS 配置信息。
+#[derive(Serialize)]
+struct TtsConfigInfo {
+    model_dir: String,
+    provider: String,
+    num_threads: i32,
+    models_present: bool,
+    model_downloading: bool,
+    settings_path: String,
+}
+
+/// 合成结果事件载荷（推给前端播放）。
+#[derive(Clone, Serialize)]
+struct TtsResult {
+    path: String,
+    duration: f32,
+    sample_rate: i32,
+}
+
+/// 读取合并后的 TTS 配置（settings.toml + 默认值），并给出模型是否就绪。
+#[tauri::command]
+fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
+    let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+
+    let files = [
+        &cfg.encoder,
+        &cfg.decoder,
+        &cfg.vocoder,
+        &cfg.tokens,
+        &cfg.lexicon,
+    ];
+    let models_present = files.iter().all(|p| p.is_file()) && cfg.data_dir.is_dir();
+
+    Ok(TtsConfigInfo {
+        model_dir: cfg.model_dir.display().to_string(),
+        provider: cfg.provider.clone(),
+        num_threads: cfg.num_threads,
+        models_present,
+        model_downloading: state.in_progress.load(Ordering::Relaxed),
+        settings_path: zapmomo::config::settings::get_settings_path()
+            .display()
+            .to_string(),
+    })
+}
+
+/// 在后台线程内合成文本，期间发 `tts-progress`，完成后发 `tts-result`。
+fn synthesize_inner(
+    app: &AppHandle,
+    cfg: &zapmomo::tts::config::ResolvedTtsConfig,
+    text: &str,
+    speed: f32,
+    reference_wav: &Path,
+    reference_text: &str,
+) -> Result<(), String> {
+    let engine = zapmomo::tts::TtsEngine::new(cfg.clone())?;
+    let out_dir = zapmomo::config::settings::get_tts_output_dir();
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
+    // 放行 asset 协议 scope，前端 <audio> 才能通过 asset:// 播放生成的 wav。
+    let _ = app.asset_protocol_scope().allow_directory(&out_dir, true);
+    let out_path = zapmomo::tts::default_output_path();
+
+    let progress_app = app.clone();
+    let sample_count = engine.synthesize_to_wav_with_progress(
+        text,
+        speed,
+        reference_wav,
+        reference_text,
+        &out_path,
+        move |p| {
+            let _ = progress_app.emit(
+                "tts-progress",
+                zapmomo::tts::reaction::TtsProgress { percent: p },
+            );
+            true
+        },
+    )?;
+
+    let sample_rate = engine.sample_rate();
+    let duration = sample_count as f32 / sample_rate as f32;
+    let _ = app.emit(
+        "tts-result",
+        TtsResult {
+            path: out_path.display().to_string(),
+            duration,
+            sample_rate,
+        },
+    );
+    Ok(())
+}
+
+/// 列出模型包内置的参考音色。
+#[tauri::command]
+fn list_tts_voices() -> Result<Vec<zapmomo::tts::TtsVoice>, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
+    let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+    Ok(zapmomo::tts::voice::list_builtin_voices(&cfg.model_dir))
+}
+
+/// 用 ASR 离线转写参考音频，返回带标点的转写文本（供自定义音色自动填充）。
+///
+/// 依赖 ASR 模型（含标点模型）已下载；转写在阻塞线程池执行，避免卡住 UI。
+#[tauri::command]
+async fn transcribe_reference_audio(wav_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = zapmomo::config::settings::load_settings()?;
+        let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
+        let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
+        zapmomo::asr::transcribe_wav(&cfg, Path::new(&wav_path))
+    })
+    .await
+    .map_err(|e| format!("转写任务异常: {e}"))?
+}
+
+/// 把文本合成为语音并写入 wav（后台线程执行）。
+///
+/// 校验模型文件后启动独立线程合成，进度经 `tts-progress` 事件推给前端；
+/// 完成后发 `tts-result`（含 wav 路径），线程末发 `tts-stopped`。
+#[tauri::command]
+fn synthesize_tts(
+    app: AppHandle,
+    state: State<'_, TtsSynthesizeState>,
+    text: String,
+    speed: Option<f32>,
+    voice: Option<String>,
+    reference_wav: Option<String>,
+    reference_text: Option<String>,
+) -> Result<(), String> {
+    if state.is_synthesizing() {
+        return Err("正在合成中".to_string());
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("文本不能为空".to_string());
+    }
+
+    let settings = zapmomo::config::settings::load_settings()?;
+    let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
+    let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+
+    // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
+    let files = [
+        &cfg.encoder,
+        &cfg.decoder,
+        &cfg.vocoder,
+        &cfg.tokens,
+        &cfg.lexicon,
+    ];
+    if let Some(missing) = files.iter().find(|p| !p.is_file()) {
+        return Err(format!(
+            "缺少模型文件: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo tts install-model` 下载模型。",
+            missing.display()
+        ));
+    }
+    if !cfg.data_dir.is_dir() {
+        return Err(format!(
+            "缺少数据目录: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo tts install-model` 下载模型。",
+            cfg.data_dir.display()
+        ));
+    }
+
+    // 解析参考音色：自定义 wav > 内置音色 id > 配置默认（在后台线程外解析，尽早报错）。
+    let custom_wav = reference_wav.map(std::path::PathBuf::from);
+    let (ref_wav, ref_text) = zapmomo::tts::voice::resolve_reference(
+        &cfg,
+        voice.as_deref(),
+        custom_wav.as_deref(),
+        reference_text.as_deref(),
+    )?;
+
+    let speed = speed.unwrap_or(cfg.speed);
+
+    let busy = state.busy.clone();
+    busy.store(true, Ordering::Relaxed);
+    let thread_app = app.clone();
+    let handle = std::thread::spawn(move || {
+        tracing::info!("TTS synthesize thread started");
+        let result = synthesize_inner(&thread_app, &cfg, &text, speed, &ref_wav, &ref_text);
+        busy.store(false, Ordering::Relaxed);
+        match &result {
+            Ok(()) => tracing::info!("TTS synthesize thread finished (clean)"),
+            Err(e) => tracing::error!("TTS synthesize thread finished with error: {e}"),
+        }
+        let payload = ListenStopped {
+            error: result.err(),
+        };
+        let _ = thread_app.emit("tts-stopped", payload);
+    });
+    *state.handle.lock().expect("tts handle lock poisoned") = Some(handle);
+    Ok(())
+}
+
+/// 停止正在进行的合成（等待线程退出）。
+#[tauri::command]
+fn stop_tts(state: State<'_, TtsSynthesizeState>) -> Result<(), String> {
+    if !state.is_synthesizing() {
+        return Err("当前没有在合成".to_string());
+    }
+    state.busy.store(false, Ordering::Relaxed);
+    let handle = state
+        .handle
+        .lock()
+        .expect("tts handle lock poisoned")
+        .take();
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+    Ok(())
+}
+
+/// 当前是否正在合成。
+#[tauri::command]
+fn is_tts_synthesizing(state: State<'_, TtsSynthesizeState>) -> bool {
+    state.is_synthesizing()
+}
+
+/// 下载并安装 TTS 模型（主包 + 声码器，默认 `~/.zapmomo/models/<模型名>`）。
+///
+/// 防重入；下载在阻塞线程池执行，进度经 `tts-model-download-progress` 事件推给前端。
+#[tauri::command]
+async fn download_tts_model(
+    app: AppHandle,
+    state: State<'_, TtsDownloadState>,
+) -> Result<(), String> {
+    let flag = state.in_progress.clone();
+    if flag.swap(true, Ordering::SeqCst) {
+        return Err("模型下载已在进行中，请稍候".to_string());
+    }
+    let dest = zapmomo::tts::user_model_dir();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ResetOnDrop(flag);
+        let mut progress = |p: zapmomo::tts::DownloadProgress| {
+            let stage = match p.stage {
+                zapmomo::tts::DownloadStage::Downloading => "downloading",
+                zapmomo::tts::DownloadStage::Verifying => "verifying",
+                zapmomo::tts::DownloadStage::Extracting => "extracting",
+                zapmomo::tts::DownloadStage::Done => "done",
+            };
+            let _ = app.emit(
+                "tts-model-download-progress",
+                DownloadProgressPayload {
+                    stage: stage.to_string(),
+                    percent: p.percent,
+                    message: p.message,
+                },
+            );
+        };
+        zapmomo::tts::install_model_to(&dest, false, &mut progress).map_err(|e| e.to_string())?;
+        zapmomo::tts::install_vocoder_to(&dest, false, &mut progress).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("下载任务异常: {e}"))?
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -755,6 +1046,8 @@ pub fn run() {
         .manage(DownloadState::default())
         .manage(AsrListenState::new())
         .manage(AsrDownloadState::default())
+        .manage(TtsSynthesizeState::new())
+        .manage(TtsDownloadState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
@@ -768,6 +1061,13 @@ pub fn run() {
             stop_asr_listen,
             is_asr_listening,
             download_asr_model,
+            get_tts_config,
+            list_tts_voices,
+            transcribe_reference_audio,
+            synthesize_tts,
+            stop_tts,
+            is_tts_synthesizing,
+            download_tts_model,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,

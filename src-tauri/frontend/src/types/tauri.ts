@@ -80,3 +80,33 @@ export interface Live2dModelInfo {
   model_file: string;
   format: string;
 }
+
+/** `get_tts_config` 返回 */
+export interface TtsConfigInfo {
+  model_dir: string;
+  provider: string;
+  num_threads: number;
+  models_present: boolean;
+  model_downloading: boolean;
+  settings_path: string;
+}
+
+/** `tts-result` 事件载荷（对应后端 TtsResult） */
+export interface TtsResult {
+  path: string;
+  duration: number;
+  sample_rate: number;
+}
+
+/** `tts-progress` 事件载荷（对应后端 TtsProgress） */
+export interface TtsProgress {
+  percent: number;
+}
+
+/** `list_tts_voices` 返回的音色（对应后端 TtsVoice） */
+export interface TtsVoice {
+  id: string;
+  name: string;
+  wav_path: string;
+  reference_text: string;
+}

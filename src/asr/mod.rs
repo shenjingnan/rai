@@ -243,10 +243,11 @@ pub fn install_punctuation_model_to(
     )
 }
 
-/// 离线转写 wav 文件（不依赖麦克风）。
+/// 离线转写 wav 文件，返回带标点的转写文本（不依赖麦克风）。
 ///
-/// 用于验证模型与整条链路：对模型自带 `test_wavs/*.wav` 应输出对应文本。
-pub fn run_offline(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<(), String> {
+/// 整段转写（不做端点断句，避免静音触发多次 reset 丢失开头文本）。
+/// 供 CLI 离线验证与「参考音频自动转写」复用。
+pub fn transcribe_wav(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<String, String> {
     let engine = AsrEngine::new(cfg.clone())?;
     let stream = engine.create_stream(cfg.hotwords.as_deref());
     let wave = Wave::read(&wav.to_string_lossy())
@@ -265,17 +266,25 @@ pub fn run_offline(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<(), String> {
     engine.feed(&stream, &tail);
     engine.finish(&stream);
 
-    // 离线：循环 decode 直到 flush 完，取最后完整结果加标点输出（整段转写，
-    // 不做端点断句，避免静音触发多次 reset 丢失开头文本）。
     while engine.is_ready(&stream) {
         engine.decode(&stream);
     }
-    if let Some(result) = engine.get_result(&stream) {
-        let text = engine.punctuate_text(&result.text);
-        if !text.trim().is_empty() {
-            println!("[识别] {text}");
-        }
+    let text = engine
+        .get_result(&stream)
+        .map(|r| engine.punctuate_text(&r.text))
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err("未能识别出有效文本，请换一段更清晰的参考音频".to_string());
     }
+    Ok(text)
+}
+
+/// 离线转写 wav 文件并打印结果（不依赖麦克风）。
+///
+/// 用于验证模型与整条链路：对模型自带 `test_wavs/*.wav` 应输出对应文本。
+pub fn run_offline(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<(), String> {
+    let text = transcribe_wav(cfg, wav)?;
+    println!("[识别] {text}");
     Ok(())
 }
 

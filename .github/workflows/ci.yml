@@ -133,11 +133,11 @@ jobs:
         run: |
           echo "=== env 诊断 ==="
           echo "LLAMA_STATIC_CRT=[${LLAMA_STATIC_CRT:-未设置}]"
-          echo "CMAKE_GENERATOR=[${CMAKE_GENERATOR:-未设置}]"
-          echo "CRATE_CC_NO_DEFAULTS=[${CRATE_CC_NO_DEFAULTS:-未设置}]"
+          echo "--- 所有 CMAKE_GENERATOR 相关环境变量 ---"
+          env | grep -iE "CMAKE_GENERATOR|CRATE_CC" || echo "(无相关环境变量)"
           echo "=== 强制重编 llama-cpp-sys-2，抓 cmake 命令 ==="
           cargo clean -p llama-cpp-sys-2 2>/dev/null || true
-          cargo build 2>&1 | grep -E "running:.*cmake" | head -10
+          cargo build -vv 2>&1 | grep -E "running:.*cmake" | head -5
 
       - name: Tests
         shell: bash
@@ -148,5 +148,5 @@ jobs:
           # GitHub Actions Windows runner 预设 CMAKE_GENERATOR=Visual Studio，会让 cmake crate 跳过
           # static_crt 通过 CMAKE_CXX_FLAGS_RELEASE 的传递（该分支要求 generator.is_none()）。
           # unset 后走默认路径，让 /MT 正确传递给 llama.cpp。
-          unset CMAKE_GENERATOR CMAKE_GENERATOR_PLATFORM CMAKE_GENERATOR_TOOLSET CMAKE_GENERATOR_INSTANCE 2>/dev/null || true
+          unset CMAKE_GENERATOR CMAKE_GENERATOR_PLATFORM CMAKE_GENERATOR_TOOLSET CMAKE_GENERATOR_INSTANCE HOST_CMAKE_GENERATOR TARGET_CMAKE_GENERATOR 2>/dev/null || true
           cargo test -- --test-threads=1

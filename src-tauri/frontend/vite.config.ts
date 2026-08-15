@@ -17,6 +17,15 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  // 多入口：settings.html（设置面板）+ companion.html（常驻角色窗口）
+  build: {
+    rollupOptions: {
+      input: {
+        settings: path.resolve(import.meta.dirname, "settings.html"),
+        companion: path.resolve(import.meta.dirname, "companion.html"),
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,

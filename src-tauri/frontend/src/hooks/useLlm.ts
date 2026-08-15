@@ -16,6 +16,7 @@ export interface LlmState {
   chat: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   setThinking: (enabled: boolean) => Promise<void>;
+  setAutoLoad: (enabled: boolean) => Promise<void>;
 }
 
 /**
@@ -125,6 +126,18 @@ export function useLlm(): LlmState {
     [refreshConfig],
   );
 
+  const setAutoLoad = useCallback(
+    async (enabled: boolean) => {
+      try {
+        await api.setLlmAutoLoad({ enabled });
+        await refreshConfig();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refreshConfig],
+  );
+
   return {
     config,
     configError,
@@ -139,5 +152,6 @@ export function useLlm(): LlmState {
     chat,
     stop,
     setThinking,
+    setAutoLoad,
   };
 }

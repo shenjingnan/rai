@@ -25,6 +25,8 @@ pub struct ResolvedLlmConfig {
     pub system_prompt: String,
     /// 采样/生成参数
     pub params: GenParams,
+    /// 是否在应用启动时自动加载模型
+    pub auto_load: bool,
 }
 
 /// 内置默认 system prompt（用户可在 settings 覆盖）。
@@ -144,6 +146,7 @@ pub fn resolve(
                 .and_then(|s| s.enable_thinking)
                 .unwrap_or(defaults.enable_thinking),
         },
+        auto_load: settings.and_then(|s| s.auto_load).unwrap_or(false),
     })
 }
 

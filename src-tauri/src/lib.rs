@@ -819,6 +819,7 @@ struct LlmConfigInfo {
     models_present: bool,
     ready: bool,
     enable_thinking: bool,
+    auto_load: bool,
     settings_path: String,
 }
 
@@ -878,15 +879,17 @@ fn get_llm_config(state: State<'_, LlmState>) -> Result<LlmConfigInfo, String> {
         models_present: cfg.model_path.is_file(),
         ready,
         enable_thinking: cfg.params.enable_thinking,
+        auto_load: cfg.auto_load,
         settings_path: zapmomo::config::settings::get_settings_path()
             .display()
             .to_string(),
     })
 }
 
-/// 加载 LLM 模型（异步：结果经 `llm-status`/`llm-error` 事件返回）。
-#[tauri::command]
-fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
+/// 加载 LLM 模型的核心逻辑（command 与启动自动加载共用）。
+///
+/// 加载在 worker 线程异步进行，结果经 `llm-status`/`llm-error` 事件返回。
+fn load_llm_impl(app: AppHandle, state: &LlmState) -> Result<(), String> {
     let cfg = llm_resolved_config()?;
     if !cfg.model_path.is_file() {
         return Err(format!(
@@ -899,6 +902,12 @@ fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), Stri
     *state.engine.lock().expect("llm lock poisoned") = Some(engine.clone());
     std::thread::spawn(move || forward_llm_events(app, engine, true));
     Ok(())
+}
+
+/// 加载 LLM 模型（异步：结果经 `llm-status`/`llm-error` 事件返回）。
+#[tauri::command]
+fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
+    load_llm_impl(app, state.inner())
 }
 
 /// 卸载 LLM 模型并释放内存。
@@ -979,6 +988,16 @@ fn set_llm_thinking(enabled: bool) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();
     let llm = settings.llm.get_or_insert_with(LlmSettings::default);
     llm.enable_thinking = Some(enabled);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
+/// 持久化用户对「启动自动加载模型」的开关，写入 `[llm].auto_load`。
+#[tauri::command]
+fn set_llm_auto_load(enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let llm = settings.llm.get_or_insert_with(LlmSettings::default);
+    llm.auto_load = Some(enabled);
     settings::save_settings(&settings)?;
     Ok(())
 }
@@ -1265,6 +1284,7 @@ pub fn run() {
             is_llm_ready,
             set_llm_model_path,
             set_llm_thinking,
+            set_llm_auto_load,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,
@@ -1281,6 +1301,15 @@ pub fn run() {
             {
                 app.handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+            }
+
+            // 启动自动加载 LLM 模型（若用户开启 auto_load）：后台异步加载，失败静默降级为手动加载。
+            if llm_resolved_config().map(|c| c.auto_load).unwrap_or(false) {
+                let handle = app.handle().clone();
+                let state = app.state::<LlmState>();
+                if let Err(e) = load_llm_impl(handle, state.inner()) {
+                    tracing::warn!("自动加载 LLM 失败: {e}");
+                }
             }
 
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。

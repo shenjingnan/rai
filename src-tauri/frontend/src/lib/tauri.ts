@@ -59,6 +59,7 @@ export const api = {
   isLlmReady: () => invoke<boolean>("is_llm_ready"),
   setLlmModelPath: (args: { path: string }) => invoke<void>("set_llm_model_path", args),
   setLlmThinking: (args: { enabled: boolean }) => invoke<void>("set_llm_thinking", args),
+  setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),

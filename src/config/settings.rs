@@ -331,6 +331,9 @@ pub struct LlmSettings {
     /// 是否开启 Qwen3 思考模式（输出 <think> 块），缺省 false
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_thinking: Option<bool>,
+    /// 是否在应用启动时自动加载模型，缺省 false（懒加载）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_load: Option<bool>,
 }
 
 fn default_log_level() -> String {

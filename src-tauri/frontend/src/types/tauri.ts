@@ -119,6 +119,7 @@ export interface LlmConfigInfo {
   models_present: boolean;
   ready: boolean;
   enable_thinking: boolean;
+  auto_load: boolean;
   settings_path: string;
 }
 

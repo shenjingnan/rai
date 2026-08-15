@@ -33,6 +33,14 @@ export function LlmCard() {
 
   const busy = llm.loading || llm.generating;
 
+  const handleSend = () => {
+    if (!llm.ready || llm.generating) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    void llm.chat(trimmed);
+    setText("");
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -77,6 +85,16 @@ export function LlmCard() {
             />
             开启思考模式（输出 &lt;think&gt; 块）
           </label>
+
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={llm.config?.auto_load ?? false}
+              onChange={(e) => void llm.setAutoLoad(e.target.checked)}
+            />
+            启动时自动加载模型
+          </label>
         </div>
 
         {llm.config && !llm.config.models_present && (
@@ -96,11 +114,17 @@ export function LlmCard() {
             rows={2}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="输入你的消息…"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder="输入你的消息…（Enter 发送，Shift+Enter 换行）"
             disabled={!llm.ready}
           />
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => llm.chat(text)} disabled={!llm.ready || llm.generating}>
+            <Button onClick={handleSend} disabled={!llm.ready || llm.generating}>
               <Send className="h-4 w-4" />
               发送
             </Button>

@@ -9,11 +9,21 @@ import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useLive2dModel } from "@/hooks/useLive2dModel";
 import { toAssetUrl } from "@/lib/tauri";
 
+/** 预览区基准高度（与常驻窗口一致）。 */
+const PREVIEW_BASE_HEIGHT = 480;
+const PREVIEW_MIN_WIDTH = 120;
+const PREVIEW_MAX_WIDTH = 520;
+const PREVIEW_INITIAL_WIDTH = 360;
+
 /** 角色（Live2D）卡片：选择模型目录并内嵌预览。 */
 export function Live2dCard() {
   const { config, error, refresh } = useLive2dConfig();
   const { modelUrl, loading, error: loadError, load } = useLive2dModel(refresh);
   const [stageError, setStageError] = useState<string | null>(null);
+  const [previewSize, setPreviewSize] = useState({
+    width: PREVIEW_INITIAL_WIDTH,
+    height: PREVIEW_BASE_HEIGHT,
+  });
 
   // 启动时若已持久化了模型，恢复 asset:// URL（未通过 load 重新选择时）。
   const displayUrl = useMemo(() => {
@@ -26,6 +36,17 @@ export function Live2dCard() {
 
   const handleStageError = useCallback((e: Error) => {
     setStageError(e.message);
+  }, []);
+
+  // 模型加载后按角色宽高比自适应预览区宽度（高度固定，宽度 clamp 到卡片可用区域）。
+  const handleModelMetrics = useCallback((metrics: { aspectRatio: number }) => {
+    const height = PREVIEW_BASE_HEIGHT;
+    let width = Math.round(height * metrics.aspectRatio);
+    if (!Number.isFinite(width) || width <= 0) {
+      width = PREVIEW_INITIAL_WIDTH;
+    }
+    width = Math.max(PREVIEW_MIN_WIDTH, Math.min(width, PREVIEW_MAX_WIDTH));
+    setPreviewSize({ width, height });
   }, []);
 
   const pickDirectory = async () => {
@@ -80,12 +101,16 @@ export function Live2dCard() {
         )}
 
         {displayUrl && (
-          <div className="mx-auto h-[480px] w-[360px] overflow-hidden rounded-lg border bg-muted">
+          <div
+            className="mx-auto overflow-hidden rounded-lg border bg-muted"
+            style={{ width: previewSize.width, height: previewSize.height }}
+          >
             <Live2dStage
               modelUrl={displayUrl}
-              width={360}
-              height={480}
+              width={previewSize.width}
+              height={previewSize.height}
               onError={handleStageError}
+              onModelMetrics={handleModelMetrics}
             />
           </div>
         )}

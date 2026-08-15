@@ -15,18 +15,89 @@ interface Live2dStageProps {
   className?: string;
   /** 渲染初始化或模型加载失败时的回调。 */
   onError?: (error: Error) => void;
+  /** 模型加载完成、可计算角色真实边界时回调（供上层自适应窗口尺寸）。 */
+  onModelMetrics?: (metrics: { aspectRatio: number }) => void;
+}
+
+/** 角色真实包围盒（模型局部坐标），用于居中 + 等比缩放。 */
+interface ModelBounds {
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 遍历所有 drawable，合并边界得到角色真实最小包围盒（AABB）。
+ *
+ * `getDrawableBounds` 返回原始画布空间（originalWidth×originalHeight），
+ * 乘以 layout 缩放因子（internalModel.width / originalWidth）映射到模型局部坐标。
+ */
+function computeModelBounds(model: Live2DModel): ModelBounds {
+  const im = model.internalModel;
+  const sx = im.width / im.originalWidth;
+  const sy = im.height / im.originalHeight;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const id of im.getDrawableIDs()) {
+    const b = im.getDrawableBounds(im.getDrawableIndex(id));
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.width);
+    maxY = Math.max(maxY, b.y + b.height);
+  }
+  return {
+    cx: ((minX + maxX) / 2) * sx,
+    cy: ((minY + maxY) / 2) * sy,
+    width: (maxX - minX) * sx,
+    height: (maxY - minY) * sy,
+  };
+}
+
+/**
+ * 让角色真实包围盒在画布内 contain 撑满并居中（而非基于画布尺寸）。
+ * 若包围盒非法（空 drawable 等），跳过布局，保持模型默认状态。
+ */
+function layoutModel(model: Live2DModel, width: number, height: number) {
+  const b = computeModelBounds(model);
+  if (!Number.isFinite(b.width) || !Number.isFinite(b.height) || b.width <= 0 || b.height <= 0) {
+    return;
+  }
+  const scale = Math.min(width / b.width, height / b.height);
+  model.scale.set(scale);
+  model.anchor.set(0, 0);
+  model.position.set(width / 2 - b.cx * scale, height / 2 - b.cy * scale);
 }
 
 /**
  * Live2D 渲染组件：命令式创建 PIXI Application（PIXI 6 同步构造），
  * 规避 React StrictMode 双挂载时 PIXI 移除 DOM 节点导致引用失效的问题。
+ *
+ * 尺寸变化只 resize 渲染器并重新布局，不销毁重建、不重载模型。
  */
-export function Live2dStage({ modelUrl, width, height, className, onError }: Live2dStageProps) {
+export function Live2dStage({
+  modelUrl,
+  width,
+  height,
+  className,
+  onError,
+  onModelMetrics,
+}: Live2dStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
   const modelRef = useRef<Live2DModel | null>(null);
 
-  // 创建 / 销毁 PIXI 应用。
+  // 用 ref 保存最新回调与尺寸，供异步加载流程读取，避免闭包过期。
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const onModelMetricsRef = useRef(onModelMetrics);
+  onModelMetricsRef.current = onModelMetrics;
+  const sizeRef = useRef({ width, height });
+  sizeRef.current = { width, height };
+
+  // 创建 / 销毁 PIXI 应用（仅随组件挂载/卸载，不随尺寸变化）。
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -34,8 +105,8 @@ export function Live2dStage({ modelUrl, width, height, className, onError }: Liv
     let app: PIXI.Application | null = null;
     try {
       app = new PIXI.Application({
-        width,
-        height,
+        width: sizeRef.current.width,
+        height: sizeRef.current.height,
         backgroundAlpha: 0,
         antialias: true,
         autoStart: true,
@@ -48,7 +119,7 @@ export function Live2dStage({ modelUrl, width, height, className, onError }: Liv
       appRef.current = app;
     } catch (e) {
       console.error("PIXI 初始化失败:", e);
-      onError?.(e instanceof Error ? e : new Error(String(e)));
+      onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
       return;
     }
 
@@ -58,9 +129,19 @@ export function Live2dStage({ modelUrl, width, height, className, onError }: Liv
       appRef.current = null;
       app?.destroy(true, { children: true });
     };
-  }, [width, height, onError]);
+  }, []);
 
-  // 加载 / 切换模型。
+  // 尺寸变化：只 resize 渲染器并重新布局已有模型。
+  useEffect(() => {
+    const app = appRef.current;
+    if (!app) return;
+    app.renderer.resize(width, height);
+    if (modelRef.current) {
+      layoutModel(modelRef.current, width, height);
+    }
+  }, [width, height]);
+
+  // 加载 / 切换模型（不依赖尺寸，尺寸变化不会重载模型）。
   useEffect(() => {
     if (!modelUrl) return;
     const app = appRef.current;
@@ -78,23 +159,28 @@ export function Live2dStage({ modelUrl, width, height, className, onError }: Liv
           model.destroy();
           return;
         }
-        // 缩放居中到画布内，留 20% 边距。
-        const scale = Math.min(width / model.width, height / model.height) * 0.8;
-        model.scale.set(scale);
-        model.anchor.set(0.5, 0.5);
-        model.position.set(width / 2, height / 2);
         app.stage.addChild(model);
         modelRef.current = model;
+        layoutModel(model, sizeRef.current.width, sizeRef.current.height);
+        const bounds = computeModelBounds(model);
+        const valid =
+          Number.isFinite(bounds.width) &&
+          Number.isFinite(bounds.height) &&
+          bounds.width > 0 &&
+          bounds.height > 0;
+        if (valid) {
+          onModelMetricsRef.current?.({ aspectRatio: bounds.width / bounds.height });
+        }
       } catch (e) {
         console.error("Live2D 模型加载失败:", e);
-        onError?.(e instanceof Error ? e : new Error(String(e)));
+        onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [modelUrl, width, height, onError]);
+  }, [modelUrl]);
 
   return <div ref={containerRef} className={className} />;
 }

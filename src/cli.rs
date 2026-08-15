@@ -470,7 +470,7 @@ fn tts_config(
 /// LLM 命令入口
 async fn cmd_llm(cmd: LlmCmd) -> Result<(), String> {
     use crate::llm::provider::LlmProvider;
-    use crate::llm::types::{ChatMessage, ChatRole, TokenDelta};
+    use crate::llm::types::{ChatMessage, ChatRole, InputItem, OutputItem};
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -492,14 +492,16 @@ async fn cmd_llm(cmd: LlmCmd) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             provider.load().map_err(|e| e.to_string())?;
 
-            let messages = vec![ChatMessage::new(ChatRole::User, text)];
+            let input = vec![InputItem::Message(ChatMessage::new(ChatRole::User, text))];
             let cancel = Arc::new(AtomicBool::new(false));
-            let mut emit = |delta: TokenDelta| {
-                print!("{}", delta.text);
-                let _ = std::io::stdout().flush();
+            let mut emit = |item: OutputItem| {
+                if let OutputItem::MessageDelta(delta) = item {
+                    print!("{}", delta.text);
+                    let _ = std::io::stdout().flush();
+                }
             };
             let reason = provider
-                .generate(&messages, &cfg.params, &mut emit, cancel)
+                .generate(&input, &[], &cfg.params, &mut emit, cancel)
                 .map_err(|e| e.to_string())?;
             println!();
             println!("[生成结束: {reason:?}]");

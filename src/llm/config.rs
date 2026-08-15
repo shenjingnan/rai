@@ -27,6 +27,12 @@ pub struct ResolvedLlmConfig {
     pub params: GenParams,
     /// 是否在应用启动时自动加载模型
     pub auto_load: bool,
+    /// HTTP provider 的 base URL（None 表示未配置，local provider 不使用）
+    pub base_url: Option<String>,
+    /// HTTP provider 的 API key
+    pub api_key: Option<String>,
+    /// HTTP provider 的模型名
+    pub model: Option<String>,
 }
 
 /// 内置默认 system prompt（用户可在 settings 覆盖）。
@@ -147,6 +153,9 @@ pub fn resolve(
                 .unwrap_or(defaults.enable_thinking),
         },
         auto_load: settings.and_then(|s| s.auto_load).unwrap_or(false),
+        base_url: settings.and_then(|s| s.base_url.clone()),
+        api_key: settings.and_then(|s| s.api_key.clone()),
+        model: settings.and_then(|s| s.model.clone()),
     })
 }
 

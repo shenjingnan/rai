@@ -334,6 +334,15 @@ pub struct LlmSettings {
     /// 是否在应用启动时自动加载模型，缺省 false（懒加载）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_load: Option<bool>,
+    /// HTTP provider 的 base URL（如 https://api.openai.com/v1 或 http://127.0.0.1:8080/v1）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// HTTP provider 的 API key（本地 server 可留空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// HTTP provider 的模型名（如 qwen3-4b / gpt-4o-mini）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn default_log_level() -> String {

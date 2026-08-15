@@ -131,3 +131,44 @@ impl Default for GenParams {
         }
     }
 }
+
+/// 工具调用结果（对应 OpenAI Responses 的 `function_call_output` item）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// 关联的 tool call id
+    pub id: String,
+    pub name: String,
+    /// 工具执行的文本结果
+    pub content: String,
+}
+
+/// 工具定义（供 Tool Calling 传给模型）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema 参数
+    pub parameters: serde_json::Value,
+}
+
+/// LLM 输入项（一次 Agent 步的上下文，有序）。
+///
+/// 统一抽象：Responses API 的 `input` 与 Chat Completions 的 `messages` 都映射到它。
+#[derive(Debug, Clone)]
+pub enum InputItem {
+    /// 一条聊天消息（system / user / assistant）
+    Message(ChatMessage),
+    /// assistant 的一次工具调用（对应 Responses 的 `function_call`，回填到 input）
+    ToolCall(ToolCall),
+    /// 一次工具调用结果（对应 `function_call_output`）
+    ToolResult(ToolResult),
+}
+
+/// LLM 输出项（流式，逐 item 产出）。
+#[derive(Debug, Clone)]
+pub enum OutputItem {
+    /// 文本增量（最终回复 / reasoning 内容）
+    MessageDelta(TokenDelta),
+    /// 一次工具调用请求
+    ToolCall(ToolCall),
+}

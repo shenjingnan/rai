@@ -22,7 +22,10 @@ use llama_cpp_2::sampling::LlamaSampler;
 use crate::llm::config::ResolvedLlmConfig;
 use crate::llm::error::LlmError;
 use crate::llm::provider::LlmProvider;
-use crate::llm::types::{ChatMessage, ChatRole, FinishReason, GenParams, TokenDelta};
+use crate::llm::types::{
+    ChatMessage, ChatRole, FinishReason, GenParams, InputItem, OutputItem, TokenDelta,
+    ToolDefinition,
+};
 
 /// 本地 llama.cpp provider。
 pub struct LocalLlamaProvider {
@@ -149,9 +152,10 @@ impl LlmProvider for LocalLlamaProvider {
 
     fn generate(
         &mut self,
-        messages: &[ChatMessage],
+        input: &[InputItem],
+        tools: &[ToolDefinition],
         params: &GenParams,
-        emit: &mut dyn FnMut(TokenDelta),
+        emit: &mut dyn FnMut(OutputItem),
         cancel: Arc<AtomicBool>,
     ) -> Result<FinishReason, LlmError> {
         if !self.is_ready() {
@@ -159,6 +163,17 @@ impl LlmProvider for LocalLlamaProvider {
         }
         let model = self.model.expect("is_ready 已检查");
         let context = self.context.as_mut().expect("is_ready 已检查");
+
+        // 本地 llama.cpp 第一版只支持消息（不支持 tool result / tool calling）。
+        // 把 InputItem 展平成 ChatMessage，ToolResult 暂被忽略，tools 暂不使用。
+        let _ = tools;
+        let messages: Vec<ChatMessage> = input
+            .iter()
+            .filter_map(|item| match item {
+                InputItem::Message(m) => Some(m.clone()),
+                InputItem::ToolCall(_) | InputItem::ToolResult(_) => None,
+            })
+            .collect();
 
         // 1. 注入 system prompt（若调用方未提供）
         let mut full: Vec<ChatMessage> = Vec::with_capacity(messages.len() + 1);
@@ -168,7 +183,7 @@ impl LlmProvider for LocalLlamaProvider {
                 self.config.system_prompt.clone(),
             ));
         }
-        full.extend_from_slice(messages);
+        full.extend_from_slice(&messages);
 
         // 2. 构造 chat template prompt
         let tmpl = Self::chat_template(model)?;
@@ -238,7 +253,7 @@ impl LlmProvider for LocalLlamaProvider {
                 .token_to_piece(token, &mut decoder, false, None)
                 .map_err(|e| LlmError::InferenceFailed(e.to_string()))?;
             if !piece.is_empty() {
-                emit(TokenDelta::new(piece));
+                emit(OutputItem::MessageDelta(TokenDelta::new(piece)));
             }
 
             n_generated += 1;
@@ -311,7 +326,9 @@ pub fn is_gguf_file(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::llm::provider::LlmProvider;
-    use crate::llm::types::{ChatMessage, ChatRole, FinishReason, GenParams};
+    use crate::llm::types::{
+        ChatMessage, ChatRole, FinishReason, GenParams, InputItem, OutputItem,
+    };
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
@@ -323,14 +340,22 @@ mod tests {
         provider.load().unwrap();
 
         for round in 0..2 {
-            let messages = vec![ChatMessage::new(ChatRole::User, "请只回复一个字")];
+            let input = vec![InputItem::Message(ChatMessage::new(
+                ChatRole::User,
+                "请只回复一个字",
+            ))];
             let cancel = Arc::new(AtomicBool::new(false));
             let mut text = String::new();
             let result = provider
                 .generate(
-                    &messages,
+                    &input,
+                    &[],
                     &GenParams::default(),
-                    &mut |delta| text.push_str(&delta.text),
+                    &mut |item| {
+                        if let OutputItem::MessageDelta(delta) = item {
+                            text.push_str(&delta.text);
+                        }
+                    },
                     cancel,
                 )
                 .unwrap();

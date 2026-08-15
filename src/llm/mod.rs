@@ -4,10 +4,13 @@
 /// - `LlmEngine`（门面）：生命周期 + worker 线程 + 命令/事件 channel，供 CLI/Tauri 使用。
 /// - `LlmProvider`（trait）：后端抽象，本地 llama.cpp 只是其中一种实现。
 /// - `local`：`LocalLlamaProvider`，唯一接触 llama.cpp 的地方。
+pub mod agent;
 pub mod config;
 pub mod error;
+pub mod http;
 pub mod local;
 pub mod provider;
+pub mod tools;
 pub mod types;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,9 +18,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use agent::Agent;
 use config::ResolvedLlmConfig;
 use error::LlmError;
-use types::{ChatMessage, FinishReason, GenParams, TokenDelta};
+use tools::ToolRuntime;
+use types::{FinishReason, GenParams, InputItem, OutputItem, TokenDelta};
 
 /// LLM 引擎事件（worker 线程 → 调用方）。
 #[derive(Debug, PartialEq)]
@@ -36,7 +41,7 @@ enum LlmCommand {
     Load,
     Unload,
     Generate {
-        messages: Vec<ChatMessage>,
+        input: Vec<InputItem>,
         params: GenParams,
         cancel: Arc<AtomicBool>,
     },
@@ -98,12 +103,12 @@ impl LlmEngine {
             .map_err(|_| LlmError::BackendUnavailable("LLM worker 线程已退出".to_string()))
     }
 
-    /// 发起一次流式生成（异步：token 经 [`LlmEvent::Token`] 返回）。
-    pub fn generate(&self, messages: Vec<ChatMessage>, params: GenParams) -> Result<(), LlmError> {
+    /// 发起一次流式生成（异步：结果经 [`LlmEvent::Token`] 返回）。
+    pub fn generate(&self, input: Vec<InputItem>, params: GenParams) -> Result<(), LlmError> {
         self.cancel.store(false, Ordering::Relaxed);
         self.cmd_tx
             .send(LlmCommand::Generate {
-                messages,
+                input,
                 params,
                 cancel: self.cancel.clone(),
             })
@@ -130,6 +135,20 @@ impl Drop for LlmEngine {
     }
 }
 
+/// 根据配置创建 provider。
+///
+/// 本地 llama.cpp（"local"）与 OpenAI 兼容 Responses（"openai" / "llamacpp-server"）
+/// 共用同一 `LlmProvider` 抽象；Chat Completions fallback 留待后续。
+pub fn create_provider(
+    config: ResolvedLlmConfig,
+) -> Result<Box<dyn provider::LlmProvider>, LlmError> {
+    match config.provider.as_str() {
+        "local" => Ok(Box::new(local::LocalLlamaProvider::new(config)?)),
+        "openai" | "llamacpp-server" => Ok(Box::new(http::OpenAIResponsesProvider::new(&config)?)),
+        other => Err(LlmError::UnsupportedProvider(other.to_string())),
+    }
+}
+
 /// worker 线程主循环：创建 provider 后处理命令，直到 `Shutdown` 或 channel 关闭。
 fn worker_loop(
     config: ResolvedLlmConfig,
@@ -137,13 +156,14 @@ fn worker_loop(
     evt_tx: Sender<LlmEvent>,
     ready: Arc<AtomicBool>,
 ) {
-    let mut provider = match local::create_provider(config) {
+    let mut provider = match create_provider(config) {
         Ok(p) => p,
         Err(e) => {
             let _ = evt_tx.send(LlmEvent::Error(e.to_string()));
             return;
         }
     };
+    let agent = Agent::new(ToolRuntime::new());
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -162,14 +182,19 @@ fn worker_loop(
                 let _ = evt_tx.send(LlmEvent::Status { ready: false });
             }
             LlmCommand::Generate {
-                messages,
+                input,
                 params,
                 cancel,
             } => {
-                let mut emit = |delta: TokenDelta| {
-                    let _ = evt_tx.send(LlmEvent::Token(delta));
+                let mut emit = |item: OutputItem| match item {
+                    OutputItem::MessageDelta(delta) => {
+                        let _ = evt_tx.send(LlmEvent::Token(delta));
+                    }
+                    OutputItem::ToolCall(_) => {
+                        // 工具调用由 Agent Loop 内部处理，不外传（未来可发 llm-tool-call 事件）
+                    }
                 };
-                match provider.generate(&messages, &params, &mut emit, cancel) {
+                match agent.run(&mut *provider, &input, &params, &mut emit, cancel) {
                     Ok(reason) => {
                         let _ = evt_tx.send(LlmEvent::Finished(reason));
                     }

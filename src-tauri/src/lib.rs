@@ -20,7 +20,7 @@ use tauri::{
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings, LlmSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
-use zapmomo::llm::types::{ChatMessage, ChatRole};
+use zapmomo::llm::types::{ChatMessage, ChatRole, InputItem};
 use zapmomo::llm::{LlmEngine, LlmEvent};
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
@@ -937,9 +937,9 @@ fn chat_llm(app: AppHandle, state: State<'_, LlmState>, text: String) -> Result<
     if !engine.is_ready() {
         return Err("模型尚未就绪，请稍候".to_string());
     }
-    let messages = vec![ChatMessage::new(ChatRole::User, text)];
+    let input = vec![InputItem::Message(ChatMessage::new(ChatRole::User, text))];
     engine
-        .generate(messages, cfg.params)
+        .generate(input, cfg.params)
         .map_err(|e| e.to_string())?;
     std::thread::spawn(move || forward_llm_events(app, engine, false));
     Ok(())

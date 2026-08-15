@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::llm::error::LlmError;
-use crate::llm::types::{ChatMessage, FinishReason, GenParams, TokenDelta};
+use crate::llm::types::{FinishReason, GenParams, InputItem, OutputItem, ToolDefinition};
 
 pub trait LlmProvider {
     /// 模型是否已加载可用。
@@ -21,15 +21,16 @@ pub trait LlmProvider {
     /// 卸载模型并释放内存。
     fn unload(&mut self);
 
-    /// 流式生成：逐 token 调用 `emit` 推送增量，最后返回结束原因。
+    /// 流式生成：逐 item 调用 `emit` 推送增量（文本 / 工具调用），最后返回结束原因。
     ///
+    /// `input` 是有序的上下文项（消息 + 工具结果），`tools` 是可用的工具定义。
     /// `cancel` 置位后应尽快停止并返回 [`FinishReason::Cancelled`]。
-    /// 调用方负责把 [`FinishReason`] 作为生成结束信号转发给上层。
     fn generate(
         &mut self,
-        messages: &[ChatMessage],
+        input: &[InputItem],
+        tools: &[ToolDefinition],
         params: &GenParams,
-        emit: &mut dyn FnMut(TokenDelta),
+        emit: &mut dyn FnMut(OutputItem),
         cancel: Arc<AtomicBool>,
     ) -> Result<FinishReason, LlmError>;
 }

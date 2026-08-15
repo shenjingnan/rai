@@ -20,6 +20,21 @@ use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 
+// 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
+// 使其表现为纯桌面摆件（参考 BongoCat 的 `tauri-nspanel` 方案）。
+#[cfg(target_os = "macos")]
+tauri_nspanel::tauri_panel! {
+    panel!(CompanionPanel {
+        config: {
+            is_floating_panel: true,
+            // 摆件无需键盘输入，彻底不抢焦点。
+            can_become_key_window: false,
+            // 关键：永不成为 main window，点击不会把焦点从上一个窗口抢过来。
+            can_become_main_window: false,
+        }
+    })
+}
+
 /// 监听线程状态：共享停止标志 + 线程句柄。
 struct ListenState {
     running: Arc<AtomicBool>,
@@ -763,6 +778,14 @@ pub fn run() {
             quit_app
         ])
         .setup(|app| {
+            // macOS：转成纯桌面摆件（accessory），从 Dock 与 Cmd+Tab 中消失，仅保留托盘入口。
+            // 设置窗口仍通过 set_focus 正常激活（tao 内部会 activateIgnoringOtherApps）。
+            #[cfg(target_os = "macos")]
+            {
+                app.handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+            }
+
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。
             // 读一次 settings：同时恢复记忆的尺寸与位置。
             let loaded = settings::load_settings().ok().flatten();
@@ -797,6 +820,12 @@ pub fn run() {
             .resizable(false)
             .shadow(false);
 
+            // macOS：首次点击直达 webview，可立即触发 startDragging（无需先点一下聚焦）。
+            #[cfg(target_os = "macos")]
+            {
+                companion = companion.accept_first_mouse(true);
+            }
+
             // 有记忆位置 → 恢复；否则 → 首次定位到屏幕右下角。
             if let Some(pos) = live2d.as_ref().and_then(|l| l.window_position.clone()) {
                 companion = companion.position(pos.x as f64, pos.y as f64);
@@ -804,6 +833,26 @@ pub fn run() {
                 companion = companion.position(x, y);
             }
             companion.build()?;
+
+            // macOS：把角色窗口转成非激活面板，点击/拖动不抢前台焦点。
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_nspanel::{CollectionBehavior, StyleMask, WebviewWindowExt};
+
+                let _ = app.handle().plugin(tauri_nspanel::init());
+                if let Some(window) = app.get_webview_window("companion")
+                    && let Ok(panel) = window.to_panel::<CompanionPanel>()
+                {
+                    panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
+                    panel.set_collection_behavior(
+                        CollectionBehavior::new()
+                            .stationary()
+                            .move_to_active_space()
+                            .full_screen_auxiliary()
+                            .into(),
+                    );
+                }
+            }
 
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
             let mut settings =

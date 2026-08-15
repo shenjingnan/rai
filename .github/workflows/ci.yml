@@ -126,4 +126,11 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Tests
-        run: cargo test -- --test-threads=1
+        shell: bash
+        run: |
+          # GitHub Actions Windows runner 预设 CMAKE_GENERATOR=Visual Studio，会让 cmake crate 跳过
+          # static_crt 通过 CMAKE_CXX_FLAGS_RELEASE 的传递（该分支要求 generator.is_none()），
+          # 导致 llama-cpp-2 用 /MD 与 sherpa-onnx 的 /MT 冲突（LNK2038）。unset 后走默认路径，
+          # 配合 .cargo/config.toml 的 LLAMA_STATIC_CRT=1 让 llama.cpp 用 /MT。
+          unset CMAKE_GENERATOR CMAKE_GENERATOR_PLATFORM CMAKE_GENERATOR_TOOLSET CMAKE_GENERATOR_INSTANCE 2>/dev/null || true
+          cargo test -- --test-threads=1

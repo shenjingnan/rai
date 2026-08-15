@@ -212,6 +212,7 @@ mod tests {
             make_model(&dir, "c.model3.json");
             let settings = Live2dSettings {
                 model_dir: Some(dir.display().to_string()),
+                ..Default::default()
             };
             let cfg = resolve(Some(&settings)).unwrap();
             assert_eq!(cfg.model_dir, dir);

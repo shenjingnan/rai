@@ -1,13 +1,15 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { CircleAlert, FolderOpen, Sparkles } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useLive2dModel } from "@/hooks/useLive2dModel";
-import { toAssetUrl } from "@/lib/tauri";
+import { api, toAssetUrl } from "@/lib/tauri";
 
 /** 预览区基准高度（与常驻窗口一致）。 */
 const PREVIEW_BASE_HEIGHT = 480;
@@ -24,6 +26,9 @@ export function Live2dCard() {
     width: PREVIEW_INITIAL_WIDTH,
     height: PREVIEW_BASE_HEIGHT,
   });
+  const [percent, setPercent] = useState(100);
+  /** 输入框草稿值（失焦时才提交，输入过程中不被 clamp 干扰）。 */
+  const [draftPercent, setDraftPercent] = useState("100");
 
   // 启动时若已持久化了模型，恢复 asset:// URL（未通过 load 重新选择时）。
   const displayUrl = useMemo(() => {
@@ -37,6 +42,40 @@ export function Live2dCard() {
   const handleStageError = useCallback((e: Error) => {
     setStageError(e.message);
   }, []);
+
+  // 恢复持久化的缩放比例，用于滑块/输入框初值。
+  useEffect(() => {
+    if (config?.window_scale) {
+      setPercent(Math.round(config.window_scale * 100));
+    }
+  }, [config?.window_scale]);
+
+  // 调节窗口缩放比例：clamp 到 [25, 200]，调后端设置并通知角色窗口。
+  const handleScaleChange = useCallback((value: number) => {
+    const clamped = Math.max(25, Math.min(200, Math.round(value)));
+    setPercent(clamped);
+    void api.setCompanionScale({ scale: clamped / 100 });
+  }, []);
+
+  // percent 变化时（滑块拖动 / 配置加载）同步输入框草稿值。
+  useEffect(() => {
+    setDraftPercent(String(percent));
+  }, [percent]);
+
+  // 输入框失焦时才解析并提交；空值或非法值恢复为当前比例。
+  const handleInputBlur = useCallback(() => {
+    const trimmed = draftPercent.trim();
+    if (trimmed === "") {
+      setDraftPercent(String(percent));
+      return;
+    }
+    const value = Number(trimmed);
+    if (Number.isFinite(value)) {
+      handleScaleChange(value);
+    } else {
+      setDraftPercent(String(percent));
+    }
+  }, [draftPercent, percent, handleScaleChange]);
 
   // 模型加载后按角色宽高比自适应预览区宽度（高度固定，宽度 clamp 到卡片可用区域）。
   const handleModelMetrics = useCallback((metrics: { aspectRatio: number }) => {
@@ -85,6 +124,34 @@ export function Live2dCard() {
             {config.format ? `（${config.format}）` : ""}
           </p>
         )}
+
+        <div className="flex items-center gap-3">
+          <span className="shrink-0 text-sm text-muted-foreground">窗口尺寸</span>
+          <Slider
+            value={[percent]}
+            min={25}
+            max={200}
+            step={5}
+            onValueChange={([v]) => handleScaleChange(v)}
+            className="flex-1"
+          />
+          <div className="flex shrink-0 items-center gap-1">
+            <Input
+              type="text"
+              inputMode="numeric"
+              value={draftPercent}
+              onChange={(e) => setDraftPercent(e.target.value)}
+              onBlur={handleInputBlur}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              className="w-20 text-right"
+            />
+            <span className="text-sm text-muted-foreground">%</span>
+          </div>
+        </div>
 
         {loadError && (
           <Alert variant="destructive">

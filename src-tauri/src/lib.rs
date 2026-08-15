@@ -10,11 +10,14 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
+};
 use zapmomo::asr::{AsrReaction, AsrResult};
-use zapmomo::config::settings::{self, Live2dSettings};
+use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 
 /// 监听线程状态：共享停止标志 + 线程句柄。
@@ -493,6 +496,7 @@ struct Live2dConfigInfo {
     model_file: Option<String>,
     format: Option<String>,
     models_present: bool,
+    window_scale: Option<f64>,
     settings_path: String,
 }
 
@@ -518,6 +522,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         model_file: cfg.model_file.map(|p| p.display().to_string()),
         format: cfg.format.map(|f| f.to_str().to_string()),
         models_present,
+        window_scale: live2d_settings.and_then(|l| l.window_scale),
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -551,9 +556,9 @@ fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, Stri
         .map_err(|e| format!("无法放行模型目录: {e}"))?;
 
     let mut settings = settings::load_settings()?.unwrap_or_default();
-    settings.live2d = Some(Live2dSettings {
-        model_dir: Some(dir.clone()),
-    });
+    // 仅更新 model_dir，保留已有的 window_position 等字段。
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.model_dir = Some(dir.clone());
     settings::save_settings(&settings)?;
 
     let info = Live2dModelInfo {
@@ -566,14 +571,96 @@ fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, Stri
     Ok(info)
 }
 
-/// 处理应用菜单与托盘菜单事件：打开设置、切换角色显隐、退出。
+/// 持久化角色窗口位置（逻辑像素），供下次启动恢复。
+///
+/// 由前端在用户手动拖动窗口后（debounce）调用，写入 `~/.zapmomo/settings.toml`
+/// 的 `[live2d.window_position]` 段。
+#[tauri::command]
+fn save_companion_position(x: i32, y: i32) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.window_position = Some(CompanionWindowPosition { x, y });
+    settings::save_settings(&settings)
+}
+
+/// 保存角色窗口缩放比例并通知角色窗口（内部实现，供 command 与原生菜单事件共用）。
+fn apply_companion_scale(app: &AppHandle, scale: f64) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.window_scale = Some(scale);
+    settings::save_settings(&settings)?;
+    let _ = app.emit("companion-scale-changed", scale);
+    Ok(())
+}
+
+/// 把原生菜单项 id 解析为缩放比例。
+fn scale_from_id(id: &str) -> Option<f64> {
+    match id {
+        "scale_25" => Some(0.25),
+        "scale_50" => Some(0.5),
+        "scale_70" => Some(0.7),
+        "scale_100" => Some(1.0),
+        "scale_150" => Some(1.5),
+        "scale_200" => Some(2.0),
+        _ => None,
+    }
+}
+
+/// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
+///
+/// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
+/// `[live2d.window_scale]` 段，并通过 `companion-scale-changed` 事件通知角色窗口
+/// （角色窗口持有真实模型宽高比，负责把比例换算成绝对尺寸并 `setSize`）。
+#[tauri::command]
+fn set_companion_scale(app: AppHandle, scale: f64) -> Result<(), String> {
+    apply_companion_scale(&app, scale)
+}
+
+/// 处理应用菜单、托盘菜单与角色窗口右键菜单事件。
 fn handle_menu(app: &AppHandle, id: &str) {
     match id {
         "show_settings" | "open_settings" => show_settings_window(app),
         "toggle_companion" => toggle_companion_window(app),
+        "hide_companion" => hide_companion_window(app),
         "quit" => app.exit(0),
-        _ => {}
+        _ => {
+            if let Some(scale) = scale_from_id(id) {
+                let _ = apply_companion_scale(app, scale);
+            }
+        }
     }
+}
+
+/// 构建角色窗口的右键菜单（窗口尺寸子菜单 + 打开设置 / 隐藏角色 / 退出）。
+fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let s25 = MenuItem::with_id(app, "scale_25", "25%", true, None::<&str>)?;
+    let s50 = MenuItem::with_id(app, "scale_50", "50%", true, None::<&str>)?;
+    let s70 = MenuItem::with_id(app, "scale_70", "70%", true, None::<&str>)?;
+    let s100 = MenuItem::with_id(app, "scale_100", "100%", true, None::<&str>)?;
+    let s150 = MenuItem::with_id(app, "scale_150", "150%", true, None::<&str>)?;
+    let s200 = MenuItem::with_id(app, "scale_200", "200%", true, None::<&str>)?;
+    let scale_submenu = Submenu::with_items(
+        app,
+        "窗口尺寸",
+        true,
+        &[&s25, &s50, &s70, &s100, &s150, &s200],
+    )?;
+    let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    Menu::with_items(app, &[&scale_submenu, &open_settings, &hide, &quit])
+}
+
+/// 弹出角色窗口右键菜单（由前端在右键时调用，坐标相对窗口左上角，逻辑像素）。
+#[tauri::command]
+fn show_companion_menu(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
+    let menu = build_companion_menu(&app).map_err(|e| e.to_string())?;
+    let window = app
+        .get_webview_window("companion")
+        .ok_or_else(|| "角色窗口不存在".to_string())?;
+    window
+        .popup_menu_at(&menu, LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
 }
 
 /// 显示设置窗口并聚焦。
@@ -603,18 +690,45 @@ fn open_settings(app: AppHandle) {
     show_settings_window(&app);
 }
 
-/// 隐藏角色窗口（供角色窗口右键菜单调用）。
-#[tauri::command]
-fn hide_companion(app: AppHandle) {
+/// 隐藏角色窗口。
+fn hide_companion_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("companion") {
         let _ = window.hide();
     }
+}
+
+/// 隐藏角色窗口（供角色窗口右键菜单调用）。
+#[tauri::command]
+fn hide_companion(app: AppHandle) {
+    hide_companion_window(&app);
 }
 
 /// 退出应用（供角色窗口右键菜单调用）。
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// 角色窗口初始尺寸（逻辑像素，与 `setup` 中的 `inner_size` 保持一致）。
+const COMPANION_INITIAL_W: f64 = 360.0;
+const COMPANION_INITIAL_H: f64 = 480.0;
+/// 角色窗口距屏幕工作区边缘的留白（逻辑像素）。
+const COMPANION_MARGIN: f64 = 16.0;
+
+/// 计算角色窗口首次出现的右下角位置（逻辑像素）。
+///
+/// 基于主屏 `work_area`（排除 Dock / 任务栏），把物理像素坐标除以 scale_factor
+/// 转为逻辑像素，再减去窗口尺寸与留白得到窗口左上角坐标。
+fn default_bottom_right_position(app: &AppHandle) -> Option<(f64, f64)> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let work = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let right = (work.position.x as f64 + work.size.width as f64) / scale;
+    let bottom = (work.position.y as f64 + work.size.height as f64) / scale;
+    Some((
+        right - COMPANION_INITIAL_W - COMPANION_MARGIN,
+        bottom - COMPANION_INITIAL_H - COMPANION_MARGIN,
+    ))
 }
 
 /// Tauri 应用入口。
@@ -641,22 +755,55 @@ pub fn run() {
             download_asr_model,
             get_live2d_config,
             set_live2d_model,
+            save_companion_position,
+            set_companion_scale,
+            show_companion_menu,
             open_settings,
             hide_companion,
             quit_app
         ])
         .setup(|app| {
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。
-            WebviewWindowBuilder::new(app, "companion", WebviewUrl::App("companion.html".into()))
-                .title("Zap Momo")
-                .inner_size(360.0, 480.0)
-                .transparent(true)
-                .decorations(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .resizable(false)
-                .shadow(false)
-                .build()?;
+            // 读一次 settings：同时恢复记忆的尺寸与位置。
+            let loaded = settings::load_settings().ok().flatten();
+            let live2d = loaded.as_ref().and_then(|s| s.live2d.clone());
+            let scale = live2d.as_ref().and_then(|l| l.window_scale).unwrap_or(1.0);
+
+            // 基准高度：min(480, 主屏工作区高度 × 0.6)。setup 阶段按默认 3:4 宽高比建窗，
+            // 模型加载后前端按真实宽高比修正。
+            let avail_height = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| {
+                    let work = m.work_area();
+                    (work.position.y as f64 + work.size.height as f64) / m.scale_factor()
+                })
+                .unwrap_or(1080.0);
+            let init_h = 480.0_f64.min(avail_height * 0.6) * scale;
+            let init_w = init_h * (3.0 / 4.0);
+
+            let mut companion = WebviewWindowBuilder::new(
+                app,
+                "companion",
+                WebviewUrl::App("companion.html".into()),
+            )
+            .title("Zap Momo")
+            .inner_size(init_w, init_h)
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false);
+
+            // 有记忆位置 → 恢复；否则 → 首次定位到屏幕右下角。
+            if let Some(pos) = live2d.as_ref().and_then(|l| l.window_position.clone()) {
+                companion = companion.position(pos.x as f64, pos.y as f64);
+            } else if let Some((x, y)) = default_bottom_right_position(app.handle()) {
+                companion = companion.position(x, y);
+            }
+            companion.build()?;
 
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
             let mut settings =

@@ -1,12 +1,14 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { api, onLive2dModelChanged, toAssetUrl } from "@/lib/tauri";
 
-/** 角色窗口逻辑尺寸（与后端 `inner_size` 保持一致）。 */
-const WIDTH = 360;
-const HEIGHT = 480;
+/** 角色窗口的基准高度（逻辑像素，与后端 `inner_size` 高度一致）；宽度按角色宽高比自适应。 */
+const BASE_HEIGHT = 480;
+/** 窗口宽度下限/下限比例与初始值。 */
+const MIN_WIDTH = 120;
+const INITIAL_WIDTH = 360;
 /** 右键菜单估算尺寸（贴边时反向偏移，避免被窗口裁剪）。 */
 const MENU_WIDTH = 160;
 const MENU_HEIGHT = 132;
@@ -21,6 +23,7 @@ interface ContextMenuItem {
  *
  * - 启动时读 `get_live2d_config` 恢复持久化的模型（顺带重放行 asset 协议 scope）；
  * - 订阅 `live2d-model-changed`，设置窗口切换模型时即时重载；
+ * - 模型加载后按角色真实宽高比自适应窗口宽度（高度固定 BASE_HEIGHT）；
  * - 按住左键拖动移动窗口；右键弹出上下文菜单（打开设置 / 隐藏角色 / 退出）。
  */
 export function CompanionRoot() {
@@ -28,6 +31,7 @@ export function CompanionRoot() {
   const { config } = useLive2dConfig();
   const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
 
   useEffect(() => {
     if (config?.models_present && config.model_file) {
@@ -44,14 +48,27 @@ export function CompanionRoot() {
     };
   }, []);
 
+  // 模型加载完成后，按角色真实宽高比自适应窗口宽度（高度固定，宽度 clamp 到屏幕可用区域）。
+  const handleModelMetrics = useCallback(async (metrics: { aspectRatio: number }) => {
+    const height = BASE_HEIGHT;
+    let width = Math.round(height * metrics.aspectRatio);
+    if (!Number.isFinite(width) || width <= 0) {
+      width = INITIAL_WIDTH;
+    }
+    const maxWidth = Math.floor(window.screen.availWidth * 0.8);
+    width = Math.max(MIN_WIDTH, Math.min(width, maxWidth));
+    await getCurrentWindow().setSize(new LogicalSize(width, height));
+    setSize({ width, height });
+  }, []);
+
   const items: ContextMenuItem[] = [
     { label: "打开设置", action: () => void api.openSettings() },
     { label: "隐藏角色", action: () => void api.hideCompanion() },
     { label: "退出", action: () => void api.quitApp() },
   ];
 
-  const menuLeft = menu ? Math.min(menu.x, WIDTH - MENU_WIDTH) : 0;
-  const menuTop = menu ? Math.min(menu.y, HEIGHT - MENU_HEIGHT) : 0;
+  const menuLeft = menu ? Math.min(menu.x, size.width - MENU_WIDTH) : 0;
+  const menuTop = menu ? Math.min(menu.y, size.height - MENU_HEIGHT) : 0;
 
   return (
     <div
@@ -66,7 +83,12 @@ export function CompanionRoot() {
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      <Live2dStage modelUrl={modelUrl} width={WIDTH} height={HEIGHT} />
+      <Live2dStage
+        modelUrl={modelUrl}
+        width={size.width}
+        height={size.height}
+        onModelMetrics={handleModelMetrics}
+      />
 
       {menu && (
         <>

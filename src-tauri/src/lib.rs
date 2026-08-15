@@ -8,12 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{
-    AppHandle, Emitter, Manager, State, TitleBarStyle, WebviewUrl, WebviewWindowBuilder,
-    WindowEvent,
-};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{self, Live2dSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
@@ -660,7 +659,7 @@ pub fn run() {
                 .build()?;
 
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
-            let settings =
+            let mut settings =
                 WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
                     .title("Zap Momo 设置")
                     .inner_size(760.0, 600.0)
@@ -668,16 +667,20 @@ pub fn run() {
                     .visible(false);
 
             // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。
-            // 用 cfg! 而非 #[cfg]，让非 macOS 分支在所有平台都被编译检查。
-            let settings = if cfg!(target_os = "macos") {
+            // title_bar_style / hidden_title 是 macOS 专属方法（Linux 上不存在），
+            // 必须用 #[cfg] 编译期隔离，而非 cfg! 运行时判断。
+            #[cfg(target_os = "macos")]
+            {
                 // macOS 保留系统红绿灯与阴影；窗口默认不透明。
-                settings
+                settings = settings
                     .title_bar_style(TitleBarStyle::Overlay)
                     .hidden_title(true)
-                    .shadow(true)
-            } else {
-                settings.decorations(false).transparent(true)
-            };
+                    .shadow(true);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                settings = settings.decorations(false).transparent(true);
+            }
             settings.build()?;
 
             // 应用菜单：偏好设置…（cmd+,）与退出（Cmd+Q）。

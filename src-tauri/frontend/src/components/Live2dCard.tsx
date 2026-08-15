@@ -1,4 +1,3 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { CircleAlert, FolderOpen, Sparkles } from "lucide-react";
 import { useMemo } from "react";
@@ -7,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useLive2dModel } from "@/hooks/useLive2dModel";
+import { toAssetUrl } from "@/lib/tauri";
 import { Live2dStage } from "@/pet/Live2dStage";
 
 /** 角色（Live2D）卡片：选择模型目录并内嵌预览。 */
@@ -18,7 +18,7 @@ export function Live2dCard() {
   const displayUrl = useMemo(() => {
     if (modelUrl) return modelUrl;
     if (config?.models_present && config.model_file) {
-      return convertFileSrc(config.model_file);
+      return toAssetUrl(config.model_file);
     }
     return null;
   }, [modelUrl, config]);

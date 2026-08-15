@@ -38,18 +38,25 @@ export function Live2dStage({
     const container = containerRef.current;
     if (!container) return;
     let disposed = false;
+    // init 完成前 PixiJS 尚未设置 _cancelResize 等字段，此时 destroy 会崩溃（StrictMode 双挂载竞态）。
+    let initialized = false;
     let app: PIXI.Application | null = null;
 
     void (async () => {
-      app = new PIXI.Application();
-      await app.init({ width, height, backgroundAlpha: 0 });
-      if (disposed) {
-        app.destroy(true, { children: true });
-        return;
+      try {
+        app = new PIXI.Application();
+        await app.init({ width, height, backgroundAlpha: 0 });
+        if (disposed) {
+          app.destroy(true, { children: true });
+          return;
+        }
+        initialized = true;
+        container.appendChild(app.canvas);
+        appRef.current = app;
+        setAppReady(true);
+      } catch (e) {
+        console.error("PIXI 初始化失败:", e);
       }
-      container.appendChild(app.canvas);
-      appRef.current = app;
-      setAppReady(true);
     })();
 
     return () => {
@@ -57,7 +64,10 @@ export function Live2dStage({
       setAppReady(false);
       appRef.current = null;
       modelRef.current = null;
-      if (app) app.destroy(true, { children: true });
+      // 只有 init 完成后才能安全 destroy；未完成时由上面的 async 分支负责销毁。
+      if (app && initialized) {
+        app.destroy(true, { children: true });
+      }
     };
   }, [width, height]);
 

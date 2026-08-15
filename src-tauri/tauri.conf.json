@@ -11,15 +11,32 @@
   },
   "app": {
     "withGlobalTauri": false,
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "Zap Momo",
         "width": 760,
         "height": 600,
         "resizable": true,
         "transparent": true,
+        "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
+      },
+      {
+        "label": "pet",
+        "title": "Zap Momo 桌宠",
+        "width": 420,
+        "height": 560,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": false,
+        "acceptFirstMouse": true
       }
     ],
     "security": {

@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import { AsrCard } from "@/components/AsrCard";
 import { ConfigCard } from "@/components/ConfigCard";
@@ -34,11 +33,6 @@ export default function App() {
   useEffect(() => {
     if (info) document.title = `${info.product_name} · KWS 控制面板`;
   }, [info]);
-
-  // macOS 窗口默认 visible:false，首帧渲染完成后显示，避免白屏闪烁。
-  useEffect(() => {
-    if (isMac) getCurrentWindow().show();
-  }, [isMac]);
 
   return (
     <div

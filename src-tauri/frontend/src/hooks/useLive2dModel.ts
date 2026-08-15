@@ -1,6 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useState } from "react";
-import { api } from "@/lib/tauri";
+import { api, toAssetUrl } from "@/lib/tauri";
 import type { Live2dModelInfo } from "@/types/tauri";
 
 export interface Live2dModelState {
@@ -27,7 +26,7 @@ export function useLive2dModel(onSuccess?: () => void): Live2dModelState {
       try {
         const info = await api.setLive2dModel({ dir });
         setModelInfo(info);
-        setModelUrl(convertFileSrc(info.model_file));
+        setModelUrl(toAssetUrl(info.model_file));
         onSuccess?.();
       } catch (e) {
         setError(String(e));

@@ -29,6 +29,7 @@ export const api = {
   downloadAsrModel: () => invoke<void>("download_asr_model"),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
+  quitApp: () => invoke<void>("quit_app"),
 };
 
 /** 类型安全的事件订阅（返回的 Promise resolve 后得到取消订阅函数）。 */
@@ -58,4 +59,26 @@ export function onAsrDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("asr-model-download-progress", (e) => handler(e.payload));
+}
+
+export function onLive2dModelChanged(
+  handler: (info: Live2dModelInfo) => void,
+): Promise<UnlistenFn> {
+  return listen<Live2dModelInfo>("live2d-model-changed", (e) => handler(e.payload));
+}
+
+/**
+ * 把本地绝对路径转成 asset:// URL，供 Live2D 运行时加载。
+ *
+ * 不能直接用 `convertFileSrc`：它用 `encodeURIComponent` 编码整个路径（含 `/`），
+ * 导致 URL 的 path 退化成单个段、没有目录结构，Live2D 运行时解析模型清单里的
+ * 相对路径（如 `火花.moc3`）时会错误地解析到根目录。
+ *
+ * 这里改为逐段编码、保留 `/` 分隔符，并让 path 以 `//` 开头——Tauri 的 asset
+ * handler 会「skip leading /」，去掉一个 `/` 后得到的仍是绝对路径（如 `/Users/...`），
+ * 从而同时满足「相对路径正确解析」与「文件正确打开」两个要求。
+ */
+export function toAssetUrl(path: string): string {
+  const segments = path.split("/").map(encodeURIComponent).join("/");
+  return `asset://localhost/${segments}`;
 }

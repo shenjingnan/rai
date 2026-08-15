@@ -519,7 +519,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
 }
 
 /// 选择模型目录后返回的模型信息。
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Live2dModelInfo {
     model_dir: String,
     model_file: String,
@@ -527,6 +527,8 @@ struct Live2dModelInfo {
 }
 
 /// 校验并持久化用户选择的 Live2D 模型目录，放行 asset 协议 scope。
+///
+/// 成功后广播 `live2d-model-changed` 事件，让桌宠窗口无需重启即可刷新角色。
 #[tauri::command]
 fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, String> {
     let dir_path = std::path::PathBuf::from(&dir);
@@ -543,11 +545,19 @@ fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, Stri
     });
     settings::save_settings(&settings)?;
 
-    Ok(Live2dModelInfo {
+    let info = Live2dModelInfo {
         model_dir: dir,
         model_file: model_file.display().to_string(),
         format: format.to_str().to_string(),
-    })
+    };
+    let _ = app.emit("live2d-model-changed", &info);
+    Ok(info)
+}
+
+/// 退出应用（桌宠窗口的退出按钮 / 菜单退出用）。
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 /// Tauri 应用入口。
@@ -573,9 +583,13 @@ pub fn run() {
             is_asr_listening,
             download_asr_model,
             get_live2d_config,
-            set_live2d_model
+            set_live2d_model,
+            quit_app
         ])
         .setup(|app| {
+            use tauri::WindowEvent;
+            use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+
             // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。
             // 用 cfg! 而非 #[cfg]，让非 macOS 分支在所有平台都被编译检查。
             if !cfg!(target_os = "macos") {
@@ -584,6 +598,37 @@ pub fn run() {
                     window.set_decorations(false)?;
                 }
             }
+
+            // 应用菜单：设置（Cmd+,）呼出主窗口；退出（Cmd+Q）
+            let preferences = MenuItemBuilder::with_id("preferences", "设置…")
+                .accelerator("CmdOrControl+,")
+                .build(app)?;
+            let quit = PredefinedMenuItem::quit(app, None)?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&preferences, &quit])
+                .build()?;
+            app.set_menu(menu)?;
+
+            app.on_menu_event(|app, event| {
+                if event.id() == "preferences"
+                    && let Some(window) = app.get_webview_window("main")
+                {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+
+            // main 窗口关闭时仅隐藏（桌宠常驻，设置面板按需呼出）
+            if let Some(main_window) = app.get_webview_window("main") {
+                let window = main_window.clone();
+                main_window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

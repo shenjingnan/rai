@@ -70,6 +70,7 @@ export interface Live2dConfigInfo {
   model_file: string | null;
   format: string | null;
   models_present: boolean;
+  window_scale: number | null;
   settings_path: string;
 }
 

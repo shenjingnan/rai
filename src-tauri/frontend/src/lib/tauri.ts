@@ -29,6 +29,11 @@ export const api = {
   downloadAsrModel: () => invoke<void>("download_asr_model"),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
+  saveCompanionPosition: (args: { x: number; y: number }) =>
+    invoke<void>("save_companion_position", args),
+  setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
+  showCompanionMenu: (args: { x: number; y: number }) =>
+    invoke<void>("show_companion_menu", args),
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),
@@ -67,6 +72,10 @@ export function onLive2dModelChanged(
   handler: (info: Live2dModelInfo) => void,
 ): Promise<UnlistenFn> {
   return listen<Live2dModelInfo>("live2d-model-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionScaleChanged(handler: (scale: number) => void): Promise<UnlistenFn> {
+  return listen<number>("companion-scale-changed", (e) => handler(e.payload));
 }
 
 /**

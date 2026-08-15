@@ -190,6 +190,17 @@ pub struct AsrSettings {
     pub debug: Option<bool>,
 }
 
+/// 角色窗口位置（逻辑像素）。
+///
+/// `None` 表示未记录 → 首次启动时定位到屏幕右下角；记录后用于恢复手动拖动的位置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CompanionWindowPosition {
+    /// 窗口左上角 x 坐标（逻辑像素）。
+    pub x: i32,
+    /// 窗口左上角 y 坐标（逻辑像素）。
+    pub y: i32,
+}
+
 /// Live2D 角色配置。
 ///
 /// 字段可缺省：未配置时回退到 `live2d::config` 的默认目录。
@@ -198,6 +209,12 @@ pub struct Live2dSettings {
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
+    /// 角色窗口位置（逻辑像素；缺省表示未记录）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_position: Option<CompanionWindowPosition>,
+    /// 角色窗口缩放比例（1.0 = 100%；缺省视为 1.0）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_scale: Option<f64>,
 }
 
 fn default_log_level() -> String {
@@ -470,10 +487,21 @@ mod tests {
     fn test_live2d_settings_serde_roundtrip() {
         let live2d = Live2dSettings {
             model_dir: Some("/tmp/some-model".to_string()),
+            window_position: Some(CompanionWindowPosition { x: 120, y: 800 }),
+            window_scale: Some(1.5),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(live2d, deserialized);
+        // 未记录位置/比例时字段应被 skip_serializing_if 忽略
+        let none_pos = Live2dSettings {
+            model_dir: Some("/tmp/some-model".to_string()),
+            window_position: None,
+            window_scale: None,
+        };
+        let none_toml = toml::to_string(&none_pos).unwrap();
+        assert!(!none_toml.contains("window_position"));
+        assert!(!none_toml.contains("window_scale"));
     }
 
     #[test]
@@ -497,6 +525,7 @@ mod tests {
                 asr: None,
                 live2d: Some(Live2dSettings {
                     model_dir: Some("/tmp/model-dir".to_string()),
+                    ..Default::default()
                 }),
             };
             save_settings(&config).unwrap();

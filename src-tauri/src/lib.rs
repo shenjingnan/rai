@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use zapmomo::asr::{AsrReaction, AsrResult};
+use zapmomo::config::settings::{self, Live2dSettings};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 
 /// 监听线程状态：共享停止标志 + 线程句柄。
@@ -481,10 +482,88 @@ async fn download_asr_model(
     .map_err(|e| format!("下载任务异常: {e}"))?
 }
 
+/// GUI 展示用的 Live2D 配置信息。
+#[derive(Serialize)]
+struct Live2dConfigInfo {
+    model_dir: Option<String>,
+    model_file: Option<String>,
+    format: Option<String>,
+    models_present: bool,
+    settings_path: String,
+}
+
+/// 读取 Live2D 配置，并在模型目录存在时重新放行 asset 协议 scope。
+///
+/// asset 协议 scope 不跨进程持久，因此每次启动/读取都要重新
+/// `allow_directory`，否则 WebView 无法加载模型文件。
+#[tauri::command]
+fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
+    let settings = settings::load_settings()?;
+    let live2d_settings = settings.as_ref().and_then(|s| s.live2d.clone());
+    let cfg = zapmomo::live2d::config::resolve(live2d_settings.as_ref())?;
+
+    let models_present = cfg.model_file.as_ref().is_some_and(|f| f.is_file());
+    if models_present {
+        let _ = app
+            .asset_protocol_scope()
+            .allow_directory(&cfg.model_dir, true);
+    }
+
+    Ok(Live2dConfigInfo {
+        model_dir: Some(cfg.model_dir.display().to_string()),
+        model_file: cfg.model_file.map(|p| p.display().to_string()),
+        format: cfg.format.map(|f| f.to_str().to_string()),
+        models_present,
+        settings_path: settings::get_settings_path().display().to_string(),
+    })
+}
+
+/// 选择模型目录后返回的模型信息。
+#[derive(Clone, Serialize)]
+struct Live2dModelInfo {
+    model_dir: String,
+    model_file: String,
+    format: String,
+}
+
+/// 校验并持久化用户选择的 Live2D 模型目录，放行 asset 协议 scope。
+#[tauri::command]
+fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, String> {
+    let dir_path = std::path::PathBuf::from(&dir);
+    let (model_file, format) = zapmomo::live2d::config::find_model_file(&dir_path)
+        .ok_or_else(|| "目录中未找到 Live2D 模型清单（*.model3.json 或 model.json）".to_string())?;
+
+    // 前端渲染使用 pixi-live2d-display/cubism4，仅支持 Cubism 3/4/5（.moc3），
+    // 不支持 Cubism 2（.moc），这里提前拒绝避免前端静默失败。
+    if format == zapmomo::live2d::config::Live2dFormat::Cubism2 {
+        return Err(
+            "暂不支持 Cubism 2 模型（.moc + model.json），请使用 Cubism 3/4/5 模型（.moc3 + .model3.json）"
+                .to_string(),
+        );
+    }
+
+    app.asset_protocol_scope()
+        .allow_directory(&dir_path, true)
+        .map_err(|e| format!("无法放行模型目录: {e}"))?;
+
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    settings.live2d = Some(Live2dSettings {
+        model_dir: Some(dir.clone()),
+    });
+    settings::save_settings(&settings)?;
+
+    Ok(Live2dModelInfo {
+        model_dir: dir,
+        model_file: model_file.display().to_string(),
+        format: format.to_str().to_string(),
+    })
+}
+
 /// Tauri 应用入口。
 pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(ListenState::new())
         .manage(DownloadState::default())
         .manage(AsrListenState::new())
@@ -501,7 +580,9 @@ pub fn run() {
             start_asr_listen,
             stop_asr_listen,
             is_asr_listening,
-            download_asr_model
+            download_asr_model,
+            get_live2d_config,
+            set_live2d_model
         ])
         .setup(|app| {
             // macOS 用 titleBarStyle: Overlay 保留红绿灯；其它平台去掉系统标题栏。

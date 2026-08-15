@@ -11,8 +11,11 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri 桌面框架
-tauri = { version = "2", features = [] }
+# Tauri 桌面框架（protocol-asset 用于通过 asset:// 协议把本地模型文件喂给 WebView）
+tauri = { version = "2", features = ["protocol-asset"] }
+
+# 文件/目录选择对话框（用户加载 Live2D 模型目录）
+tauri-plugin-dialog = "2"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }

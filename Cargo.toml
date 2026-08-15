@@ -30,6 +30,15 @@ cpal = "0.18"
 # 关键词检测（KWS），默认 static 特性：构建时下载预编译库
 sherpa-onnx = "1.13"
 
+# 本地 LLM（llama.cpp Rust 绑定）：默认后端在 macOS ARM64 自动启用 Metal，其余平台 CPU fallback
+llama-cpp-2 = "0.1.154"
+
+# token 逐字节解码（llama-cpp-2 的 token_to_piece 需要持久的 UTF-8 decoder）
+encoding_rs = "0.8"
+
+# HTTP 客户端（OpenAI 兼容 Responses / llama.cpp-server）
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
 # 汉字 → 带声调拼音（把用户输入的原始中文关键词转成模型可编码的 ppinyin token）
 pinyin = "0.11"
 
@@ -60,7 +69,6 @@ tar = { version = "0.4", default-features = false }
 bzip2 = "0.4"
 
 # --- 可选依赖（按需取消注释） ---
-# reqwest = { version = "0.12", features = ["json"] }   # HTTP 客户端
 # url = "2"                                              # URL 解析
 # futures-util = "0.3"                                   # 异步流处理
 

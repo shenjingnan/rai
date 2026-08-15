@@ -1,0 +1,12 @@
+# Windows 上统一使用静态 CRT（/MT），避免 llama.cpp / sherpa-onnx 的 CRT 冲突。
+#
+# 背景：sherpa-onnx 预编译库是 /MT（静态 CRT）。llama.cpp 通过 cmake 的
+# CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded 也编译成 /MT；但 llama-cpp-sys-2 用 cc crate
+# 编译的 wrapper_common.cpp 以及 Rust std 本身默认是 /MD（动态 CRT），与 /MT 冲突（LNK2038）。
+# 这里让 Rust 在 Windows MSVC 上用 crt-static，使 wrapper、Rust std、llama.cpp、sherpa-onnx
+# 全部统一为 /MT。
+[env]
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

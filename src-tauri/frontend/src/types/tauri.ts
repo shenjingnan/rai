@@ -110,3 +110,29 @@ export interface TtsVoice {
   wav_path: string;
   reference_text: string;
 }
+
+/** `get_llm_config` 返回 */
+export interface LlmConfigInfo {
+  enabled: boolean;
+  provider: string;
+  model_path: string;
+  models_present: boolean;
+  ready: boolean;
+  enable_thinking: boolean;
+  auto_load: boolean;
+  settings_path: string;
+}
+
+/** `llm-token` 事件载荷（对应后端 TokenDelta） */
+export interface LlmToken {
+  text: string;
+  is_final: boolean;
+}
+
+/** `llm-finished` 事件载荷（对应后端 FinishReason，序列化为小写） */
+export type LlmFinishReason = "eos" | "max_tokens" | "cancelled" | "error";
+
+/** `llm-status` 事件载荷（对应后端 LlmStatusPayload） */
+export interface LlmStatus {
+  ready: boolean;
+}

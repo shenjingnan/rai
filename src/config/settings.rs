@@ -84,6 +84,9 @@ pub struct AppConfig {
     /// Live2D 角色配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live2d: Option<Live2dSettings>,
+    /// 本地 LLM 配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<LlmSettings>,
 }
 
 /// 唤醒词检测（KWS）配置。
@@ -275,6 +278,73 @@ pub struct Live2dSettings {
     pub window_scale: Option<f64>,
 }
 
+/// 本地 LLM 配置。
+///
+/// 全部字段可缺省：未配置的项在解析时回退到 `llm::config` 的内置默认值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LlmSettings {
+    /// 是否启用 Local LLM，缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// provider 标识，缺省 "local"（未来 ollama/openai/...）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// GGUF 模型文件路径（支持 ${env.VAR}，相对路径锚定 ~/.zapmomo/models）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_path: Option<String>,
+    /// 角色 system prompt，缺省用内置默认
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// 上下文窗口大小（token），缺省 8192
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_size: Option<usize>,
+    /// 单次 decode batch 大小，缺省 512
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
+    /// 最多生成 token 数，缺省 512
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<usize>,
+    /// 温度，缺省 0.7
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// top_p 采样，缺省 0.8
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// top_k 采样，缺省 20
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// min_p 采样，缺省 0.05
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_p: Option<f32>,
+    /// 重复惩罚，缺省 1.05
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
+    /// 随机种子，缺省 0（随机）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    /// CPU 线程数，缺省 物理核数 - 2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<i32>,
+    /// 卸载到 GPU 的层数，缺省 -1（全部，Metal）；0 表示纯 CPU
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_layers: Option<i32>,
+    /// 是否开启 Qwen3 思考模式（输出 <think> 块），缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    /// 是否在应用启动时自动加载模型，缺省 false（懒加载）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_load: Option<bool>,
+    /// HTTP provider 的 base URL（如 https://api.openai.com/v1 或 http://127.0.0.1:8080/v1）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// HTTP provider 的 API key（本地 server 可留空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// HTTP provider 的模型名（如 qwen3-4b / gpt-4o-mini）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -289,6 +359,7 @@ impl Default for AppConfig {
             asr: None,
             tts: None,
             live2d: None,
+            llm: None,
         }
     }
 }
@@ -449,6 +520,7 @@ mod tests {
             asr: None,
             tts: None,
             live2d: None,
+            llm: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -643,6 +715,7 @@ mod tests {
                     model_dir: Some("/tmp/model-dir".to_string()),
                     ..Default::default()
                 }),
+                llm: None,
             };
             save_settings(&config).unwrap();
             let loaded = load_settings().unwrap().unwrap();

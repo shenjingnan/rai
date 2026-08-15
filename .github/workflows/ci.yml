@@ -126,4 +126,9 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Tests
+        shell: bash
+        env:
+          # 让 cmake 用静态 CRT（/MT）：MSBuild 不 respect CMAKE_CXX_FLAGS 里的 -MT，
+          # 需通过 CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded 让 vcxproj 的 RuntimeLibrary 设为 /MT。
+          CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
         run: cargo test -- --test-threads=1

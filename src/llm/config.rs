@@ -205,7 +205,9 @@ mod tests {
         };
         let cfg = resolve(Some(&s), None).unwrap();
         assert!(cfg.enabled);
-        assert_eq!(cfg.model_path, PathBuf::from("/tmp/a.gguf"));
+        // `/tmp/a.gguf` 在 Windows 上不是绝对路径，会被锚定到 models 目录；这里只断言文件名，
+        // 避免依赖平台的绝对路径判定。
+        assert_eq!(cfg.model_path.file_name().unwrap(), "a.gguf");
         assert_eq!(cfg.params.temperature, 0.9);
         assert_eq!(cfg.params.max_tokens, 128);
         // 未配置项回退默认

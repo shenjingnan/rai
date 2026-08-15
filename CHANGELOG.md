@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.10](https://github.com/shenjingnan/zapmomo/compare/v0.1.9...v0.1.10) - 2026-08-15
+
+### Added
+
+- *(live2d)* 角色窗口拖动不抢焦点并从 Dock/Cmd+Tab 隐形 ([#49](https://github.com/shenjingnan/zapmomo/pull/49))
+- *(live2d)* 角色窗口位置记忆与百分比缩放 ([#48](https://github.com/shenjingnan/zapmomo/pull/48))
+- *(live2d)* 集成 Live2D 模型加载与预览 ([#45](https://github.com/shenjingnan/zapmomo/pull/45))
+
+### Other
+
+- 使用原生 SVG 替换 favicon 内嵌 PNG ([#42](https://github.com/shenjingnan/zapmomo/pull/42))
+
 ## [0.1.9](https://github.com/shenjingnan/zapmomo/compare/v0.1.8...v0.1.9) - 2026-08-14
 
 ### Added

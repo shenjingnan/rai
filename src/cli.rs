@@ -48,6 +48,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AsrCmd,
     },
+    /// 文本转语音（TTS）
+    Tts {
+        #[command(subcommand)]
+        cmd: TtsCmd,
+    },
 }
 
 /// KWS 子命令
@@ -133,6 +138,50 @@ pub enum AsrCmd {
     },
 }
 
+/// TTS 子命令
+#[derive(Subcommand)]
+pub enum TtsCmd {
+    /// 把文本合成为 wav 文件
+    Run {
+        /// 要合成的文本
+        #[arg(short, long)]
+        text: String,
+        /// 模型目录（覆盖 settings.toml 的 tts.model_dir）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 语速，缺省 1.0
+        #[arg(long)]
+        speed: Option<f32>,
+        /// 输出 wav 路径；缺省 ~/.zapmomo/tts/<时间戳>.wav
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// 内置音色 id（如 leijun-1 / news-female / news-female-2）
+        #[arg(long)]
+        voice: Option<String>,
+        /// 自定义参考音频 wav（配合 --reference-text 使用）
+        #[arg(long)]
+        reference_wav: Option<PathBuf>,
+        /// 自定义参考音频的逐字转写文本
+        #[arg(long)]
+        reference_text: Option<String>,
+    },
+    /// 列出可用的内置音色
+    Voices {
+        /// 模型目录（覆盖 settings.toml 的 tts.model_dir）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+    },
+    /// 下载并安装 TTS 模型（主包 + 声码器，默认 ~/.zapmomo/models/<模型名>）
+    InstallModel {
+        /// 安装目标模型目录（默认 ~/.zapmomo/models/<模型名>）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 已安装也强制重新下载
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 /// config 命令
 fn cmd_config() -> Result<String, String> {
     let config = serde_json::json!({
@@ -172,6 +221,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
         }
         Some(Commands::Kws { cmd }) => cmd_kws(cmd).await,
         Some(Commands::Asr { cmd }) => cmd_asr(cmd).await,
+        Some(Commands::Tts { cmd }) => cmd_tts(cmd).await,
         None => unreachable!(),
     }
 }
@@ -314,6 +364,81 @@ fn asr_config(
     let settings = crate::config::settings::load_settings()?;
     let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
     crate::asr::config::resolve(asr_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
+}
+
+/// TTS 命令入口
+async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
+    match cmd {
+        TtsCmd::Run {
+            text,
+            model_dir,
+            speed,
+            output,
+            voice,
+            reference_wav,
+            reference_text,
+        } => {
+            let cfg = tts_config(model_dir.as_ref())?;
+            let engine = crate::tts::TtsEngine::new(cfg.clone())?;
+            let speed = speed.unwrap_or(1.0);
+            let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
+                &cfg,
+                voice.as_deref(),
+                reference_wav.as_deref(),
+                reference_text.as_deref(),
+            )?;
+            let out_path = output.unwrap_or_else(crate::tts::default_output_path);
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建输出目录失败: {e}"))?;
+            }
+            engine.synthesize_to_wav(&text, speed, &ref_wav, &ref_text, &out_path)?;
+            println!("已合成: {}", out_path.display());
+            Ok(())
+        }
+        TtsCmd::Voices { model_dir } => {
+            let cfg = tts_config(model_dir.as_ref())?;
+            let voices = crate::tts::voice::list_builtin_voices(&cfg.model_dir);
+            if voices.is_empty() {
+                println!("未找到内置音色（请先运行 `zapmomo tts install-model` 下载模型）。");
+            } else {
+                println!("可用内置音色:");
+                for v in voices {
+                    println!("  {}  {}", v.id, v.name);
+                }
+            }
+            Ok(())
+        }
+        TtsCmd::InstallModel { model_dir, force } => {
+            use crate::tts::{
+                DownloadProgress, DownloadStage, install_model_to, install_vocoder_to,
+                user_model_dir,
+            };
+            let dest = model_dir.unwrap_or_else(user_model_dir);
+            let mut progress = |p: DownloadProgress| {
+                let stage = match p.stage {
+                    DownloadStage::Downloading => "下载",
+                    DownloadStage::Verifying => "校验",
+                    DownloadStage::Extracting => "解压",
+                    DownloadStage::Done => "完成",
+                };
+                println!("[{stage}] {}", p.message);
+            };
+            install_model_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
+            println!("TTS 主模型已就绪: {}", dest.display());
+            install_vocoder_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
+            println!("TTS 声码器已就绪: {}", dest.display());
+            Ok(())
+        }
+    }
+}
+
+/// 读取 settings 并解析 TTS 配置
+fn tts_config(
+    cli_model_dir: Option<&PathBuf>,
+) -> Result<crate::tts::config::ResolvedTtsConfig, String> {
+    let settings = crate::config::settings::load_settings()?;
+    let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
+    crate::tts::config::resolve(tts_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
 }
 
 #[cfg(test)]
@@ -591,6 +716,66 @@ mod tests {
             Commands::Asr { cmd } => assert!(matches!(
                 cmd,
                 AsrCmd::InstallModel {
+                    force: true,
+                    model_dir: None
+                }
+            )),
+            _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tts_run() {
+        let cli = Cli::try_parse_from(&["test", "tts", "run", "--text", "你好", "--speed", "1.2"])
+            .unwrap();
+        match cli.command.unwrap() {
+            Commands::Tts { cmd } => assert!(matches!(
+                cmd,
+                TtsCmd::Run {
+                    text,
+                    speed: Some(1.2),
+                    voice: None,
+                    ..
+                } if text == "你好"
+            )),
+            _ => panic!("Expected Tts command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tts_run_with_voice() {
+        let cli = Cli::try_parse_from(&[
+            "test", "tts", "run", "--text", "你好", "--voice", "leijun-1",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Tts { cmd } => assert!(matches!(
+                cmd,
+                TtsCmd::Run {
+                    voice: Some(id),
+                    ..
+                } if id == "leijun-1"
+            )),
+            _ => panic!("Expected Tts command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tts_voices() {
+        let cli = Cli::try_parse_from(&["test", "tts", "voices"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Tts { cmd } => assert!(matches!(cmd, TtsCmd::Voices { .. })),
+            _ => panic!("Expected Tts command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tts_install_model() {
+        let cli = Cli::try_parse_from(&["test", "tts", "install-model", "--force"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Tts { cmd } => assert!(matches!(
+                cmd,
+                TtsCmd::InstallModel {
                     force: true,
                     model_dir: None
                 }

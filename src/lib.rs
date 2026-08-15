@@ -7,6 +7,7 @@ pub mod datetime;
 pub mod kws;
 pub mod live2d;
 pub mod logging;
+pub mod tts;
 
 #[cfg(test)]
 pub(crate) mod test_util {

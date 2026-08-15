@@ -288,8 +288,12 @@ mod tests {
 
     #[test]
     fn test_resolve_no_settings_uses_defaults() {
-        let cfg = resolve(None, None).unwrap();
-        assert_eq!(cfg, ResolvedAsrConfig::default());
+        // 用临时 HOME 隔离，避免与其它 `run_with_temp_home` 测试并行时 HOME 竞态
+        // 导致 `resolve` 与 `ResolvedAsrConfig::default` 两次读取到不同 HOME。
+        run_with_temp_home(|_| {
+            let cfg = resolve(None, None).unwrap();
+            assert_eq!(cfg, ResolvedAsrConfig::default());
+        });
     }
 
     fn abs_path(rel: &str) -> PathBuf {

@@ -32,6 +32,9 @@ pub struct ModelAsset {
     pub role: String,
     #[serde(default)]
     pub version: String,
+    /// 资产类型：`archive`（默认，tar.bz2 解压落位）或 `raw`（单文件直接落位）。
+    #[serde(default)]
+    pub kind: Option<String>,
     pub archive: String,
     pub source: String,
     pub sha256: String,
@@ -39,6 +42,13 @@ pub struct ModelAsset {
     pub size_bytes: u64,
     #[serde(default)]
     pub license: String,
+}
+
+impl ModelAsset {
+    /// 是否为「裸文件」资产（单文件下载，无需解压）。
+    pub fn is_raw(&self) -> bool {
+        self.kind.as_deref() == Some("raw")
+    }
 }
 
 /// 编译期嵌入的清单 JSON（随仓库入库，打包后不依赖外部文件）。
@@ -72,6 +82,16 @@ pub fn punctuation_asset() -> &'static ModelAsset {
     asset_by_role("punctuation").expect("模型清单缺少 punctuation 资产")
 }
 
+/// TTS 主模型资产（清单中 `role == "tts"` 的资产，tar.bz2 归档）。
+pub fn tts_asset() -> &'static ModelAsset {
+    asset_by_role("tts").expect("模型清单缺少 tts 资产")
+}
+
+/// TTS 声码器资产（清单中 `role == "tts-vocoder"` 的资产，裸 .onnx 单文件）。
+pub fn tts_vocoder_asset() -> &'static ModelAsset {
+    asset_by_role("tts-vocoder").expect("模型清单缺少 tts-vocoder 资产")
+}
+
 /// 用户模型根目录：`~/.zapmomo/models`
 pub fn user_models_dir() -> PathBuf {
     get_models_dir()
@@ -90,6 +110,11 @@ pub fn asr_user_model_dir() -> PathBuf {
 /// 默认标点模型安装目录：`~/.zapmomo/models/<name>`
 pub fn punctuation_user_model_dir() -> PathBuf {
     get_models_dir().join(&punctuation_asset().name)
+}
+
+/// 默认 TTS 模型安装目录：`~/.zapmomo/models/<name>`
+pub fn tts_user_model_dir() -> PathBuf {
+    get_models_dir().join(&tts_asset().name)
 }
 
 /// 下载/安装阶段（CLI 打日志 / GUI 推事件共用）。
@@ -225,6 +250,58 @@ pub fn install_asset_to(
         DownloadStage::Done,
         100.0,
         dest_dir,
+        "模型安装完成",
+    ));
+    Ok(())
+}
+
+/// 安装「裸文件」资产（单文件，无解压）到 `dest_path`。
+///
+/// 用于 TTS 声码器这类与主包分离发布的独立 .onnx 文件。流程：
+/// 幂等检查 → 下载到临时文件 → sha256 校验 → 原子落位（无解压阶段）。
+pub fn install_raw_file_to(
+    asset: &ModelAsset,
+    dest_path: &Path,
+    force: bool,
+    on_progress: &mut ProgressFn,
+) -> Result<(), ModelError> {
+    let parent = dest_path
+        .parent()
+        .ok_or_else(|| ModelError::Extract("目标文件缺少父目录".to_string()))?;
+
+    if !force && dest_path.is_file() {
+        on_progress(progress(
+            DownloadStage::Done,
+            100.0,
+            dest_path,
+            "模型已安装",
+        ));
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".{}.tmp", asset.archive));
+
+    download_to(&asset.source, &tmp, asset.size_bytes, on_progress)?;
+
+    on_progress(progress(
+        DownloadStage::Verifying,
+        -1.0,
+        dest_path,
+        "校验 sha256",
+    ));
+    verify_sha256(&tmp, &asset.sha256)?;
+
+    // 原子落位：目标已存在先移除（Windows 上 rename 覆盖文件可能失败）。
+    if dest_path.exists() {
+        std::fs::remove_file(dest_path)?;
+    }
+    std::fs::rename(&tmp, dest_path)?;
+
+    on_progress(progress(
+        DownloadStage::Done,
+        100.0,
+        dest_path,
         "模型安装完成",
     ));
     Ok(())
@@ -453,6 +530,7 @@ mod tests {
             name: "test-kws-model".to_string(),
             role: "wake-word".to_string(),
             version: "test".to_string(),
+            kind: None,
             archive: archive.to_string(),
             source: source.to_string(),
             sha256: sha256.to_string(),
@@ -513,6 +591,22 @@ mod tests {
             "punctuation_asset 不在清单中"
         );
         assert_eq!(asset_by_role("punctuation").unwrap().name, a.name);
+    }
+
+    #[test]
+    fn test_manifest_tts_assets() {
+        let a = tts_asset();
+        assert_eq!(a.role, "tts");
+        assert!(!a.is_raw());
+        assert_eq!(a.sha256.len(), 64);
+
+        let v = tts_vocoder_asset();
+        assert_eq!(v.role, "tts-vocoder");
+        assert!(v.is_raw());
+        assert_eq!(v.sha256.len(), 64);
+
+        // 声码器与主包落位到同一模型目录
+        assert_eq!(tts_asset().name, tts_vocoder_asset().name);
     }
 
     #[test]
@@ -591,6 +685,32 @@ mod tests {
             &KWS_REQUIRED_FILES,
         )
         .unwrap();
+        assert_eq!(stages, vec![DownloadStage::Done]);
+    }
+
+    #[test]
+    fn test_install_raw_file_via_local_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"vocos-onnx-bytes".to_vec();
+        let url = serve_many(bytes.clone());
+        let mut asset = asset_for(&url, &sha256_hex(&bytes), "vocos_24khz.onnx");
+        asset.kind = Some("raw".to_string());
+
+        let dest = dir.path().join("vocos_24khz.onnx");
+        let mut stages = Vec::new();
+        install_raw_file_to(&asset, &dest, false, &mut |p| stages.push(p.stage)).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), bytes);
+
+        let expected = [
+            DownloadStage::Downloading,
+            DownloadStage::Verifying,
+            DownloadStage::Done,
+        ];
+        assert_eq!(stages, expected);
+
+        // 幂等：已装且非 force → 仅 Done
+        let mut stages = Vec::new();
+        install_raw_file_to(&asset, &dest, false, &mut |p| stages.push(p.stage)).unwrap();
         assert_eq!(stages, vec![DownloadStage::Done]);
     }
 

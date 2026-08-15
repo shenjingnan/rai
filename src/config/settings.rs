@@ -31,6 +31,11 @@ pub fn get_models_dir() -> PathBuf {
     get_settings_dir().join("models")
 }
 
+/// 获取 TTS 合成音频输出目录：`~/.zapmomo/tts`（供前端 asset 协议播放）。
+pub fn get_tts_output_dir() -> PathBuf {
+    get_settings_dir().join("tts")
+}
+
 /// 解析 ${env.VAR} 引用
 ///
 /// - "${env.MY_VAR}" → 从环境变量 MY_VAR 读取
@@ -73,6 +78,9 @@ pub struct AppConfig {
     /// 语音识别（ASR）配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr: Option<AsrSettings>,
+    /// 文本转语音（TTS）配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tts: Option<TtsSettings>,
     /// Live2D 角色配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live2d: Option<Live2dSettings>,
@@ -190,6 +198,56 @@ pub struct AsrSettings {
     pub debug: Option<bool>,
 }
 
+/// 文本转语音（TTS）配置。
+///
+/// 全部字段可缺省：未配置的项在解析时回退到 `tts::config` 的内置默认值，
+/// 因此这里用 `Option` 以区分「未配置」与「配置了」。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TtsSettings {
+    /// 模型目录（支持 ${env.VAR} 引用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
+    /// encoder onnx 文件名（缺省 int8 变体）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// decoder onnx 文件名（缺省 int8 变体）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    /// 声码器 vocoder onnx 文件名（缺省 vocos_24khz.onnx）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocoder: Option<String>,
+    /// tokens.txt 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<String>,
+    /// lexicon.txt 文件名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lexicon: Option<String>,
+    /// espeak-ng 数据目录名（缺省 espeak-ng-data）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
+    /// 参考音频 wav 路径（相对模型目录；缺省 test_wavs/leijun-1.wav）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_wav: Option<String>,
+    /// 参考音频的逐字转写文本
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_text: Option<String>,
+    /// 扩散解码步数（质量/速度权衡），缺省 4
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_steps: Option<i32>,
+    /// 语速，缺省 1.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
+    /// 推理后端，缺省 "cpu"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// 推理线程数，缺省 2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_threads: Option<i32>,
+    /// 调试输出，缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<bool>,
+}
+
 /// 角色窗口位置（逻辑像素）。
 ///
 /// `None` 表示未记录 → 首次启动时定位到屏幕右下角；记录后用于恢复手动拖动的位置。
@@ -229,6 +287,7 @@ impl Default for AppConfig {
             custom: None,
             kws: None,
             asr: None,
+            tts: None,
             live2d: None,
         }
     }
@@ -388,6 +447,7 @@ mod tests {
             custom: Some(std::collections::HashMap::new()),
             kws: None,
             asr: None,
+            tts: None,
             live2d: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
@@ -438,6 +498,61 @@ mod tests {
             write_toml_settings(home, "debug = true\n");
             let result = load_settings().unwrap().unwrap();
             assert!(result.kws.is_none());
+        });
+    }
+
+    #[test]
+    fn test_load_settings_with_tts_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[tts]\nnum_threads = 4\nspeed = 1.2\n");
+            let result = load_settings().unwrap().unwrap();
+            let tts = result.tts.unwrap();
+            assert_eq!(tts.num_threads, Some(4));
+            assert_eq!(tts.speed, Some(1.2));
+            // 未配置的字段保持 None
+            assert_eq!(tts.model_dir, None);
+            assert_eq!(tts.num_steps, None);
+        });
+    }
+
+    #[test]
+    fn test_load_settings_without_tts_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "debug = true\n");
+            let result = load_settings().unwrap().unwrap();
+            assert!(result.tts.is_none());
+        });
+    }
+
+    #[test]
+    fn test_tts_settings_serde_roundtrip() {
+        let tts = TtsSettings {
+            model_dir: Some("${env.TTS_MODEL_DIR}".to_string()),
+            encoder: Some("encoder.int8.onnx".to_string()),
+            decoder: None,
+            vocoder: Some("vocos_24khz.onnx".to_string()),
+            tokens: None,
+            lexicon: None,
+            data_dir: None,
+            reference_wav: Some("test_wavs/leijun-1.wav".to_string()),
+            reference_text: None,
+            num_steps: Some(4),
+            speed: Some(1.0),
+            provider: Some("cpu".to_string()),
+            num_threads: Some(2),
+            debug: Some(false),
+        };
+        let toml_str = toml::to_string(&tts).unwrap();
+        let deserialized: TtsSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(tts, deserialized);
+        // 未配置字段应被 skip_serializing_if 忽略
+        assert!(!toml_str.contains("decoder"));
+    }
+
+    #[test]
+    fn test_get_tts_output_dir() {
+        run_with_temp_home(|home| {
+            assert_eq!(get_tts_output_dir(), home.join(".zapmomo/tts"));
         });
     }
 
@@ -523,6 +638,7 @@ mod tests {
                 custom: None,
                 kws: None,
                 asr: None,
+                tts: None,
                 live2d: Some(Live2dSettings {
                     model_dir: Some("/tmp/model-dir".to_string()),
                     ..Default::default()

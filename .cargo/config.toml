@@ -1,5 +1,10 @@
 # 让 llama-cpp-2 在 Windows MSVC 上用静态 CRT（/MT），与 sherpa-onnx 预编译库的 /MT 保持一致，
 # 避免链接时 LNK2038「RuntimeLibrary mismatch（MT_StaticRelease vs MD_DynamicRelease）」错误。
-# 该环境变量只在 MSVC 目标生效，macOS/Linux 上无害。
+#
+# 根因：llama-cpp-sys-2 用 cmake 的 Visual Studio generator（MSBuild），MSBuild 不 respect
+# CMAKE_CXX_FLAGS 里的 -MT，而是用 .vcxproj 里的 <RuntimeLibrary>（默认 MultiThreadedDLL=/MD）。
+# 正确做法是设置 CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded（CMake 3.15+），让 cmake 生成
+# vcxproj 时把 RuntimeLibrary 设为 MultiThreaded（/MT）。llama.cpp 的 cmake_minimum_required
+# 是 3.14...3.28，满足 CMP0091=NEW。该变量只在 MSVC 目标生效，macOS/Linux 无害。
 [env]
-LLAMA_STATIC_CRT = "1"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

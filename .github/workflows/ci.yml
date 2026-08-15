@@ -125,28 +125,10 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.1
 
-      - name: Diagnose llama CRT (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          LLAMA_STATIC_CRT: "1"
-        run: |
-          echo "=== env 诊断 ==="
-          echo "LLAMA_STATIC_CRT=[${LLAMA_STATIC_CRT:-未设置}]"
-          echo "--- 所有 CMAKE_GENERATOR 相关环境变量 ---"
-          env | grep -iE "CMAKE_GENERATOR|CRATE_CC" || echo "(无相关环境变量)"
-          echo "=== 强制重编 llama-cpp-sys-2，抓 cmake 命令 ==="
-          cargo clean -p llama-cpp-sys-2 2>/dev/null || true
-          cargo build -vv 2>&1 | grep -E "running:.*cmake" | head -5
-
       - name: Tests
         shell: bash
         env:
-          # 让 llama-cpp-2 在 Windows MSVC 上用静态 CRT（/MT），匹配 sherpa-onnx 预编译库的 /MT
-          LLAMA_STATIC_CRT: "1"
-        run: |
-          # GitHub Actions Windows runner 预设 CMAKE_GENERATOR=Visual Studio，会让 cmake crate 跳过
-          # static_crt 通过 CMAKE_CXX_FLAGS_RELEASE 的传递（该分支要求 generator.is_none()）。
-          # unset 后走默认路径，让 /MT 正确传递给 llama.cpp。
-          unset CMAKE_GENERATOR CMAKE_GENERATOR_PLATFORM CMAKE_GENERATOR_TOOLSET CMAKE_GENERATOR_INSTANCE HOST_CMAKE_GENERATOR TARGET_CMAKE_GENERATOR 2>/dev/null || true
-          cargo test -- --test-threads=1
+          # 让 cmake 用静态 CRT（/MT）：MSBuild 不 respect CMAKE_CXX_FLAGS 里的 -MT，
+          # 需通过 CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded 让 vcxproj 的 RuntimeLibrary 设为 /MT。
+          CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
+        run: cargo test -- --test-threads=1

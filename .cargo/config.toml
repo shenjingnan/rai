@@ -1,10 +1,12 @@
-# 让 llama-cpp-2 在 Windows MSVC 上用静态 CRT（/MT），与 sherpa-onnx 预编译库的 /MT 保持一致，
-# 避免链接时 LNK2038「RuntimeLibrary mismatch（MT_StaticRelease vs MD_DynamicRelease）」错误。
+# Windows 上统一使用静态 CRT（/MT），避免 llama.cpp / sherpa-onnx 的 CRT 冲突。
 #
-# 根因：llama-cpp-sys-2 用 cmake 的 Visual Studio generator（MSBuild），MSBuild 不 respect
-# CMAKE_CXX_FLAGS 里的 -MT，而是用 .vcxproj 里的 <RuntimeLibrary>（默认 MultiThreadedDLL=/MD）。
-# 正确做法是设置 CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded（CMake 3.15+），让 cmake 生成
-# vcxproj 时把 RuntimeLibrary 设为 MultiThreaded（/MT）。llama.cpp 的 cmake_minimum_required
-# 是 3.14...3.28，满足 CMP0091=NEW。该变量只在 MSVC 目标生效，macOS/Linux 无害。
+# 背景：sherpa-onnx 预编译库是 /MT（静态 CRT）。llama.cpp 通过 cmake 的
+# CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded 也编译成 /MT；但 llama-cpp-sys-2 用 cc crate
+# 编译的 wrapper_common.cpp 以及 Rust std 本身默认是 /MD（动态 CRT），与 /MT 冲突（LNK2038）。
+# 这里让 Rust 在 Windows MSVC 上用 crt-static，使 wrapper、Rust std、llama.cpp、sherpa-onnx
+# 全部统一为 /MT。
 [env]
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

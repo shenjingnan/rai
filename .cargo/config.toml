@@ -1,0 +1,5 @@
+# 让 llama-cpp-2 在 Windows MSVC 上用静态 CRT（/MT），与 sherpa-onnx 预编译库的 /MT 保持一致，
+# 避免链接时 LNK2038「RuntimeLibrary mismatch（MT_StaticRelease vs MD_DynamicRelease）」错误。
+# 该环境变量只在 MSVC 目标生效，macOS/Linux 上无害。
+[env]
+LLAMA_STATIC_CRT = "1"

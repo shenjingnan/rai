@@ -27,3 +27,7 @@ tracing = "0.1"
 
 # 复用根 crate 的 KWS / 音频 / 配置逻辑
 zapmomo = { path = ".." }
+
+[target."cfg(target_os = \"macos\")".dependencies]
+# 把角色窗口转成 macOS 非激活面板（non-activating panel）：拖动/点击不抢前台焦点
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

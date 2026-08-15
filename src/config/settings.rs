@@ -73,6 +73,9 @@ pub struct AppConfig {
     /// 语音识别（ASR）配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr: Option<AsrSettings>,
+    /// Live2D 角色配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live2d: Option<Live2dSettings>,
 }
 
 /// 唤醒词检测（KWS）配置。
@@ -187,6 +190,16 @@ pub struct AsrSettings {
     pub debug: Option<bool>,
 }
 
+/// Live2D 角色配置。
+///
+/// 字段可缺省：未配置时回退到 `live2d::config` 的默认目录。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Live2dSettings {
+    /// 模型目录（支持 ${env.VAR} 引用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -199,6 +212,7 @@ impl Default for AppConfig {
             custom: None,
             kws: None,
             asr: None,
+            live2d: None,
         }
     }
 }
@@ -218,6 +232,16 @@ pub fn load_settings() -> Result<Option<AppConfig>, String> {
     let config: AppConfig = toml::from_str(&content).map_err(|e| format!("TOML 格式错误: {e}"))?;
 
     Ok(Some(config))
+}
+
+/// 保存配置到 `~/.zapmomo/settings.toml`（自动创建父目录）。
+pub fn save_settings(config: &AppConfig) -> Result<(), String> {
+    let file_path = get_settings_path();
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let content = toml::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
+    std::fs::write(&file_path, content).map_err(|e| format!("写入配置失败: {e}"))
 }
 
 #[cfg(test)]
@@ -347,6 +371,7 @@ mod tests {
             custom: Some(std::collections::HashMap::new()),
             kws: None,
             asr: None,
+            live2d: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -439,5 +464,46 @@ mod tests {
         unsafe {
             std::env::remove_var("KWS_MODEL_DIR");
         }
+    }
+
+    #[test]
+    fn test_live2d_settings_serde_roundtrip() {
+        let live2d = Live2dSettings {
+            model_dir: Some("/tmp/some-model".to_string()),
+        };
+        let toml_str = toml::to_string(&live2d).unwrap();
+        let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(live2d, deserialized);
+    }
+
+    #[test]
+    fn test_load_settings_with_live2d_table() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[live2d]\nmodel_dir = \"/tmp/model-dir\"\n");
+            let result = load_settings().unwrap().unwrap();
+            let live2d = result.live2d.unwrap();
+            assert_eq!(live2d.model_dir.as_deref(), Some("/tmp/model-dir"));
+        });
+    }
+
+    #[test]
+    fn test_save_settings_roundtrip() {
+        run_with_temp_home(|home| {
+            let config = AppConfig {
+                debug: true,
+                log_level: "debug".to_string(),
+                custom: None,
+                kws: None,
+                asr: None,
+                live2d: Some(Live2dSettings {
+                    model_dir: Some("/tmp/model-dir".to_string()),
+                }),
+            };
+            save_settings(&config).unwrap();
+            let loaded = load_settings().unwrap().unwrap();
+            assert_eq!(loaded, config);
+            // 文件确实写到了 HOME 下
+            assert!(home.join(".zapmomo/settings.toml").is_file());
+        });
     }
 }

@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod datetime;
 pub mod kws;
+pub mod live2d;
 pub mod logging;
 
 #[cfg(test)]

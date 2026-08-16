@@ -11,7 +11,11 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 ## 特性
 
 - **语音唤醒（KWS）** — 基于 sherpa-onnx 的 zipformer 唤醒词检测，支持实时麦克风监听与离线 wav 检测；自定义关键词直接输中文，自动转拼音 token
-- **桌面应用** — 基于 Tauri 2 的 GUI（KWS 控制面板），Windows / macOS / Linux 三平台安装包
+- **语音识别（ASR）** — 基于 sherpa-onnx 的流式 zipformer 识别（中英双语），实时转文字幕，自动加标点、支持热词
+- **文本转语音（TTS）** — 基于 sherpa-onnx 的 ZipVoice 零样本声音克隆（中英双语），内置音色与自定义参考音频
+- **本地大语言模型（LLM）** — 集成 llama.cpp 本地推理（任意 GGUF，流式对话 + Agent 工具调用），或接入 OpenAI 兼容远程 API
+- **Live2D 虚拟角色** — 桌面应用常驻角色窗口（Cubism 2/3/4/5），位置记忆与百分比缩放，拖动不抢焦点
+- **桌面应用** — 基于 Tauri 2 的 GUI（设置面板 + 常驻角色窗口），Windows / macOS / Linux 三平台安装包
 - **音频采集** — 基于 cpal 的麦克风采集 + 自动重采样（设备采样率 → 16k）
 - **CLI 骨架** — 基于 clap 的命令行参数解析，支持子命令和 Shell 补全生成
 - **异步运行时** — 集成 tokio，开箱即用的 async/await 支持
@@ -67,7 +71,7 @@ cargo run -- kws devices
 - **校验**：下载后对整包计算 sha256 与清单比对，**不匹配即删除报错**；解压先到临时目录再原子移动，避免留下损坏的半截模型
 - **幂等**：模型已存在且完整则跳过
 - **合规**：第三方来源与许可见 `models/THIRD_PARTY_NOTICES.md`
-- ASR 已沿用同一套清单机制（见下文「语音识别」），后续 TTS 等模型亦将沿用
+- ASR 与 TTS 已沿用同一套清单机制（见下文「语音识别」「文本转语音」）
 
 ### 命令说明
 
@@ -185,9 +189,124 @@ tokens  = "tokens.txt"
 debug = false
 ```
 
+## 文本转语音（TTS）
+
+接入 sherpa-onnx 的 ZipVoice 零样本声音克隆模型（中英双语），把文本合成为 wav（离线批量合成，无流式 feed）。
+
+### 快速开始
+
+```bash
+# 1. 下载模型（约 156MB：TTS 主包 + 声码器，默认安装到 ~/.zapmomo/models/<模型名>，不入库）
+cargo run -- tts install-model
+
+# 2. 列出内置音色（雷军、新闻女声等）
+cargo run -- tts voices
+
+# 3. 合成语音（默认音色雷军；--voice 切换内置音色、--speed 调语速）
+cargo run -- tts run --text "你好，我是 ZapMomo"
+cargo run -- tts run --text "你好" --voice news-female --speed 1.2
+```
+
+- **零样本声音克隆**：`--voice 内置音色` 一键使用，或用 `--reference-wav 参考音频` + `--reference-text 转写文本` 克隆任意音色
+- **输出**：默认 `~/.zapmomo/tts/<时间戳>.wav`，`--output` 指定路径
+- 模型来源、sha256 校验、幂等安装与 KWS/ASR 一致（见上文「模型来源与校验」）
+
+### 命令说明
+
+| 命令 | 说明 |
+|------|------|
+| `tts run` | 合成文本为 wav。`--text` 必填；`--voice` 内置音色、`--speed` 语速、`--reference-wav/--reference-text` 自定义参考音色、`--output` 输出路径 |
+| `tts voices` | 列出内置音色（解析模型包 `test_wavs/prompt.txt`） |
+| `tts install-model` | 下载安装 TTS 主包 + 声码器（默认 `~/.zapmomo/models/<模型名>`）。`--model-dir` 指定目录、`--force` 强制重装 |
+
+### 配置
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[tts]` 段覆盖默认值（全部可选）：
+
+```toml
+[tts]
+model_dir = "/path/to/model"              # 模型目录（支持 ${env.VAR}）
+encoder = "encoder.int8.onnx"
+decoder = "decoder.int8.onnx"
+vocoder = "vocos_24khz.onnx"              # 声码器（install-model 时一并下载）
+tokens = "tokens.txt"
+lexicon = "lexicon.txt"
+data_dir = "espeak-ng-data"
+reference_wav = "test_wavs/leijun-1.wav"  # 默认音色参考音频
+reference_text = "那还是36年前, 1987年. 我呢考上了武汉大学的计算机系."  # 参考音频转写
+num_steps = 4                             # 扩散解码步数（质量/速度权衡）
+speed = 1.0                               # 语速
+provider = "cpu"                          # 推理后端，默认 cpu
+num_threads = 2                           # 推理线程数
+debug = false
+```
+
+## 本地大语言模型（LLM）
+
+基于 llama.cpp（Rust 绑定 `llama-cpp-2`）的本地大语言模型，支持流式对话与 Agent 工具调用；也可通过 OpenAI 兼容的 `/v1/responses` 接口接入远程 API 或 `llama-server`。
+
+LLM 模型为 **GGUF 文件（用户自备，不走清单下载）**：放入 `~/.zapmomo/models/<任意目录>/` 后由 CLI 自动发现，或用 `[llm] model_path` 指定路径。
+
+### 快速开始
+
+```bash
+# 1. 下载推荐模型（Qwen3-4B-Instruct-2507，Q4_K_M 量化约 2.5GB，自行放到 ~/.zapmomo/models/）
+# 2. 验证模型可加载
+cargo run -- llm load
+
+# 3. 单轮对话（流式输出）
+cargo run -- llm chat --text "你好，你是谁？"
+```
+
+- **推荐模型**：Qwen3-4B-Instruct-2507（`Qwen3-4B-Instruct-2507-Q4_K_M.gguf`）；任意 GGUF 均可，自动发现
+- **后端**：默认纯 CPU；Metal 加速已预留（`gpu_layers` 可配，llama-cpp-2 0.1.154 的 Metal logits 崩溃待升级依赖后启用）
+- **Agent**：循环调用 provider、执行工具调用，直到产出纯文本回复（最多 10 轮，防止死循环）
+- **远程接入**：配置 `base_url / api_key / model` 走 OpenAI 兼容 `/v1/responses`（官方 API 或 `llama-server`）
+
+### 命令说明
+
+| 命令 | 说明 |
+|------|------|
+| `llm load` | 加载模型并打印信息（架构 / 上下文）。`--model-path` 指定 GGUF |
+| `llm chat` | 单轮对话（加载 + 流式生成）。`--text` 必填、`--model-path` 指定 GGUF |
+
+### 配置
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[llm]` 段覆盖默认值（全部可选）：
+
+```toml
+[llm]
+enabled = false                    # 是否启用（桌面应用默认懒加载）
+provider = "local"                 # local（llama.cpp）| http（OpenAI 兼容）
+model_path = "/path/to/model.gguf" # GGUF 绝对路径（支持 ${env.VAR}）
+system_prompt = "你是 ZapMomo，一个友好的桌面 AI 伙伴。请用简洁自然的中文回答，语气亲切，不要啰嗦。"
+context_size = 8192                # 上下文窗口（token）
+batch_size = 512                   # 单次 decode 的 batch 大小
+max_tokens = 512                   # 最多生成 token 数
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.05
+repeat_penalty = 1.05
+seed = 0                           # 随机种子；0 = 随机
+threads = 0                        # CPU 线程数；0 = 自动（物理核数 - 2）
+gpu_layers = 0                     # 卸载到 GPU 的层数；-1 = 全部（Metal），0 = 纯 CPU
+enable_thinking = false            # Qwen3 思考模式（输出 <think> 块）
+auto_load = false                  # 应用启动时自动加载模型
+# --- http provider 专用 ---
+# base_url = "http://127.0.0.1:8080/v1"  # OpenAI 兼容 base URL
+# api_key = ""                            # API key（本地 server 可留空）
+# model = "qwen3-4b"                      # 模型名
+```
+
 ## 桌面应用（Tauri 2）
 
-复用同一套 KWS / 音频 / 配置逻辑的桌面 GUI：KWS 控制面板（选择麦克风、开始/停止监听、附加关键词直接输中文、实时显示检测结果、查看模型配置与缺失提示）。代码在 `src-tauri/`，前端为 React + Vite + TypeScript（Tailwind CSS + shadcn/ui，构建产物打包进应用）。
+复用同一套 KWS / ASR / TTS / LLM / 音频 / 配置逻辑的桌面 GUI，由「设置面板」+「常驻角色窗口」双窗口组成：
+
+- **设置面板** — KWS / ASR 监听、TTS 合成、LLM 对话、Live2D 模型预览与配置、麦克风设备选择、模型下载入口
+- **常驻角色窗口** — Live2D 虚拟角色独立悬浮，见下文「Live2D 虚拟角色」
+
+代码在 `src-tauri/`，前端为 React + Vite + TypeScript（Tailwind CSS + shadcn/ui，构建产物打包进应用）。
 
 ```bash
 # 安装 Tauri CLI（首次）
@@ -200,10 +319,30 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-> 打包版内置「下载模型」按钮：首次监听时若缺模型，在「配置」面板点击即可自动
-> 下载到 `~/.zapmomo/models/<模型名>`（也可用 `zapmomo kws install-model`）。
+> 打包版内置「下载模型」按钮：首次使用时若缺模型，在「配置」面板点击即可自动
+> 下载到 `~/.zapmomo/models/<模型名>`（KWS / ASR / TTS 均可，也可用
+> `zapmomo kws|asr|tts install-model`）。
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。
+
+### Live2D 虚拟角色
+
+常驻角色窗口：显示 Live2D 角色（呼吸 / 眨眼等自动动画），与设置面板分离、独立悬浮。
+
+- **常驻与隐形** — 按住左键拖动移动（不抢焦点、不干扰其他应用）；macOS 上从 Dock / Cmd+Tab 隐形，原生右键菜单可隐藏角色 / 缩放
+- **位置记忆 + 百分比缩放** — 关闭后自动记住位置，缩放范围 25% ~ 200%（设置面板、`cmd/ctrl + 滚轮`、右键菜单均可调节）
+- **尺寸自适应** — 窗口尺寸随模型真实包围盒宽高比自适应
+- **格式** — 支持 Cubism 2 / 3 / 4 / 5（`.model3.json` / `model.json`）
+- **模型来源** — 用户自备 Live2D 模型目录（非清单下载），默认 `~/.zapmomo/models/live2d`；Cubism Core 运行时随仓库版本管理
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[live2d]` 段覆盖默认值（全部可选）：
+
+```toml
+[live2d]
+model_dir = "/path/to/live2d-model"      # 模型根目录（含 .model3.json / model.json）
+window_position = { x = 100, y = 100 }   # 角色窗口位置记忆
+window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
+```
 
 ## 发布流程
 
@@ -234,16 +373,37 @@ pnpm tauri build
 ├── src/
 │   ├── main.rs          # 入口文件
 │   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
-│   ├── cli.rs           # CLI 命令定义
+│   ├── cli.rs           # CLI 命令定义（kws / asr / tts / llm）
 │   ├── config/
 │   │   ├── mod.rs       # 配置模块入口
-│   │   └── settings.rs  # TOML 配置管理（含 [kws] 段）
+│   │   └── settings.rs  # TOML 配置管理（含 [kws]/[asr]/[tts]/[llm]/[live2d] 段）
 │   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
 │   │   ├── mod.rs       # KwsEngine + 离线/实时检测
 │   │   ├── config.rs    # KWS 配置解析与默认值
 │   │   ├── model.rs     # 模型下载 / sha256 校验 / 解压安装
 │   │   ├── token.rs     # 汉字 → ppinyin token 转换
+│   │   ├── english.rs   # 英文关键词 → ARPAbet 音素
 │   │   └── reaction.rs  # Reaction 可插拔反应（控制台 / GUI / 测试）
+│   ├── asr/             # 语音识别（sherpa-onnx 流式转写）
+│   │   ├── mod.rs       # AsrEngine + 离线/实时转写
+│   │   ├── config.rs    # ASR 配置解析与默认值
+│   │   └── reaction.rs  # Reaction 可插拔反应
+│   ├── tts/             # 文本转语音（sherpa-onnx ZipVoice）
+│   │   ├── mod.rs       # TtsEngine + 离线合成
+│   │   ├── config.rs    # TTS 配置解析与默认值
+│   │   ├── voice.rs     # 内置音色解析
+│   │   └── reaction.rs  # Reaction 可插拔反应
+│   ├── llm/             # 本地大语言模型（llama.cpp）
+│   │   ├── mod.rs       # LlmEngine 门面 + 事件 channel
+│   │   ├── config.rs    # LLM 配置解析与默认值
+│   │   ├── local/       # LocalLlamaProvider（llama.cpp 后端）
+│   │   ├── http.rs      # OpenAI 兼容 Responses API provider
+│   │   ├── agent.rs     # Agent 循环 + 工具调用
+│   │   ├── provider.rs  # LlmProvider trait
+│   │   └── tools.rs     # 工具运行时
+│   ├── live2d/          # Live2D 角色模型定位
+│   │   ├── mod.rs
+│   │   └── config.rs    # [live2d] 配置解析
 │   ├── audio.rs         # cpal 麦克风采集 + 重采样
 │   ├── logging.rs       # tracing 双层日志
 │   └── datetime.rs      # 日期时间工具
@@ -272,10 +432,13 @@ pnpm tauri build
 | 核心 | serde / serde_json / toml | 序列化 |
 | 核心 | chrono | 日期时间处理 |
 | 核心 | tracing / tracing-subscriber | 日志 |
-| 核心 | thiserror | 错误处理 |
-| KWS | sherpa-onnx | 关键词唤醒词检测（zipformer，预编译库） |
+| 核心 | thiserror / anyhow | 错误处理 |
+| KWS | sherpa-onnx | 唤醒词检测 / 语音识别 / 文本转语音（预编译库） |
 | KWS | cpal | 麦克风音频采集 |
 | KWS | pinyin | 汉字 → 带声调拼音（自定义关键词自动转换） |
+| LLM | llama-cpp-2 | 本地大语言模型推理（llama.cpp Rust 绑定） |
+| LLM | encoding_rs | token 逐字节解码（llama-cpp-2 UTF-8 decoder） |
+| LLM | reqwest | OpenAI 兼容 HTTP provider（`/v1/responses`） |
 | 模型下载 | ureq | HTTP 客户端（模型下载） |
 | 模型下载 | sha2 / hex | 下载模型的 sha256 校验 |
 | 模型下载 | tar / bzip2 | 解压 tar.bz2 模型包 |

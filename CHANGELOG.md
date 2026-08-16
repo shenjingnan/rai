@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.13](https://github.com/shenjingnan/zapmomo/compare/v0.1.12...v0.1.13) - 2026-08-16
+
+### Other
+
+- *(release)* 让桌面 App 改动也能触发版本发布 ([#62](https://github.com/shenjingnan/zapmomo/pull/62))
+
 ## [0.1.12](https://github.com/shenjingnan/zapmomo/compare/v0.1.11...v0.1.12) - 2026-08-16
 
 ### Fixed

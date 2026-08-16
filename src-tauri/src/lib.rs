@@ -1413,12 +1413,31 @@ pub fn run() {
                 show_settings_window(&app_handle);
             });
 
-            // 应用菜单：偏好设置…（cmd+,）与退出（Cmd+Q）。
+            // 应用菜单：偏好设置…（cmd+,）、编辑菜单与退出（Cmd+Q）。
+            // macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项（key equivalent）才能派发到
+            // WebView 输入框；自定义菜单若缺少这些项，复制/粘贴/全选会全部失效。
             let show_settings =
                 MenuItem::with_id(app, "show_settings", "偏好设置…", true, Some("CmdOrCtrl+,"))?;
+            let undo = PredefinedMenuItem::undo(app, None)?;
+            let redo = PredefinedMenuItem::redo(app, None)?;
+            let edit_sep1 = PredefinedMenuItem::separator(app)?;
+            let cut = PredefinedMenuItem::cut(app, None)?;
+            let copy = PredefinedMenuItem::copy(app, None)?;
+            let paste = PredefinedMenuItem::paste(app, None)?;
+            let select_all = PredefinedMenuItem::select_all(app, None)?;
+            let edit_menu = Submenu::with_items(
+                app,
+                "编辑",
+                true,
+                &[&undo, &redo, &edit_sep1, &cut, &copy, &paste, &select_all],
+            )?;
             let app_menu = Menu::with_items(
                 app,
-                &[&show_settings, &PredefinedMenuItem::quit(app, None)?],
+                &[
+                    &show_settings,
+                    &edit_menu,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
             )?;
             app.set_menu(app_menu)?;
 

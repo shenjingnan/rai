@@ -1,6 +1,7 @@
 import { BellRing, Bot, Database, Subtitles, Volume2 } from "lucide-react";
 import type { ComponentType } from "react";
 import { Link } from "react-router-dom";
+import { ListeningStatusBadge } from "@/components/ListeningStatusBadge";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface CapabilityEntry {
@@ -22,7 +23,10 @@ const CAPABILITIES: CapabilityEntry[] = [
 export function ModelsOverviewPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold tracking-tight text-text-primary">模型与能力</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold tracking-tight text-text-primary">模型与能力</h1>
+        <ListeningStatusBadge />
+      </div>
       <div className="grid gap-4 sm:grid-cols-2">
         {CAPABILITIES.map((c) => (
           <Link key={c.to} to={c.to}>

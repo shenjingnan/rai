@@ -39,10 +39,10 @@ const DEFAULT_CONFIG = {
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
 
-/** 渲染 App 并定位到 KWS 详情页（模型相关 UI 所在页面）。 */
-function renderApp() {
+/** 渲染 App 并定位到指定路由（默认 KWS 详情页）。 */
+function renderApp(initialPath = "/models/kws") {
   return render(
-    <MemoryRouter initialEntries={["/models/kws"]}>
+    <MemoryRouter initialEntries={[initialPath]}>
       <App />
     </MemoryRouter>,
   );
@@ -73,10 +73,10 @@ beforeEach(() => {
 });
 
 describe("App（KWS 控制面板）", () => {
-  it("渲染 Sidebar 导航与空闲状态", async () => {
-    renderApp();
+  it("渲染 Sidebar 导航与模型页监听状态", async () => {
+    renderApp("/models");
     expect(screen.getByAltText("ZapMomo")).toBeInTheDocument();
-    expect(screen.getByText("首页")).toBeInTheDocument();
+    expect(screen.getByText("概览")).toBeInTheDocument();
     expect(await screen.findByText("空闲")).toBeInTheDocument();
   });
 
@@ -100,9 +100,8 @@ describe("App（KWS 控制面板）", () => {
   it("点击开始监听调用 start_listen 并进入监听中状态", async () => {
     const user = userEvent.setup();
     renderApp();
-    await screen.findByText("空闲");
 
-    await user.click(screen.getByRole("button", { name: /开始监听/ }));
+    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("start_listen", {
@@ -110,16 +109,20 @@ describe("App（KWS 控制面板）", () => {
         keywords: null,
       });
     });
-    expect(await screen.findByText("监听中")).toBeInTheDocument();
+    // 进入监听中状态：停止监听按钮从禁用变为可用
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+    });
   });
 
   it("点击停止监听调用 stop_listen", async () => {
     const user = userEvent.setup();
     renderApp();
-    await screen.findByText("空闲");
 
-    await user.click(screen.getByRole("button", { name: /开始监听/ }));
-    await screen.findByText("监听中");
+    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+    });
 
     await user.click(screen.getByRole("button", { name: /停止监听/ }));
 

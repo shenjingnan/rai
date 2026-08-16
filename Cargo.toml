@@ -9,7 +9,7 @@ edition = "2024"
 # 统一使用固定工具链 1.97.1（见 rust-toolchain.toml）；最低支持版本 1.97
 rust-version = "1.97"
 description = "An open-source, real-time desktop AI companion with voice, memory, and a customizable virtual character."
-license = "MIT"
+license = "Apache-2.0"
 
 [package]
 name = "zapmomo"

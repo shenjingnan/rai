@@ -55,3 +55,4 @@ docs/out/
 !/models/manifest.json
 !/models/THIRD_PARTY_NOTICES.md
 tmp
+.claude/worktrees

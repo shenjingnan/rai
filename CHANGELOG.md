@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.13](https://github.com/shenjingnan/zapmomo/compare/v0.1.12...v0.1.13) - 2026-08-16
+
+### Other
+
+- *(release)* 让桌面 App 改动也能触发版本发布 ([#62](https://github.com/shenjingnan/zapmomo/pull/62))
+
+## [0.1.12](https://github.com/shenjingnan/zapmomo/compare/v0.1.11...v0.1.12) - 2026-08-16
+
+### Fixed
+
+- *(build)* 修复 macOS llama.cpp 编译失败，声明最低系统版本 13.7.8 ([#59](https://github.com/shenjingnan/zapmomo/pull/59))
+
+### Other
+
+- *(readme)* 补充 TTS/LLM/Live2D 功能文档 ([#57](https://github.com/shenjingnan/zapmomo/pull/57))
+- *(license)* 切换许可证为 Apache-2.0 ([#56](https://github.com/shenjingnan/zapmomo/pull/56))
+
 ## [0.1.11](https://github.com/shenjingnan/zapmomo/compare/v0.1.10...v0.1.11) - 2026-08-16
 
 ### Added

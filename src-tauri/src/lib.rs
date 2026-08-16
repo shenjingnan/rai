@@ -1406,12 +1406,39 @@ pub fn run() {
             }
             settings.build()?;
 
-            // 应用菜单：偏好设置…（cmd+,）与退出（Cmd+Q）。
+            // 每次启动都自动打开设置窗口：Accessory 模式下 app 无全局菜单栏
+            // 且从不激活，Cmd+, 菜单快捷键不可靠，自动打开设置可避免「找不到设置」的困惑。
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                show_settings_window(&app_handle);
+            });
+
+            // 应用菜单：偏好设置…（cmd+,）、编辑菜单与退出（Cmd+Q）。
+            // macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项（key equivalent）才能派发到
+            // WebView 输入框；自定义菜单若缺少这些项，复制/粘贴/全选会全部失效。
             let show_settings =
                 MenuItem::with_id(app, "show_settings", "偏好设置…", true, Some("CmdOrCtrl+,"))?;
+            let undo = PredefinedMenuItem::undo(app, None)?;
+            let redo = PredefinedMenuItem::redo(app, None)?;
+            let edit_sep1 = PredefinedMenuItem::separator(app)?;
+            let cut = PredefinedMenuItem::cut(app, None)?;
+            let copy = PredefinedMenuItem::copy(app, None)?;
+            let paste = PredefinedMenuItem::paste(app, None)?;
+            let select_all = PredefinedMenuItem::select_all(app, None)?;
+            let edit_menu = Submenu::with_items(
+                app,
+                "编辑",
+                true,
+                &[&undo, &redo, &edit_sep1, &cut, &copy, &paste, &select_all],
+            )?;
             let app_menu = Menu::with_items(
                 app,
-                &[&show_settings, &PredefinedMenuItem::quit(app, None)?],
+                &[
+                    &show_settings,
+                    &edit_menu,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
             )?;
             app.set_menu(app_menu)?;
 
@@ -1423,8 +1450,13 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&toggle_companion, &open_settings, &quit])?;
 
+            // 托盘图标：使用专用托盘图标（tray-icon.png）——真实应用图标的无边距版本，
+            // 撑满菜单栏，避免 512px 主图标 9% 留白导致的偏小。
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                    .expect("托盘图标加载失败");
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().expect("缺少默认窗口图标").clone())
+                .icon(tray_icon)
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
                 .build(app)?;

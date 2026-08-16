@@ -81,9 +81,9 @@ function SummaryRow({ row }: { row: SummaryRowData }) {
           <Link
             to={row.gearHref}
             aria-label={`配置${row.name}`}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-accent hover:text-text-primary"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-accent hover:text-text-primary"
           >
-            <Settings className="h-3.5 w-3.5" />
+            <Settings className="h-4 w-4" />
           </Link>
         )}
       </div>
@@ -114,6 +114,7 @@ export function ModelSummary() {
   const asrConfigured = asr.config?.config?.models_present ?? false;
   const kwsConfigured = kws.config?.config?.models_present ?? false;
   const ttsConfigured = tts.config?.models_present ?? false;
+  const ttsEnabled = tts.config?.enabled ?? true;
 
   const rows: SummaryRowData[] = [
     {
@@ -142,8 +143,20 @@ export function ModelSummary() {
       model: ttsConfigured ? basename(tts.config?.model_dir ?? "") : "未配置模型",
       runtime: "sherpa-onnx",
       path: ttsConfigured ? (tts.config?.model_dir ?? null) : null,
-      statusText: tts.synthesizing ? "合成中" : ttsConfigured ? "已就绪" : "未配置模型",
-      statusTone: tts.synthesizing ? "loading" : ttsConfigured ? "good" : "idle",
+      statusText: !ttsEnabled
+        ? "已关闭"
+        : tts.synthesizing
+          ? "合成中"
+          : ttsConfigured
+            ? "已就绪"
+            : "未配置模型",
+      statusTone: !ttsEnabled
+        ? "idle"
+        : tts.synthesizing
+          ? "loading"
+          : ttsConfigured
+            ? "good"
+            : "idle",
       gearHref: "/models/tts",
     },
     {

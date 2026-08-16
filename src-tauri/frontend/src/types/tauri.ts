@@ -86,6 +86,7 @@ export interface TtsConfigInfo {
   model_dir: string;
   provider: string;
   num_threads: number;
+  enabled: boolean;
   models_present: boolean;
   model_downloading: boolean;
   settings_path: string;

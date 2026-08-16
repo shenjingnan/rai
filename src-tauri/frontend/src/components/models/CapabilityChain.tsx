@@ -166,9 +166,19 @@ export function CapabilityChain() {
               name="语音合成"
               code="TTS"
               description="将文字转换为自然语音"
-              statusText={tts.config?.models_present ? "● 已就绪" : "○ 未配置模型"}
-              statusTone={tts.config?.models_present ? "on" : "off"}
-              tooltip="语音合成：模型就绪后可在「语音合成」中手动将文字转为语音。"
+              statusText={
+                tts.config?.enabled === false
+                  ? "○ 已关闭"
+                  : tts.config?.models_present
+                    ? "● 已就绪"
+                    : "○ 未配置模型"
+              }
+              statusTone={
+                tts.config?.enabled === false ? "off" : tts.config?.models_present ? "on" : "off"
+              }
+              toggled={tts.config?.enabled ?? true}
+              onToggle={() => tts.setEnabled(!(tts.config?.enabled ?? true))}
+              tooltip="语音合成：模型就绪后可在「语音合成」中手动将文字转为语音；关闭后合成将被禁用。"
             />
           </div>
         </div>

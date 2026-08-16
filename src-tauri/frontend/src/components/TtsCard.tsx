@@ -29,6 +29,7 @@ export function TtsCard() {
   const busy = tts.downloading || (tts.config?.model_downloading ?? false);
   const shownError = tts.error ?? tts.configError ?? tts.downloadError;
   const isCustom = tts.selectedVoice === CUSTOM_VOICE;
+  const ttsEnabled = tts.config?.enabled ?? true;
 
   const pickWav = async () => {
     const path = await open({
@@ -56,7 +57,8 @@ export function TtsCard() {
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="输入要合成的文本"
+          placeholder={ttsEnabled ? "输入要合成的文本" : "语音合成已关闭"}
+          disabled={!ttsEnabled}
         />
 
         <div className="space-y-2">
@@ -68,7 +70,7 @@ export function TtsCard() {
             className="w-full rounded-md border bg-muted/40 p-2 text-sm outline-none focus:ring-1 focus:ring-ring"
             value={tts.selectedVoice}
             onChange={(e) => tts.setSelectedVoice(e.target.value)}
-            disabled={tts.voices.length === 0}
+            disabled={tts.voices.length === 0 || !ttsEnabled}
           >
             <option value="">默认音色</option>
             {tts.voices.map((v) => (
@@ -118,7 +120,7 @@ export function TtsCard() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => tts.synthesize(text)} disabled={tts.synthesizing}>
+          <Button onClick={() => tts.synthesize(text)} disabled={tts.synthesizing || !ttsEnabled}>
             <Play className="h-4 w-4" />
             合成
           </Button>
@@ -148,6 +150,16 @@ export function TtsCard() {
           <p className="text-xs text-muted-foreground">
             已生成音频（{tts.result.duration.toFixed(1)}s）
           </p>
+        )}
+
+        {!ttsEnabled && (
+          <Alert variant="warning">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>语音合成已关闭</AlertTitle>
+            <AlertDescription className="whitespace-pre-wrap">
+              语音合成已关闭，可在「模型与能力」概览页开启。
+            </AlertDescription>
+          </Alert>
         )}
 
         {tts.config && !tts.config.models_present && (

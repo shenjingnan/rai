@@ -54,6 +54,7 @@ const TTS_CONFIG = {
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-zipvoice",
   provider: "cpu",
   num_threads: 4,
+  enabled: true,
   models_present: false,
   model_downloading: false,
   settings_path: "/home/user/.zapmomo/settings.toml",
@@ -169,6 +170,17 @@ describe("App（KWS 控制面板）", () => {
     });
     expect(invokeMock).not.toHaveBeenCalledWith("start_asr_listen", expect.anything());
     expect(invokeMock).not.toHaveBeenCalledWith("start_listen", expect.anything());
+  });
+
+  it("概览页语音合成开关调用 set_tts_enabled", async () => {
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    await user.click(await screen.findByRole("switch", { name: "语音合成开关" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_tts_enabled", { enabled: false });
+    });
   });
 
   it("渲染 KWS 配置项", async () => {

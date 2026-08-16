@@ -51,6 +51,7 @@ export const api = {
   stopTts: () => invoke<void>("stop_tts"),
   isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
   downloadTtsModel: () => invoke<void>("download_tts_model"),
+  setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
   loadLlmModel: () => invoke<void>("load_llm_model"),
   unloadLlmModel: () => invoke<void>("unload_llm_model"),

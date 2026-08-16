@@ -14,10 +14,11 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { CUSTOM_VOICE, useTts } from "@/hooks/useTts";
+import { CUSTOM_VOICE } from "@/hooks/useTts";
+import { useRuntime } from "@/providers/RuntimeContext";
 
 export function TtsCard() {
-  const tts = useTts();
+  const { tts } = useRuntime();
   const [text, setText] = useState("你好，我是 ZapMomo。");
 
   const synthPercent = Math.max(0, Math.min(100, (tts.progress ?? 0) * 100));

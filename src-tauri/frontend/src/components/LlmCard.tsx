@@ -4,11 +4,11 @@ import { useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useLlm } from "@/hooks/useLlm";
 import { api } from "@/lib/tauri";
+import { useRuntime } from "@/providers/RuntimeContext";
 
 export function LlmCard() {
-  const llm = useLlm();
+  const { llm } = useRuntime();
   const [text, setText] = useState("");
   const [pickError, setPickError] = useState<string | null>(null);
 

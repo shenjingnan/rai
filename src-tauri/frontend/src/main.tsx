@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { HashRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
 
@@ -8,6 +9,8 @@ if (!rootElement) throw new Error("找不到根元素 #root");
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <HashRouter>
+      <App />
+    </HashRouter>
   </StrictMode>,
 );

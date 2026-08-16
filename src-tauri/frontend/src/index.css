@@ -24,6 +24,18 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.546 0.245 262.881);
+
+  /* App Shell 语义色（macOS 极简浅蓝灰） */
+  --app-background: #f7f9fc;
+  --sidebar-background: #f7f9fc;
+  --panel-background: #ffffff;
+  --panel-border: #e9ecf4;
+  --nav-hover: #eef3fc;
+  --nav-active: #e2eafd;
+  --text-primary: #111827;
+  --text-secondary: #667085;
+  --text-muted: #98a2b3;
+  --divider: #eef1f6;
 }
 
 .dark {
@@ -72,6 +84,16 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-app-background: var(--app-background);
+  --color-sidebar-background: var(--sidebar-background);
+  --color-panel-background: var(--panel-background);
+  --color-panel-border: var(--panel-border);
+  --color-nav-hover: var(--nav-hover);
+  --color-nav-active: var(--nav-active);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-divider: var(--divider);
 }
 
 @layer base {
@@ -80,6 +102,8 @@
   }
   body {
     @apply text-foreground;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
   /* Tailwind v4 preflight 移除了 button 的 cursor:pointer，这里按 shadcn 官方建议恢复 */
   button:not(:disabled),

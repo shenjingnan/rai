@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -38,6 +39,15 @@ const DEFAULT_CONFIG = {
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
 
+/** 渲染 App 并定位到指定路由（默认 KWS 详情页）。 */
+function renderApp(initialPath = "/models/kws") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <App />
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
@@ -63,14 +73,15 @@ beforeEach(() => {
 });
 
 describe("App（KWS 控制面板）", () => {
-  it("渲染应用版本与空闲状态", async () => {
-    render(<App />);
-    expect(await screen.findByText("v0.1.4")).toBeInTheDocument();
-    expect(screen.getByText("空闲")).toBeInTheDocument();
+  it("渲染 Sidebar 导航与模型页监听状态", async () => {
+    renderApp("/models");
+    expect(screen.getByAltText("ZapMomo")).toBeInTheDocument();
+    expect(screen.getByText("概览")).toBeInTheDocument();
+    expect(await screen.findByText("空闲")).toBeInTheDocument();
   });
 
   it("渲染 KWS 配置项", async () => {
-    render(<App />);
+    renderApp();
     expect(
       await screen.findByText("/home/user/.zapmomo/models/sherpa-onnx-kws"),
     ).toBeInTheDocument();
@@ -81,17 +92,16 @@ describe("App（KWS 控制面板）", () => {
   });
 
   it("模型缺失时显示警告与下载按钮", async () => {
-    render(<App />);
+    renderApp();
     expect(await screen.findByText("模型文件缺失")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /下载模型/ })).toBeInTheDocument();
   });
 
   it("点击开始监听调用 start_listen 并进入监听中状态", async () => {
     const user = userEvent.setup();
-    render(<App />);
-    await screen.findByText("空闲");
+    renderApp();
 
-    await user.click(screen.getByRole("button", { name: /开始监听/ }));
+    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("start_listen", {
@@ -99,16 +109,20 @@ describe("App（KWS 控制面板）", () => {
         keywords: null,
       });
     });
-    expect(await screen.findByText("监听中")).toBeInTheDocument();
+    // 进入监听中状态：停止监听按钮从禁用变为可用
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+    });
   });
 
   it("点击停止监听调用 stop_listen", async () => {
     const user = userEvent.setup();
-    render(<App />);
-    await screen.findByText("空闲");
+    renderApp();
 
-    await user.click(screen.getByRole("button", { name: /开始监听/ }));
-    await screen.findByText("监听中");
+    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+    });
 
     await user.click(screen.getByRole("button", { name: /停止监听/ }));
 
@@ -118,7 +132,7 @@ describe("App（KWS 控制面板）", () => {
   });
 
   it("检测到唤醒词后把结果追加到列表", async () => {
-    render(<App />);
+    renderApp();
     await screen.findByText("尚未检测到唤醒词");
 
     act(() => {
@@ -139,7 +153,7 @@ describe("App（KWS 控制面板）", () => {
 
   it("点击下载模型调用 download_kws_model 并刷新配置", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     const button = await screen.findByRole("button", { name: /下载模型/ });
 
     await user.click(button);
@@ -151,6 +165,20 @@ describe("App（KWS 控制面板）", () => {
     await waitFor(() => {
       const calls = invokeMock.mock.calls.map((c) => c[0]);
       expect(calls.filter((c) => c === "get_kws_config").length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("设置页可切换是否隐藏 Dock / Cmd+Tab 图标", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings");
+
+    const checkbox = await screen.findByRole("checkbox", { name: /隐藏应用图标/ });
+    expect(checkbox).not.toBeChecked();
+
+    await user.click(checkbox);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_hide_dock_icon", { hide: true });
     });
   });
 });

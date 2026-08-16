@@ -55,6 +55,4 @@ docs/out/
 !/models/manifest.json
 !/models/THIRD_PARTY_NOTICES.md
 tmp
-
-# Live2D Cubism Core（Live2D 专有运行时，不入库，从官方 SDK 获取后本地放置）
-/src-tauri/frontend/public/live2dcubismcore.min.js
+.claude/worktrees

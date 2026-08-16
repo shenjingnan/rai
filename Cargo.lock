@@ -5912,7 +5912,7 @@ dependencies = [
 
 [[package]]
 name = "zapmomo"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "bzip2",
@@ -5941,7 +5941,7 @@ dependencies = [
 
 [[package]]
 name = "zapmomo-app"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "serde",
  "serde_json",

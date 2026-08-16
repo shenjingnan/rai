@@ -1405,6 +1405,16 @@ pub fn run() {
             }
             settings.build()?;
 
+            // 首次启动（尚无配置文件）自动打开设置窗口：Accessory 模式下 app 无全局菜单栏
+            // 且从不激活，Cmd+, 菜单快捷键不可靠，自动打开设置可避免「找不到设置」的困惑。
+            if !settings::get_settings_path().is_file() {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    show_settings_window(&app_handle);
+                });
+            }
+
             // 应用菜单：偏好设置…（cmd+,）与退出（Cmd+Q）。
             let show_settings =
                 MenuItem::with_id(app, "show_settings", "偏好设置…", true, Some("CmdOrCtrl+,"))?;

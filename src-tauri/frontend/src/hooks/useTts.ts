@@ -16,6 +16,7 @@ export interface TtsState {
   config: TtsConfigInfo | null;
   configError: string | null;
   refreshConfig: () => Promise<void>;
+  setEnabled: (enabled: boolean) => Promise<void>;
   voices: TtsVoice[];
   selectedVoice: string;
   setSelectedVoice: (id: string) => void;
@@ -75,6 +76,19 @@ export function useTts(): TtsState {
   useEffect(() => {
     void refreshConfig();
   }, [refreshConfig]);
+
+  // 持久化「是否启用语音合成」，写入 [tts].enabled 后刷新配置。
+  const setEnabled = useCallback(
+    async (enabled: boolean) => {
+      try {
+        await api.setTtsEnabled({ enabled });
+        await refreshConfig();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refreshConfig],
+  );
 
   // 加载内置音色列表（模型下载后可用；未下载时为空）。
   useEffect(() => {
@@ -178,6 +192,7 @@ export function useTts(): TtsState {
     config,
     configError,
     refreshConfig,
+    setEnabled,
     voices,
     selectedVoice,
     setSelectedVoice,

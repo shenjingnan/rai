@@ -37,6 +37,8 @@ pub const REQUIRED_FILES: [&str; 5] = [
 /// 解析后的完整 TTS 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedTtsConfig {
+    /// 是否启用语音合成
+    pub enabled: bool,
     pub model_dir: PathBuf,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
@@ -60,6 +62,7 @@ impl Default for ResolvedTtsConfig {
         let model_dir = default_model_dir();
         let join = |name: &str| model_dir.join(name);
         Self {
+            enabled: true,
             encoder: join(DEFAULT_ENCODER),
             decoder: join(DEFAULT_DECODER),
             vocoder: join(DEFAULT_VOCODER),
@@ -160,6 +163,7 @@ pub fn resolve(
     };
 
     let s = settings;
+    cfg.enabled = s.and_then(|s| s.enabled).unwrap_or(true);
     let file = |field: &str, default_name: &str| {
         let value = match field {
             "encoder" => s.and_then(|s| s.encoder.as_deref()),
@@ -251,6 +255,18 @@ mod tests {
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join(DEFAULT_TOKENS), b"t").unwrap();
         assert_eq!(choose_default_model_dir(&user, &repo), user);
+    }
+
+    #[test]
+    fn test_resolve_enabled_default_true_and_override() {
+        // 未配置时默认启用，避免破坏现有用户
+        assert!(resolve(None, None).unwrap().enabled);
+        // settings 显式关闭时生效
+        let settings = TtsSettings {
+            enabled: Some(false),
+            ..TtsSettings::default()
+        };
+        assert!(!resolve(Some(&settings), None).unwrap().enabled);
     }
 
     #[test]

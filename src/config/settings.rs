@@ -210,6 +210,9 @@ pub struct AsrSettings {
 /// 因此这里用 `Option` 以区分「未配置」与「配置了」。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TtsSettings {
+    /// 是否启用语音合成，缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
@@ -623,8 +626,19 @@ mod tests {
     }
 
     #[test]
+    fn test_load_settings_with_tts_enabled_false() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[tts]\nenabled = false\n");
+            let result = load_settings().unwrap().unwrap();
+            let tts = result.tts.unwrap();
+            assert_eq!(tts.enabled, Some(false));
+        });
+    }
+
+    #[test]
     fn test_tts_settings_serde_roundtrip() {
         let tts = TtsSettings {
+            enabled: Some(false),
             model_dir: Some("${env.TTS_MODEL_DIR}".to_string()),
             encoder: Some("encoder.int8.onnx".to_string()),
             decoder: None,

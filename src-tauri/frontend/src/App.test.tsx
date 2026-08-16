@@ -39,6 +39,38 @@ const DEFAULT_CONFIG = {
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
 
+const ASR_CONFIG = {
+  model_dir: "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer",
+  provider: "cpu",
+  num_threads: 4,
+  sample_rate: 16000,
+  models_present: false,
+  punctuation_present: false,
+  model_downloading: false,
+  settings_path: "/home/user/.zapmomo/settings.toml",
+};
+
+const TTS_CONFIG = {
+  model_dir: "/home/user/.zapmomo/models/sherpa-onnx-zipvoice",
+  provider: "cpu",
+  num_threads: 4,
+  enabled: true,
+  models_present: false,
+  model_downloading: false,
+  settings_path: "/home/user/.zapmomo/settings.toml",
+};
+
+const LLM_CONFIG = {
+  enabled: false,
+  provider: "local",
+  model_path: "/home/user/.zapmomo/models/qwen3-4b.gguf",
+  models_present: false,
+  ready: false,
+  enable_thinking: false,
+  auto_load: false,
+  settings_path: "/home/user/.zapmomo/settings.toml",
+};
+
 /** 渲染 App 并定位到指定路由（默认 KWS 详情页）。 */
 function renderApp(initialPath = "/models/kws") {
   return render(
@@ -62,6 +94,18 @@ beforeEach(() => {
         return Promise.resolve(DEFAULT_CONFIG);
       case "is_listening":
         return Promise.resolve(false);
+      case "get_asr_config":
+        return Promise.resolve(ASR_CONFIG);
+      case "get_tts_config":
+        return Promise.resolve(TTS_CONFIG);
+      case "list_tts_voices":
+        return Promise.resolve([]);
+      case "get_llm_config":
+        return Promise.resolve(LLM_CONFIG);
+      case "is_asr_listening":
+        return Promise.resolve(false);
+      case "is_llm_ready":
+        return Promise.resolve(false);
       case "start_listen":
       case "stop_listen":
       case "download_kws_model":
@@ -73,11 +117,70 @@ beforeEach(() => {
 });
 
 describe("App（KWS 控制面板）", () => {
-  it("渲染 Sidebar 导航与模型页监听状态", async () => {
+  it("渲染 Sidebar 导航与模型概览页（能力链路 + 模型摘要）", async () => {
     renderApp("/models");
     expect(screen.getByAltText("ZapMomo")).toBeInTheDocument();
     expect(screen.getByText("概览")).toBeInTheDocument();
-    expect(await screen.findByText("空闲")).toBeInTheDocument();
+    expect(await screen.findByText("AI 能力链路")).toBeInTheDocument();
+    expect(screen.getByText("模型摘要")).toBeInTheDocument();
+    expect(screen.getByText("管理模型")).toBeInTheDocument();
+  });
+
+  it("概览页 ASR 开关调用 start_asr_listen", async () => {
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    await user.click(await screen.findByRole("switch", { name: "语音输入开关" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
+    });
+  });
+
+  it("ASR 未开启时点击唤醒词开关弹确认框，确认后同时开启 ASR 与 KWS", async () => {
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    const kwsSwitch = await screen.findByRole("switch", { name: "唤醒词开关" });
+    expect(kwsSwitch).not.toBeDisabled();
+
+    await user.click(kwsSwitch);
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("需要先开启语音输入")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "同时开启" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
+      expect(invokeMock).toHaveBeenCalledWith("start_listen", { device: null, keywords: null });
+    });
+  });
+
+  it("ASR 未开启时取消确认框则不开启任何能力", async () => {
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    await user.click(await screen.findByRole("switch", { name: "唤醒词开关" }));
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    // 退出动画结束后对话框卸载
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("start_asr_listen", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("start_listen", expect.anything());
+  });
+
+  it("概览页语音合成开关调用 set_tts_enabled", async () => {
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    await user.click(await screen.findByRole("switch", { name: "语音合成开关" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_tts_enabled", { enabled: false });
+    });
   });
 
   it("渲染 KWS 配置项", async () => {

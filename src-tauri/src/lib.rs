@@ -18,7 +18,9 @@ use tauri::{
     WindowEvent,
 };
 use zapmomo::asr::{AsrReaction, AsrResult};
-use zapmomo::config::settings::{self, CompanionWindowPosition, Live2dSettings, LlmSettings};
+use zapmomo::config::settings::{
+    self, CompanionWindowPosition, Live2dSettings, LlmSettings, TtsSettings,
+};
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, InputItem};
 use zapmomo::llm::{LlmEngine, LlmEvent};
@@ -545,6 +547,7 @@ struct TtsConfigInfo {
     model_dir: String,
     provider: String,
     num_threads: i32,
+    enabled: bool,
     models_present: bool,
     model_downloading: bool,
     settings_path: String,
@@ -578,6 +581,7 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
         model_dir: cfg.model_dir.display().to_string(),
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
+        enabled: cfg.enabled,
         models_present,
         model_downloading: state.in_progress.load(Ordering::Relaxed),
         settings_path: zapmomo::config::settings::get_settings_path()
@@ -680,6 +684,11 @@ fn synthesize_tts(
     let settings = zapmomo::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+
+    // 启用门控：关闭时直接返回错误，前端据此禁用合成。
+    if !cfg.enabled {
+        return Err("语音合成已禁用，请在「模型与能力」中开启语音合成。".to_string());
+    }
 
     // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
     let files = [
@@ -1002,6 +1011,16 @@ fn set_llm_auto_load(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 持久化「是否启用语音合成」，写入 `[tts].enabled`（缺省 true）。
+#[tauri::command]
+fn set_tts_enabled(enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let tts = settings.tts.get_or_insert_with(TtsSettings::default);
+    tts.enabled = Some(enabled);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -1315,6 +1334,7 @@ pub fn run() {
             set_llm_model_path,
             set_llm_thinking,
             set_llm_auto_load,
+            set_tts_enabled,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,
@@ -1423,7 +1443,7 @@ pub fn run() {
                 WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
                     .title("Zap Momo 设置")
                     .inner_size(1180.0, 760.0)
-                    .min_inner_size(960.0, 640.0)
+                    .min_inner_size(1180.0, 640.0)
                     .resizable(true)
                     .visible(false);
 

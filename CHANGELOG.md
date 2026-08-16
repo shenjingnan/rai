@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.11](https://github.com/shenjingnan/zapmomo/compare/v0.1.10...v0.1.11) - 2026-08-16
+
+### Added
+
+- *(llm)* 集成 llama.cpp 本地大语言模型 ([#52](https://github.com/shenjingnan/zapmomo/pull/52))
+- *(tts)* 集成 ZipVoice 文本转语音与音色选择 ([#50](https://github.com/shenjingnan/zapmomo/pull/50))
+
+### Fixed
+
+- *(build)* 将 Live2D Cubism Core 运行时纳入版本管理 ([#55](https://github.com/shenjingnan/zapmomo/pull/55))
+
 ## [0.1.10](https://github.com/shenjingnan/zapmomo/compare/v0.1.9...v0.1.10) - 2026-08-15
 
 ### Added

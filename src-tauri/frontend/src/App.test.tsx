@@ -167,4 +167,18 @@ describe("App（KWS 控制面板）", () => {
       expect(calls.filter((c) => c === "get_kws_config").length).toBeGreaterThanOrEqual(2);
     });
   });
+
+  it("设置页可切换是否隐藏 Dock / Cmd+Tab 图标", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings");
+
+    const checkbox = await screen.findByRole("checkbox", { name: /隐藏应用图标/ });
+    expect(checkbox).not.toBeChecked();
+
+    await user.click(checkbox);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_hide_dock_icon", { hide: true });
+    });
+  });
 });

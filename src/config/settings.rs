@@ -69,6 +69,9 @@ pub struct AppConfig {
     /// 日志级别
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// 是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式），缺省 false 展示
+    #[serde(default)]
+    pub hide_dock_icon: bool,
     /// 自定义配置项（示例）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom: Option<std::collections::HashMap<String, String>>,
@@ -354,6 +357,7 @@ impl Default for AppConfig {
         Self {
             debug: false,
             log_level: default_log_level(),
+            hide_dock_icon: false,
             custom: None,
             kws: None,
             asr: None,
@@ -515,6 +519,7 @@ mod tests {
         let config = AppConfig {
             debug: true,
             log_level: "warn".to_string(),
+            hide_dock_icon: true,
             custom: Some(std::collections::HashMap::new()),
             kws: None,
             asr: None,
@@ -525,6 +530,27 @@ mod tests {
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, deserialized);
+        // 缺省字段应被反序列化为 false
+        assert!(toml_str.contains("hide_dock_icon"));
+    }
+
+    #[test]
+    fn test_load_settings_without_hide_dock_icon_defaults_false() {
+        // 旧配置文件没有 hide_dock_icon 字段时，应回退为 false（默认展示图标）。
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "debug = true\n");
+            let result = load_settings().unwrap().unwrap();
+            assert!(!result.hide_dock_icon);
+        });
+    }
+
+    #[test]
+    fn test_load_settings_with_hide_dock_icon() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "hide_dock_icon = true\n");
+            let result = load_settings().unwrap().unwrap();
+            assert!(result.hide_dock_icon);
+        });
     }
 
     #[test]
@@ -707,6 +733,7 @@ mod tests {
             let config = AppConfig {
                 debug: true,
                 log_level: "debug".to_string(),
+                hide_dock_icon: false,
                 custom: None,
                 kws: None,
                 asr: None,

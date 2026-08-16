@@ -64,6 +64,8 @@ export const api = {
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
+  getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
+  setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),

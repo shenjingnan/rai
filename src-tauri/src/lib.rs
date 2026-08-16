@@ -1129,6 +1129,36 @@ fn set_companion_scale(app: AppHandle, scale: f64) -> Result<(), String> {
     apply_companion_scale(&app, scale)
 }
 
+/// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
+#[tauri::command]
+fn get_hide_dock_icon() -> Result<bool, String> {
+    Ok(settings::load_settings()?
+        .unwrap_or_default()
+        .hide_dock_icon)
+}
+
+/// 设置并持久化是否在 macOS Dock / Cmd+Tab 中隐藏应用图标，并立即生效。
+///
+/// 写入 `~/.zapmomo/settings.toml` 顶层的 `hide_dock_icon` 字段；非 macOS 仅持久化，
+/// 不改变激活策略（该设置仅对 macOS 的 Dock / Cmd+Tab 有意义）。
+#[tauri::command]
+fn set_hide_dock_icon(app: AppHandle, hide: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    settings.hide_dock_icon = hide;
+    settings::save_settings(&settings)?;
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if hide {
+            tauri::ActivationPolicy::Accessory
+        } else {
+            tauri::ActivationPolicy::Regular
+        };
+        app.set_activation_policy(policy)
+            .map_err(|e| format!("切换激活策略失败: {e}"))?;
+    }
+    Ok(())
+}
+
 /// 处理应用菜单、托盘菜单与角色窗口右键菜单事件。
 fn handle_menu(app: &AppHandle, id: &str) {
     match id {
@@ -1290,17 +1320,26 @@ pub fn run() {
             save_companion_position,
             set_companion_scale,
             show_companion_menu,
+            get_hide_dock_icon,
+            set_hide_dock_icon,
             open_settings,
             hide_companion,
             quit_app
         ])
         .setup(|app| {
-            // macOS：转成纯桌面摆件（accessory），从 Dock 与 Cmd+Tab 中消失，仅保留托盘入口。
-            // 设置窗口仍通过 set_focus 正常激活（tao 内部会 activateIgnoringOtherApps）。
+            // macOS：默认以普通应用出现（Dock + Cmd+Tab 可见，有全局菜单栏）；
+            // 用户可在设置中开启「隐藏应用图标」，此时切换为 Accessory（从 Dock 与 Cmd+Tab 消失）。
+            let loaded = settings::load_settings().ok().flatten();
+            #[cfg(target_os = "macos")]
+            let hide_dock_icon = loaded.as_ref().map(|s| s.hide_dock_icon).unwrap_or(false);
+
             #[cfg(target_os = "macos")]
             {
-                app.handle()
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+                app.handle().set_activation_policy(if hide_dock_icon {
+                    tauri::ActivationPolicy::Accessory
+                } else {
+                    tauri::ActivationPolicy::Regular
+                })?;
             }
 
             // 启动自动加载 LLM 模型（若用户开启 auto_load）：后台异步加载，失败静默降级为手动加载。
@@ -1313,8 +1352,7 @@ pub fn run() {
             }
 
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。
-            // 读一次 settings：同时恢复记忆的尺寸与位置。
-            let loaded = settings::load_settings().ok().flatten();
+            // 复用顶部读到的 settings：同时恢复记忆的尺寸与位置。
             let live2d = loaded.as_ref().and_then(|s| s.live2d.clone());
             let scale = live2d.as_ref().and_then(|l| l.window_scale).unwrap_or(1.0);
 
@@ -1406,13 +1444,19 @@ pub fn run() {
             }
             settings.build()?;
 
-            // 每次启动都自动打开设置窗口：Accessory 模式下 app 无全局菜单栏
-            // 且从不激活，Cmd+, 菜单快捷键不可靠，自动打开设置可避免「找不到设置」的困惑。
-            let app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                show_settings_window(&app_handle);
-            });
+            // 自动打开设置窗口：仅用于「无全局菜单栏」的场景（macOS Accessory 模式或非 macOS），
+            // 否则 Cmd+, 快捷键不可靠，自动打开可避免「找不到设置」；普通模式有菜单栏，无需自动弹出。
+            #[cfg(target_os = "macos")]
+            let auto_open_settings = !hide_dock_icon;
+            #[cfg(not(target_os = "macos"))]
+            let auto_open_settings = true;
+            if auto_open_settings {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    show_settings_window(&app_handle);
+                });
+            }
 
             // 应用菜单：偏好设置…（cmd+,）、编辑菜单与退出（Cmd+Q）。
             // macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项（key equivalent）才能派发到

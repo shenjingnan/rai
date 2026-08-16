@@ -5,18 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useRuntime } from "@/providers/RuntimeContext";
 
-interface ListenCardProps {
-  isListening: boolean;
-  error: string | null;
-  onStart: (keywords: string | null) => void;
-  onStop: () => void;
-}
-
-export function ListenCard({ isListening, error, onStart, onStop }: ListenCardProps) {
+export function ListenCard() {
+  const {
+    kws: { listening },
+    device,
+  } = useRuntime();
   const [keywords, setKeywords] = useState("");
 
-  const handleStart = () => onStart(keywords || null);
+  const handleStart = () => listening.start(device || null, keywords || null);
 
   return (
     <Card>
@@ -35,25 +33,25 @@ export function ListenCard({ isListening, error, onStart, onStop }: ListenCardPr
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
             placeholder="可选：直接输入中文（如 你好小智），多个用 / 分隔"
-            disabled={isListening}
+            disabled={listening.isListening}
           />
         </div>
 
         <div className="flex gap-2">
-          <Button onClick={handleStart} disabled={isListening}>
+          <Button onClick={handleStart} disabled={listening.isListening}>
             <Play className="h-4 w-4" />
             开始监听
           </Button>
-          <Button variant="destructive" onClick={onStop} disabled={!isListening}>
+          <Button variant="destructive" onClick={listening.stop} disabled={!listening.isListening}>
             <Square className="h-4 w-4" />
             停止监听
           </Button>
         </div>
 
-        {error && (
+        {listening.error && (
           <Alert variant="destructive">
             <CircleAlert className="h-4 w-4" />
-            <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
+            <AlertDescription className="whitespace-pre-wrap">{listening.error}</AlertDescription>
           </Alert>
         )}
       </CardContent>

@@ -3,31 +3,19 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { useAsrConfig } from "@/hooks/useAsrConfig";
-import { useAsrModelDownload } from "@/hooks/useAsrModelDownload";
-import { useAsrResults } from "@/hooks/useAsrResults";
+import { useRuntime } from "@/providers/RuntimeContext";
 
-interface AsrCardProps {
-  isListening: boolean;
-  error: string | null;
-  onStart: () => void;
-  onStop: () => void;
-}
-
-export function AsrCard({ isListening, error, onStart, onStop }: AsrCardProps) {
-  const config = useAsrConfig();
-  const results = useAsrResults();
-  const {
-    downloading,
-    progress,
-    error: downloadError,
-    download,
-  } = useAsrModelDownload(config.refresh);
+export function AsrCard() {
+  const { asr, device } = useRuntime();
+  const { config, error: configError } = asr.config;
+  const results = asr.results;
+  const { downloading, progress, error: downloadError, download } = asr.download;
+  const { isListening, error, start, stop } = asr.listening;
 
   const percent =
     progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;
-  const busy = downloading || (config.config?.model_downloading ?? false);
-  const shownError = error ?? config.error;
+  const busy = downloading || (config?.model_downloading ?? false);
+  const shownError = error ?? configError;
 
   return (
     <Card>
@@ -40,11 +28,11 @@ export function AsrCard({ isListening, error, onStart, onStop }: AsrCardProps) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
-          <Button onClick={onStart} disabled={isListening}>
+          <Button onClick={() => start(device || null)} disabled={isListening}>
             <Play className="h-4 w-4" />
             开始识别
           </Button>
-          <Button variant="destructive" onClick={onStop} disabled={!isListening}>
+          <Button variant="destructive" onClick={stop} disabled={!isListening}>
             <Square className="h-4 w-4" />
             停止识别
           </Button>
@@ -71,13 +59,13 @@ export function AsrCard({ isListening, error, onStart, onStop }: AsrCardProps) {
           </ul>
         )}
 
-        {config.config && !config.config.models_present && (
+        {config && !config.models_present && (
           <>
             <Alert variant="warning">
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>模型文件缺失</AlertTitle>
               <AlertDescription className="whitespace-pre-wrap">
-                模型文件缺失（{config.config.model_dir}）。下载后即可开始识别。
+                模型文件缺失（{config.model_dir}）。下载后即可开始识别。
               </AlertDescription>
             </Alert>
 

@@ -4,14 +4,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { useModelDownload } from "@/hooks/useModelDownload";
+import { useRuntime } from "@/providers/RuntimeContext";
 import type { KwsConfigInfo } from "@/types/tauri";
-
-interface ConfigCardProps {
-  config: KwsConfigInfo | null;
-  error: string | null;
-  onRefresh: () => void;
-}
 
 function ConfigList({ config }: { config: KwsConfigInfo }) {
   const rows = [
@@ -34,8 +28,10 @@ function ConfigList({ config }: { config: KwsConfigInfo }) {
   );
 }
 
-export function ConfigCard({ config, error, onRefresh }: ConfigCardProps) {
-  const { downloading, progress, error: downloadError, download } = useModelDownload(onRefresh);
+export function ConfigCard() {
+  const { kws } = useRuntime();
+  const { config, error } = kws.config;
+  const { downloading, progress, error: downloadError, download } = kws.download;
 
   const percent =
     progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;

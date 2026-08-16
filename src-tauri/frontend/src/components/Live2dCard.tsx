@@ -7,9 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { useLive2dConfig } from "@/hooks/useLive2dConfig";
-import { useLive2dModel } from "@/hooks/useLive2dModel";
 import { api, toAssetUrl } from "@/lib/tauri";
+import { useRuntime } from "@/providers/RuntimeContext";
 
 /** 预览区基准高度（与常驻窗口一致）。 */
 const PREVIEW_BASE_HEIGHT = 480;
@@ -19,8 +18,9 @@ const PREVIEW_INITIAL_WIDTH = 360;
 
 /** 角色（Live2D）卡片：选择模型目录并内嵌预览。 */
 export function Live2dCard() {
-  const { config, error, refresh } = useLive2dConfig();
-  const { modelUrl, loading, error: loadError, load } = useLive2dModel(refresh);
+  const { live2d } = useRuntime();
+  const { config, error } = live2d.config;
+  const { modelUrl, loading, error: loadError, load } = live2d.model;
   const [stageError, setStageError] = useState<string | null>(null);
   const [previewSize, setPreviewSize] = useState({
     width: PREVIEW_INITIAL_WIDTH,

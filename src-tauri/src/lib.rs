@@ -1384,7 +1384,8 @@ pub fn run() {
             let mut settings =
                 WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
                     .title("Zap Momo 设置")
-                    .inner_size(760.0, 600.0)
+                    .inner_size(1180.0, 760.0)
+                    .min_inner_size(960.0, 640.0)
                     .resizable(true)
                     .visible(false);
 

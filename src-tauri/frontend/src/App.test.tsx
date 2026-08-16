@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -38,6 +39,15 @@ const DEFAULT_CONFIG = {
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
 
+/** 渲染 App 并定位到 KWS 详情页（模型相关 UI 所在页面）。 */
+function renderApp() {
+  return render(
+    <MemoryRouter initialEntries={["/models/kws"]}>
+      <App />
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
@@ -63,14 +73,15 @@ beforeEach(() => {
 });
 
 describe("App（KWS 控制面板）", () => {
-  it("渲染应用版本与空闲状态", async () => {
-    render(<App />);
-    expect(await screen.findByText("v0.1.4")).toBeInTheDocument();
-    expect(screen.getByText("空闲")).toBeInTheDocument();
+  it("渲染 Sidebar 导航与空闲状态", async () => {
+    renderApp();
+    expect(screen.getByAltText("ZapMomo")).toBeInTheDocument();
+    expect(screen.getByText("首页")).toBeInTheDocument();
+    expect(await screen.findByText("空闲")).toBeInTheDocument();
   });
 
   it("渲染 KWS 配置项", async () => {
-    render(<App />);
+    renderApp();
     expect(
       await screen.findByText("/home/user/.zapmomo/models/sherpa-onnx-kws"),
     ).toBeInTheDocument();
@@ -81,14 +92,14 @@ describe("App（KWS 控制面板）", () => {
   });
 
   it("模型缺失时显示警告与下载按钮", async () => {
-    render(<App />);
+    renderApp();
     expect(await screen.findByText("模型文件缺失")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /下载模型/ })).toBeInTheDocument();
   });
 
   it("点击开始监听调用 start_listen 并进入监听中状态", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     await screen.findByText("空闲");
 
     await user.click(screen.getByRole("button", { name: /开始监听/ }));
@@ -104,7 +115,7 @@ describe("App（KWS 控制面板）", () => {
 
   it("点击停止监听调用 stop_listen", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     await screen.findByText("空闲");
 
     await user.click(screen.getByRole("button", { name: /开始监听/ }));
@@ -118,7 +129,7 @@ describe("App（KWS 控制面板）", () => {
   });
 
   it("检测到唤醒词后把结果追加到列表", async () => {
-    render(<App />);
+    renderApp();
     await screen.findByText("尚未检测到唤醒词");
 
     act(() => {
@@ -139,7 +150,7 @@ describe("App（KWS 控制面板）", () => {
 
   it("点击下载模型调用 download_kws_model 并刷新配置", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     const button = await screen.findByRole("button", { name: /下载模型/ });
 
     await user.click(button);

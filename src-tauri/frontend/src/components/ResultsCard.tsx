@@ -1,8 +1,12 @@
 import { ListMusic } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import type { DetectionEntry } from "@/hooks/useResults";
+import { useRuntime } from "@/providers/RuntimeContext";
 
-export function ResultsCard({ results }: { results: DetectionEntry[] }) {
+export function ResultsCard() {
+  const {
+    kws: { results },
+  } = useRuntime();
+
   return (
     <Card>
       <CardHeader>

@@ -139,6 +139,7 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
         "tts" => &crate::tts::config::REQUIRED_FILES,
         "tts-vocoder" => &[crate::tts::config::DEFAULT_VOCODER],
+        // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }
 }
@@ -150,7 +151,7 @@ mod tests {
     #[test]
     fn test_registry_parses() {
         let models = all_models();
-        assert_eq!(models.len(), 11, "应为 6 个首批 + 5 个补充 ASR");
+        assert_eq!(models.len(), 17, "应为 6 个首批 + 5 个 ASR + 6 个补充 LLM");
         assert!(
             models
                 .iter()
@@ -161,10 +162,13 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), models.len(), "Registry id 必须唯一");
-        // LLM 条目必须有具体 GGUF 文件名
+        // LLM 条目：绑定具体 GGUF 文件名，且支持一键下载（raw 单文件）
         for m in models.iter().filter(|m| m.is_llm()) {
             assert!(m.file_name.is_some(), "LLM 条目必须绑定具体 GGUF 文件名");
-            assert!(m.download.is_none(), "v1 不做 LLM 在线下载");
+            let d = m.download.as_ref().expect("LLM 应支持一键下载");
+            assert_eq!(d.kind, "raw");
+            assert_eq!(m.required_assets.len(), 1);
+            assert_eq!(m.required_assets[0], d.manifest_role);
             assert!(m.format == "GGUF");
         }
     }

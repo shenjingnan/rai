@@ -1,4 +1,4 @@
-import { Check, Download, FolderOpen, Loader2, MoreHorizontal, Settings2 } from "lucide-react";
+import { Download, FolderOpen, Loader2, MoreHorizontal, Settings2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,8 +39,6 @@ function configHref(modelType: ModelType): string {
 
 interface LibraryCardProps {
   model: LibraryModel;
-  selected: boolean;
-  onToggleSelect: (id: string) => void;
   downloadingId: string | null;
   progress: ModelLibraryProgress | null;
   onDownload: (id: string) => void;
@@ -56,8 +54,6 @@ interface LibraryCardProps {
 /** 模型卡片：横向 List Card，含状态机主操作 + ⋯ 菜单。 */
 export function LibraryCard({
   model,
-  selected,
-  onToggleSelect,
   downloadingId,
   progress,
   onDownload,
@@ -150,24 +146,8 @@ export function LibraryCard({
       )}
     >
       <div className="flex items-start gap-3">
-        {/* 批量选择 */}
-        <button
-          type="button"
-          aria-label={selected ? "取消选择" : "选择模型"}
-          onClick={() => onToggleSelect(model.id)}
-          className={cn(
-            "mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-            selected
-              ? "border-primary bg-primary text-primary-foreground"
-              : "border-panel-border bg-white hover:border-primary",
-          )}
-        >
-          {selected && <Check className="h-3 w-3" />}
-        </button>
-
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-text-primary">{model.displayName}</p>
             <span
               className={cn(
                 "rounded-full border px-1.5 py-px text-[10px] font-medium",
@@ -176,6 +156,7 @@ export function LibraryCard({
             >
               {MODEL_TYPE_SHORT[model.modelType]}
             </span>
+            <p className="text-sm font-semibold text-text-primary">{model.displayName}</p>
             <span className="text-xs text-text-secondary">
               {model.runtime} · {model.format}
             </span>
@@ -234,11 +215,6 @@ export function LibraryCard({
             <span className="flex items-center gap-1.5 whitespace-nowrap text-xs text-emerald-600">
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
               已安装
-            </span>
-          )}
-          {notInstalled && model.downloadable && (
-            <span className="flex items-center gap-1.5 whitespace-nowrap text-xs text-text-muted">
-              未安装
             </span>
           )}
           {notInstalled && !model.downloadable && (

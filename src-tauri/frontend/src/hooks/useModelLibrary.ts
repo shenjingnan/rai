@@ -79,9 +79,29 @@ export function useModelLibrary(): ModelLibraryState {
     }
   }, [toast]);
 
+  /** 静默轮询资源（不置 loading、不弹错），供定时刷新使用。 */
+  const pollResources = useCallback(async () => {
+    try {
+      setResources(await api.getSystemResources());
+    } catch {
+      // 静默：轮询失败下次再试，不打扰用户
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 系统资源：页面打开即自动展示，展示期间每 30s 定时刷新（窗口不可见时暂停）。
+  useEffect(() => {
+    void refreshResources();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void pollResources();
+      }
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [refreshResources, pollResources]);
 
   useEffect(() => {
     const unsubs = [

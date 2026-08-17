@@ -952,11 +952,16 @@ fn stage_and_commit<'a>(
             done_bytes.fetch_add(asset.size_bytes, Ordering::Relaxed);
         }
         // 2. 整体完整性校验（staging）
-        let required_files: Vec<&str> = model
-            .required_assets
-            .iter()
-            .flat_map(|r| registry::required_files_for_role(r).iter().copied())
-            .collect();
+        // LLM 是 raw 单文件，必需文件 = `file_name`（避免为每个 LLM role 维护静态表）
+        let required_files: Vec<&str> = if model.is_llm() {
+            vec![model.file_name.as_deref().unwrap_or_default()]
+        } else {
+            model
+                .required_assets
+                .iter()
+                .flat_map(|r| registry::required_files_for_role(r).iter().copied())
+                .collect()
+        };
         if !has_required_files(&staging_model, &required_files) {
             return Err(ModelError::Download("安装后完整性校验失败".to_string()));
         }

@@ -1,6 +1,5 @@
 import { Database, Plus, RefreshCw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { LibraryBulkBar } from "@/components/library/LibraryBulkBar";
 import { LibraryCard } from "@/components/library/LibraryCard";
 import {
   AddLocalModelDialog,
@@ -90,7 +89,6 @@ export function LibraryPage() {
   const [langFilter, setLangFilter] = useState<LangFilter>("all");
   const [installFilter, setInstallFilter] = useState<InstallFilter>("all");
   const [sort, setSort] = useState<SortKey>("recommended");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [confirmModel, setConfirmModel] = useState<LibraryModel | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -149,36 +147,6 @@ export function LibraryPage() {
     setLangFilter("all");
     setInstallFilter("all");
     setSort("recommended");
-  };
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAllFiltered = () => {
-    const eligible = filtered.filter(
-      (m) => m.ownership === "managed" && m.installState === "installed" && !m.current,
-    );
-    setSelectedIds(new Set(eligible.map((m) => m.id)));
-  };
-
-  const batchDelete = async () => {
-    const eligible = filtered.filter(
-      (m) =>
-        selectedIds.has(m.id) &&
-        m.ownership === "managed" &&
-        m.installState === "installed" &&
-        !m.current,
-    );
-    for (const m of eligible) {
-      await lib.remove(m.id);
-    }
-    setSelectedIds(new Set());
   };
 
   const openAddTop = () => {
@@ -356,8 +324,6 @@ export function LibraryPage() {
               <LibraryCard
                 key={m.id}
                 model={m}
-                selected={selectedIds.has(m.id)}
-                onToggleSelect={toggleSelect}
                 downloadingId={lib.downloadingId}
                 progress={lib.progress}
                 onDownload={lib.download}
@@ -378,14 +344,6 @@ export function LibraryPage() {
           )}
         </div>
       </div>
-
-      <LibraryBulkBar
-        filtered={filtered}
-        selectedIds={selectedIds}
-        onSelectAll={selectAllFiltered}
-        onClear={() => setSelectedIds(new Set())}
-        onBatchDelete={batchDelete}
-      />
 
       {/* 对话框 */}
       <ModelConfirmDialog

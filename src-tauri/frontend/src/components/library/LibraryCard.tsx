@@ -203,7 +203,6 @@ export function LibraryCard({
             {model.parameterCount ? `${model.parameterCount} 参数 | ` : ""}
             {model.quantization ? `${model.quantization} | ` : ""}
             {model.sizeBytes ? `${formatBytes(model.sizeBytes)}` : ""}
-            {installed && model.localPath ? ` | ${model.localPath}` : ""}
           </p>
 
           {/* 下载进度 */}

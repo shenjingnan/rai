@@ -167,55 +167,55 @@ pub struct LlmParamsPatch {
 impl LlmParamsPatch {
     /// 先整体校验（任一越界立即 Err），再逐项写入 `LlmSettings`，保证出错时不部分修改。
     pub fn apply_to(&self, llm: &mut LlmSettings) -> Result<(), String> {
-        if let Some(v) = self.context_size {
-            if !(256..=1_048_576).contains(&v) {
-                return Err(format!("上下文大小需在 256~1048576，当前 {v}"));
-            }
+        if let Some(v) = self.context_size
+            && !(256..=1_048_576).contains(&v)
+        {
+            return Err(format!("上下文大小需在 256~1048576，当前 {v}"));
         }
-        if let Some(v) = self.batch_size {
-            if !(1..=8192).contains(&v) {
-                return Err(format!("批大小需在 1~8192，当前 {v}"));
-            }
+        if let Some(v) = self.batch_size
+            && !(1..=8192).contains(&v)
+        {
+            return Err(format!("批大小需在 1~8192，当前 {v}"));
         }
-        if let Some(v) = self.max_tokens {
-            if !(16..=262_144).contains(&v) {
-                return Err(format!("最大生成 Tokens 需在 16~262144，当前 {v}"));
-            }
+        if let Some(v) = self.max_tokens
+            && !(16..=262_144).contains(&v)
+        {
+            return Err(format!("最大生成 Tokens 需在 16~262144，当前 {v}"));
         }
-        if let Some(v) = self.temperature {
-            if !(0.0..=2.0).contains(&v) {
-                return Err(format!("温度需在 0~2，当前 {v}"));
-            }
+        if let Some(v) = self.temperature
+            && !(0.0..=2.0).contains(&v)
+        {
+            return Err(format!("温度需在 0~2，当前 {v}"));
         }
-        if let Some(v) = self.top_p {
-            if !(0.0..=1.0).contains(&v) {
-                return Err(format!("Top-P 需在 0~1，当前 {v}"));
-            }
+        if let Some(v) = self.top_p
+            && !(0.0..=1.0).contains(&v)
+        {
+            return Err(format!("Top-P 需在 0~1，当前 {v}"));
         }
-        if let Some(v) = self.top_k {
-            if v > 500 {
-                return Err(format!("Top-K 需在 0~500，当前 {v}"));
-            }
+        if let Some(v) = self.top_k
+            && v > 500
+        {
+            return Err(format!("Top-K 需在 0~500，当前 {v}"));
         }
-        if let Some(v) = self.min_p {
-            if !(0.0..=1.0).contains(&v) {
-                return Err(format!("Min-P 需在 0~1，当前 {v}"));
-            }
+        if let Some(v) = self.min_p
+            && !(0.0..=1.0).contains(&v)
+        {
+            return Err(format!("Min-P 需在 0~1，当前 {v}"));
         }
-        if let Some(v) = self.repeat_penalty {
-            if !(0.0..=3.0).contains(&v) {
-                return Err(format!("重复惩罚需在 0~3，当前 {v}"));
-            }
+        if let Some(v) = self.repeat_penalty
+            && !(0.0..=3.0).contains(&v)
+        {
+            return Err(format!("重复惩罚需在 0~3，当前 {v}"));
         }
-        if let Some(v) = self.threads {
-            if !(0..=512).contains(&v) {
-                return Err(format!("线程数需在 0~512（0=自动），当前 {v}"));
-            }
+        if let Some(v) = self.threads
+            && !(0..=512).contains(&v)
+        {
+            return Err(format!("线程数需在 0~512（0=自动），当前 {v}"));
         }
-        if let Some(v) = self.gpu_layers {
-            if !(-1..=1024).contains(&v) {
-                return Err(format!("GPU 层数需在 -1~1024（-1=全部），当前 {v}"));
-            }
+        if let Some(v) = self.gpu_layers
+            && !(-1..=1024).contains(&v)
+        {
+            return Err(format!("GPU 层数需在 -1~1024（-1=全部），当前 {v}"));
         }
         // seed 为任意 u32，无需边界校验
 

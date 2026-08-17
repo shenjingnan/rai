@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, onLlmError, onLlmFinished, onLlmStatus, onLlmToken } from "@/lib/tauri";
-import type { LlmConfigInfo } from "@/types/tauri";
+import type { LlmConfigInfo, LlmParamsPatch } from "@/types/tauri";
 
 export interface LlmState {
   config: LlmConfigInfo | null;
@@ -17,6 +17,10 @@ export interface LlmState {
   stop: () => Promise<void>;
   setThinking: (enabled: boolean) => Promise<void>;
   setAutoLoad: (enabled: boolean) => Promise<void>;
+  /** 批量保存采样/引擎参数；失败时 rethrow 供保存按钮内联展示错误 */
+  setParams: (params: LlmParamsPatch) => Promise<void>;
+  /** 保存系统提示词；失败时 rethrow */
+  setSystemPrompt: (prompt: string) => Promise<void>;
 }
 
 /**
@@ -138,6 +142,32 @@ export function useLlm(): LlmState {
     [refreshConfig],
   );
 
+  const setParams = useCallback(
+    async (params: LlmParamsPatch) => {
+      try {
+        await api.setLlmParams({ params });
+        await refreshConfig();
+      } catch (e) {
+        setError(String(e));
+        throw e; // 保存按钮需要内联错误反馈
+      }
+    },
+    [refreshConfig],
+  );
+
+  const setSystemPrompt = useCallback(
+    async (prompt: string) => {
+      try {
+        await api.setLlmSystemPrompt({ prompt });
+        await refreshConfig();
+      } catch (e) {
+        setError(String(e));
+        throw e;
+      }
+    },
+    [refreshConfig],
+  );
+
   return {
     config,
     configError,
@@ -153,5 +183,7 @@ export function useLlm(): LlmState {
     stop,
     setThinking,
     setAutoLoad,
+    setParams,
+    setSystemPrompt,
   };
 }

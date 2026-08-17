@@ -6,3 +6,14 @@ import "@testing-library/jest-dom/vitest";
 if (typeof window !== "undefined") {
   (window as unknown as { Live2DCubismCore: unknown }).Live2DCubismCore ??= {};
 }
+
+// Radix Slider（`@radix-ui/react-use-size`）依赖 ResizeObserver，jsdom 未实现，
+// 高级参数组件用到 Slider，这里补一个空实现。
+if (typeof window !== "undefined" && typeof window.ResizeObserver === "undefined") {
+  class ResizeObserverStub implements ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  (window as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
+}

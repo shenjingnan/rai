@@ -69,6 +69,21 @@ const LLM_CONFIG = {
   enable_thinking: false,
   auto_load: false,
   settings_path: "/home/user/.zapmomo/settings.toml",
+  system_prompt: "你是 ZapMomo 的 AI 大脑。",
+  params: {
+    context_size: 8192,
+    batch_size: 512,
+    max_tokens: 512,
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: 20,
+    min_p: 0.05,
+    repeat_penalty: 1.05,
+    seed: 0,
+    threads: 8,
+    gpu_layers: 0,
+    enable_thinking: false,
+  },
 };
 
 /** 渲染 App 并定位到指定路由（默认 KWS 详情页）。 */

@@ -22,7 +22,7 @@ use zapmomo::config::settings::{
     self, CompanionWindowPosition, Live2dSettings, LlmSettings, TtsSettings,
 };
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
-use zapmomo::llm::types::{ChatMessage, ChatRole, InputItem};
+use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
 use zapmomo::llm::{LlmEngine, LlmEvent};
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
@@ -830,6 +830,10 @@ struct LlmConfigInfo {
     enable_thinking: bool,
     auto_load: bool,
     settings_path: String,
+    /// 当前生效的角色 system prompt
+    system_prompt: String,
+    /// 当前生效的采样/引擎参数（已 resolve，非 Option）
+    params: GenParams,
 }
 
 /// 加载状态事件载荷。
@@ -892,6 +896,8 @@ fn get_llm_config(state: State<'_, LlmState>) -> Result<LlmConfigInfo, String> {
         settings_path: zapmomo::config::settings::get_settings_path()
             .display()
             .to_string(),
+        system_prompt: cfg.system_prompt,
+        params: cfg.params,
     })
 }
 
@@ -1007,6 +1013,31 @@ fn set_llm_auto_load(enabled: bool) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();
     let llm = settings.llm.get_or_insert_with(LlmSettings::default);
     llm.auto_load = Some(enabled);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
+/// 批量持久化 LLM 采样/引擎参数（11 项），写入 `[llm]`。
+///
+/// 载荷为 `{ params: { context_size, temperature, ... } }`（snake_case 直传）；
+/// `None` 字段保持原有配置不变。值先整体校验、再写入，出错时不部分修改。
+#[tauri::command]
+fn set_llm_params(params: LlmParamsPatch) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let llm = settings.llm.get_or_insert_with(LlmSettings::default);
+    params.apply_to(llm)?;
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
+/// 持久化角色 system prompt，写入 `[llm].system_prompt`。
+///
+/// 空串会覆盖内置默认（模型收到空 system prompt）；改动需重新加载模型/provider 才生效。
+#[tauri::command]
+fn set_llm_system_prompt(prompt: String) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let llm = settings.llm.get_or_insert_with(LlmSettings::default);
+    llm.system_prompt = Some(prompt);
     settings::save_settings(&settings)?;
     Ok(())
 }
@@ -1334,6 +1365,8 @@ pub fn run() {
             set_llm_model_path,
             set_llm_thinking,
             set_llm_auto_load,
+            set_llm_params,
+            set_llm_system_prompt,
             set_tts_enabled,
             get_live2d_config,
             set_live2d_model,

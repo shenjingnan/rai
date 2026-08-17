@@ -12,6 +12,7 @@ import type {
   Live2dModelInfo,
   LlmConfigInfo,
   LlmFinishReason,
+  LlmParamsPatch,
   LlmStatus,
   LlmToken,
   TtsConfigInfo,
@@ -61,6 +62,8 @@ export const api = {
   setLlmModelPath: (args: { path: string }) => invoke<void>("set_llm_model_path", args),
   setLlmThinking: (args: { enabled: boolean }) => invoke<void>("set_llm_thinking", args),
   setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
+  setLlmParams: (args: { params: LlmParamsPatch }) => invoke<void>("set_llm_params", args),
+  setLlmSystemPrompt: (args: { prompt: string }) => invoke<void>("set_llm_system_prompt", args),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),

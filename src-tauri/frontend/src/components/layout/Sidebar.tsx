@@ -10,11 +10,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
-import { Live2dStage } from "@/components/live2d/Live2dStage";
-import { toAssetUrl } from "@/lib/tauri";
-import { useRuntime } from "@/providers/RuntimeContext";
+import { useState } from "react";
 import { NavItem } from "./NavItem";
 
 const PRIMARY_NAV = [
@@ -30,23 +26,9 @@ const PRIMARY_NAV = [
 const windowButtonClass =
   "flex h-full w-9 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
-/** 左侧导航：左上角窗口按钮 + 真实 logo + 主导航，底部展示监听状态。 */
+/** 左侧导航：左上角窗口按钮 + 真实 logo + 主导航。 */
 export function Sidebar() {
-  const { live2d } = useRuntime();
-  const location = useLocation();
   const [isMac] = useState(() => navigator.userAgent.includes("Macintosh"));
-
-  const { modelUrl } = live2d.model;
-  const { config } = live2d.config;
-
-  // 优先当前会话加载的模型，其次回退到持久化配置里的模型（与 Live2dCard 保持一致）。
-  const companionUrl = useMemo(() => {
-    if (modelUrl) return modelUrl;
-    if (config?.models_present && config.model_file) {
-      return toAssetUrl(config.model_file);
-    }
-    return null;
-  }, [modelUrl, config]);
 
   return (
     <aside
@@ -104,14 +86,6 @@ export function Sidebar() {
           />
         ))}
       </nav>
-
-      <div className="mt-auto flex flex-col gap-3 px-4 pb-6">
-        {/* pixi-live2d-display 全局共享 WebGL context，同一窗口内两个 Live2D 画布会互相覆盖。
-            伙伴页已有 Live2dCard 大预览，故该页隐藏侧边栏小预览，避免两个模型并存。 */}
-        {companionUrl && !location.pathname.startsWith("/companion") && (
-          <Live2dStage modelUrl={companionUrl} width={128} height={160} className="self-center" />
-        )}
-      </div>
     </aside>
   );
 }

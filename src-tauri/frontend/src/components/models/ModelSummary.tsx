@@ -118,6 +118,40 @@ export function ModelSummary() {
 
   const rows: SummaryRowData[] = [
     {
+      accent: "bg-violet-100 text-violet-600",
+      icon: AudioWaveform,
+      name: "唤醒词（KWS）",
+      model: kwsConfigured ? basename(kws.config?.config?.model_dir ?? "") : "未配置模型",
+      runtime: "sherpa-onnx",
+      path: kwsConfigured ? (kws.config?.config?.model_dir ?? null) : null,
+      statusText: kws.listening.error
+        ? "错误"
+        : kws.listening.isListening
+          ? "监听中"
+          : kwsConfigured
+            ? "未启用"
+            : "未配置模型",
+      statusTone: kws.listening.error ? "error" : kws.listening.isListening ? "good" : "idle",
+      gearHref: "/models/kws",
+    },
+    {
+      accent: "bg-blue-100 text-blue-600",
+      icon: Mic,
+      name: "语音识别（ASR）",
+      model: asrConfigured ? basename(asr.config?.config?.model_dir ?? "") : "未配置模型",
+      runtime: "sherpa-onnx",
+      path: asrConfigured ? (asr.config?.config?.model_dir ?? null) : null,
+      statusText: asr.listening.error
+        ? "错误"
+        : asr.listening.isListening
+          ? "识别中"
+          : asrConfigured
+            ? "未启用"
+            : "未配置模型",
+      statusTone: asr.listening.error ? "error" : asr.listening.isListening ? "good" : "idle",
+      gearHref: "/models/asr",
+    },
+    {
       accent: "bg-emerald-100 text-emerald-600",
       icon: Brain,
       name: "AI 大脑（LLM）",
@@ -158,40 +192,6 @@ export function ModelSummary() {
             ? "good"
             : "idle",
       gearHref: "/models/tts",
-    },
-    {
-      accent: "bg-blue-100 text-blue-600",
-      icon: Mic,
-      name: "语音识别（ASR）",
-      model: asrConfigured ? basename(asr.config?.config?.model_dir ?? "") : "未配置模型",
-      runtime: "sherpa-onnx",
-      path: asrConfigured ? (asr.config?.config?.model_dir ?? null) : null,
-      statusText: asr.listening.error
-        ? "错误"
-        : asr.listening.isListening
-          ? "识别中"
-          : asrConfigured
-            ? "未启用"
-            : "未配置模型",
-      statusTone: asr.listening.error ? "error" : asr.listening.isListening ? "good" : "idle",
-      gearHref: "/models/asr",
-    },
-    {
-      accent: "bg-violet-100 text-violet-600",
-      icon: AudioWaveform,
-      name: "唤醒词（KWS）",
-      model: kwsConfigured ? basename(kws.config?.config?.model_dir ?? "") : "未配置模型",
-      runtime: "sherpa-onnx",
-      path: kwsConfigured ? (kws.config?.config?.model_dir ?? null) : null,
-      statusText: kws.listening.error
-        ? "错误"
-        : kws.listening.isListening
-          ? "监听中"
-          : kwsConfigured
-            ? "未启用"
-            : "未配置模型",
-      statusTone: kws.listening.error ? "error" : kws.listening.isListening ? "good" : "idle",
-      gearHref: "/models/kws",
     },
   ];
 

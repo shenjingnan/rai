@@ -37,7 +37,7 @@ llama-cpp-2 = "0.1.154"
 encoding_rs = "0.8"
 
 # HTTP 客户端（OpenAI 兼容 Responses / llama.cpp-server）
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 
 # 汉字 → 带声调拼音（把用户输入的原始中文关键词转成模型可编码的 ppinyin token）
 pinyin = "0.11"

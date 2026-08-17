@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -19,7 +19,7 @@ use tauri::{
 };
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
-    self, CompanionWindowPosition, Live2dSettings, LlmSettings, TtsSettings,
+    self, CompanionWindowPosition, KwsSettings, Live2dSettings, LlmSettings, TtsSettings,
 };
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
@@ -130,14 +130,73 @@ fn list_devices() -> Vec<String> {
 /// GUI 展示用的 KWS 配置信息。
 #[derive(Serialize)]
 struct KwsConfigInfo {
+    enabled: bool,
+    custom_keywords: String,
     model_dir: String,
     provider: String,
     num_threads: i32,
     sample_rate: i32,
+    chunk_size: usize,
+    keywords_score: f32,
+    keywords_threshold: f32,
+    debug: bool,
     keywords: Vec<String>,
     models_present: bool,
     model_downloading: bool,
     settings_path: String,
+}
+
+/// `set_kws_params` 载荷：可调整的 KWS 引擎/运行参数（snake_case 直传，缺省项不修改）。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct KwsParamsPatch {
+    keywords_threshold: Option<f32>,
+    keywords_score: Option<f32>,
+    chunk_size: Option<usize>,
+    num_threads: Option<i32>,
+    debug: Option<bool>,
+}
+
+impl KwsParamsPatch {
+    /// 先整体校验（任一越界立即 Err），再逐项写入 `KwsSettings`，保证出错时不部分修改。
+    fn apply_to(&self, kws: &mut KwsSettings) -> Result<(), String> {
+        if let Some(v) = self.keywords_threshold
+            && !(0.0..=1.0).contains(&v)
+        {
+            return Err(format!("灵敏度/阈值需在 0~1，当前 {v}"));
+        }
+        if let Some(v) = self.keywords_score
+            && !(0.1..=10.0).contains(&v)
+        {
+            return Err(format!("关键词加权需在 0.1~10，当前 {v}"));
+        }
+        if let Some(v) = self.chunk_size
+            && !(400..=16_000).contains(&v)
+        {
+            return Err(format!("采样块大小需在 400~16000（@16k），当前 {v}"));
+        }
+        if let Some(v) = self.num_threads
+            && !(1..=32).contains(&v)
+        {
+            return Err(format!("线程数需在 1~32，当前 {v}"));
+        }
+
+        if let Some(v) = self.keywords_threshold {
+            kws.keywords_threshold = Some(v);
+        }
+        if let Some(v) = self.keywords_score {
+            kws.keywords_score = Some(v);
+        }
+        if let Some(v) = self.chunk_size {
+            kws.chunk_size = Some(v);
+        }
+        if let Some(v) = self.num_threads {
+            kws.num_threads = Some(v);
+        }
+        if let Some(v) = self.debug {
+            kws.debug = Some(v);
+        }
+        Ok(())
+    }
 }
 
 /// 读取合并后的 KWS 配置（settings.toml + 默认值），并给出模型是否就绪。
@@ -159,10 +218,19 @@ fn get_kws_config(state: State<'_, DownloadState>) -> Result<KwsConfigInfo, Stri
         zapmomo::kws::config::parse_keywords_file(&cfg.keywords_file).unwrap_or_default();
 
     Ok(KwsConfigInfo {
+        enabled: cfg.enabled,
+        custom_keywords: kws_settings
+            .as_ref()
+            .and_then(|s| s.custom_keywords.clone())
+            .unwrap_or_default(),
         model_dir: cfg.model_dir.display().to_string(),
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
         sample_rate: cfg.sample_rate,
+        chunk_size: cfg.chunk_size,
+        keywords_score: cfg.keywords_score,
+        keywords_threshold: cfg.keywords_threshold,
+        debug: cfg.debug,
         keywords,
         models_present,
         model_downloading: state.in_progress.load(Ordering::Relaxed),
@@ -172,14 +240,13 @@ fn get_kws_config(state: State<'_, DownloadState>) -> Result<KwsConfigInfo, Stri
     })
 }
 
-/// 开始实时监听唤醒词。
+/// 开始实时监听唤醒词（command 与启动自动监听共用）。
 ///
 /// 校验模型文件后启动独立线程跑 `run_realtime_with`，检测结果经
 /// `kws-detected` 事件发给前端；线程结束发 `kws-stopped`。
-#[tauri::command]
-fn start_listen(
+fn start_listen_impl(
     app: AppHandle,
-    state: State<'_, ListenState>,
+    state: &ListenState,
     device: Option<String>,
     keywords: Option<String>,
 ) -> Result<(), String> {
@@ -237,6 +304,17 @@ fn start_listen(
     });
     *state.handle.lock().expect("listen handle lock poisoned") = Some(handle);
     Ok(())
+}
+
+/// 开始实时监听唤醒词。 —— Tauri command 外壳，签名与前端契约不变。
+#[tauri::command]
+fn start_listen(
+    app: AppHandle,
+    state: State<'_, ListenState>,
+    device: Option<String>,
+    keywords: Option<String>,
+) -> Result<(), String> {
+    start_listen_impl(app, state.inner(), device, keywords)
 }
 
 /// 停止实时监听：置停止标志并等待线程退出。
@@ -1052,6 +1130,61 @@ fn set_tts_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 持久化「启用 KWS」开关，写入 `[kws].enabled`（缺省 false）。
+/// 开关只持久化偏好；立即开始/停止监听由前端调用 `start_listen` / `stop_listen`，
+/// 下次启动自动监听由 `.setup()` 判断 `[kws].enabled` 触发。
+#[tauri::command]
+fn set_kws_enabled(enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let kws = settings.kws.get_or_insert_with(KwsSettings::default);
+    kws.enabled = Some(enabled);
+    settings::save_settings(&settings)?;
+    Ok(())
+}
+
+/// 持久化会话级自定义唤醒词，写入 `[kws].custom_keywords`（空串 → None = 模型内置）。
+#[tauri::command]
+fn set_kws_custom_keywords(keywords: String) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let kws = settings.kws.get_or_insert_with(KwsSettings::default);
+    kws.custom_keywords = if keywords.trim().is_empty() {
+        None
+    } else {
+        Some(keywords.trim().to_string())
+    };
+    settings::save_settings(&settings)
+}
+
+/// 持久化 KWS 引擎/运行参数（灵敏度/加权/块大小/线程/调试），写入 `[kws]`。
+/// 引擎参数在启动监听时固化：修改后需重启监听才生效（由前端在保存后若在监听则重启）。
+#[tauri::command]
+fn set_kws_params(params: KwsParamsPatch) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let kws = settings.kws.get_or_insert_with(KwsSettings::default);
+    params.apply_to(kws)?;
+    settings::save_settings(&settings)
+}
+
+/// 读取全局默认麦克风输入设备名（空串 = 系统默认），KWS / ASR 共用。
+#[tauri::command]
+fn get_microphone() -> Result<String, String> {
+    Ok(settings::load_settings()?
+        .and_then(|s| s.microphone)
+        .unwrap_or_default())
+}
+
+/// 设置并持久化全局默认麦克风（空串 → None = 系统默认）。
+#[tauri::command]
+fn set_microphone(mic: String) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    settings.microphone = if mic.trim().is_empty() {
+        None
+    } else {
+        Some(mic.trim().to_string())
+    };
+    settings::save_settings(&settings)
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -1343,10 +1476,15 @@ pub fn run() {
             get_app_info,
             list_devices,
             get_kws_config,
+            set_kws_enabled,
+            set_kws_custom_keywords,
+            set_kws_params,
             start_listen,
             stop_listen,
             is_listening,
             download_kws_model,
+            get_microphone,
+            set_microphone,
             get_asr_config,
             start_asr_listen,
             stop_asr_listen,
@@ -1404,6 +1542,24 @@ pub fn run() {
                 let state = app.state::<LlmState>();
                 if let Err(e) = load_llm_impl(handle, state.inner()) {
                     tracing::warn!("自动加载 LLM 失败: {e}");
+                }
+            }
+
+            // 启动自动监听 KWS（若用户启用 KWS）：后台线程监听，失败静默降级为手动启动。
+            // 使用持久化的麦克风（顶层 microphone）与自定义唤醒词（[kws].custom_keywords，空则模型内置）。
+            if zapmomo::kws::config::resolve(loaded.as_ref().and_then(|s| s.kws.as_ref()), None)
+                .map(|c| c.enabled)
+                .unwrap_or(false)
+            {
+                let handle = app.handle().clone();
+                let state = app.state::<ListenState>();
+                let mic = loaded.as_ref().and_then(|s| s.microphone.clone());
+                let kw = loaded
+                    .as_ref()
+                    .and_then(|s| s.kws.as_ref())
+                    .and_then(|k| k.custom_keywords.clone());
+                if let Err(e) = start_listen_impl(handle, state.inner(), mic, kw) {
+                    tracing::warn!("自动监听 KWS 失败: {e}");
                 }
             }
 

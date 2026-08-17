@@ -1,4 +1,10 @@
 import "@testing-library/jest-dom/vitest";
+import { afterEach } from "vitest";
+
+// 麦克风选择等偏好写入 localStorage；每个用例结束后清理，避免跨用例泄漏记忆值。
+afterEach(() => {
+  localStorage.clear();
+});
 
 // pixi-live2d-display/cubism4 在模块顶层检查 window.Live2DCubismCore，
 // 测试环境不加载 index.html 里的 Cubism Core script，这里 mock 一个占位全局
@@ -16,4 +22,24 @@ if (typeof window !== "undefined" && typeof window.ResizeObserver === "undefined
     disconnect(): void {}
   }
   (window as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
+}
+
+// Radix Select 在 pointer 交互时调用 hasPointerCapture / setPointerCapture /
+// releasePointerCapture，jsdom 未实现这些 API，补空实现使下拉菜单可交互。
+if (typeof Element !== "undefined" && typeof Element.prototype.hasPointerCapture !== "function") {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (typeof Element !== "undefined" && typeof Element.prototype.setPointerCapture !== "function") {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (
+  typeof Element !== "undefined" &&
+  typeof Element.prototype.releasePointerCapture !== "function"
+) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+
+// Radix Select 打开时对候选滚动定位，jsdom 未实现 scrollIntoView，补空实现。
+if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
+  Element.prototype.scrollIntoView = () => {};
 }

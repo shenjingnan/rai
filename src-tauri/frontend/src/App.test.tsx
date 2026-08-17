@@ -29,15 +29,26 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 const DEFAULT_CONFIG = {
+  enabled: false,
+  custom_keywords: "",
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-kws",
   provider: "cpu",
   num_threads: 4,
   sample_rate: 16000,
+  chunk_size: 3200,
+  keywords_score: 1.0,
+  keywords_threshold: 0.25,
+  debug: false,
   keywords: ["文森特卡索"],
   models_present: false,
   model_downloading: false,
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
+
+/** 可变 KWS 配置：单个用例可翻转 models_present 等字段（贴近真实后端）。 */
+let kwsConfig: typeof DEFAULT_CONFIG;
+/** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
+let mic = "";
 
 const ASR_CONFIG = {
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer",
@@ -98,37 +109,63 @@ function renderApp(initialPath = "/models/kws") {
 beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
+  kwsConfig = { ...DEFAULT_CONFIG };
+  mic = "";
 
-  invokeMock.mockImplementation((cmd: string) => {
-    switch (cmd) {
-      case "get_app_info":
-        return Promise.resolve({ version: "0.1.4", product_name: "ZapMomo" });
-      case "list_devices":
-        return Promise.resolve(["内置麦克风", "USB 麦克风"]);
-      case "get_kws_config":
-        return Promise.resolve(DEFAULT_CONFIG);
-      case "is_listening":
-        return Promise.resolve(false);
-      case "get_asr_config":
-        return Promise.resolve(ASR_CONFIG);
-      case "get_tts_config":
-        return Promise.resolve(TTS_CONFIG);
-      case "list_tts_voices":
-        return Promise.resolve([]);
-      case "get_llm_config":
-        return Promise.resolve(LLM_CONFIG);
-      case "is_asr_listening":
-        return Promise.resolve(false);
-      case "is_llm_ready":
-        return Promise.resolve(false);
-      case "start_listen":
-      case "stop_listen":
-      case "download_kws_model":
-        return Promise.resolve(undefined);
-      default:
-        return Promise.resolve(undefined);
-    }
-  });
+  invokeMock.mockImplementation(
+    (
+      cmd: string,
+      args?: {
+        enabled?: boolean;
+        mic?: string;
+        keywords?: string;
+        params?: Partial<typeof DEFAULT_CONFIG>;
+      },
+    ) => {
+      switch (cmd) {
+        case "get_app_info":
+          return Promise.resolve({ version: "0.1.4", product_name: "ZapMomo" });
+        case "list_devices":
+          return Promise.resolve(["内置麦克风", "USB 麦克风"]);
+        case "get_kws_config":
+          return Promise.resolve({ ...kwsConfig });
+        case "set_kws_enabled":
+          kwsConfig = { ...kwsConfig, enabled: args?.enabled ?? false };
+          return Promise.resolve(undefined);
+        case "set_kws_custom_keywords":
+          kwsConfig = { ...kwsConfig, custom_keywords: args?.keywords ?? "" };
+          return Promise.resolve(undefined);
+        case "set_kws_params":
+          kwsConfig = { ...kwsConfig, ...(args?.params ?? {}) };
+          return Promise.resolve(undefined);
+        case "get_microphone":
+          return Promise.resolve(mic);
+        case "set_microphone":
+          mic = args?.mic ?? "";
+          return Promise.resolve(undefined);
+        case "is_listening":
+          return Promise.resolve(false);
+        case "get_asr_config":
+          return Promise.resolve(ASR_CONFIG);
+        case "get_tts_config":
+          return Promise.resolve(TTS_CONFIG);
+        case "list_tts_voices":
+          return Promise.resolve([]);
+        case "get_llm_config":
+          return Promise.resolve(LLM_CONFIG);
+        case "is_asr_listening":
+          return Promise.resolve(false);
+        case "is_llm_ready":
+          return Promise.resolve(false);
+        case "start_listen":
+        case "stop_listen":
+        case "download_kws_model":
+          return Promise.resolve(undefined);
+        default:
+          return Promise.resolve(undefined);
+      }
+    },
+  );
 });
 
 describe("App（KWS 控制面板）", () => {
@@ -152,7 +189,7 @@ describe("App（KWS 控制面板）", () => {
     });
   });
 
-  it("ASR 未开启时点击唤醒词开关弹确认框，确认后同时开启 ASR 与 KWS", async () => {
+  it("点击唤醒词开关直接调用 start_listen（不再联动 ASR）", async () => {
     const user = userEvent.setup();
     renderApp("/models");
 
@@ -161,30 +198,12 @@ describe("App（KWS 控制面板）", () => {
 
     await user.click(kwsSwitch);
 
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("需要先开启语音输入")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "同时开启" }));
-
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
       expect(invokeMock).toHaveBeenCalledWith("start_listen", { device: null, keywords: null });
     });
-  });
-
-  it("ASR 未开启时取消确认框则不开启任何能力", async () => {
-    const user = userEvent.setup();
-    renderApp("/models");
-
-    await user.click(await screen.findByRole("switch", { name: "唤醒词开关" }));
-    await user.click(screen.getByRole("button", { name: "取消" }));
-
-    // 退出动画结束后对话框卸载
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
+    // 不联动 ASR：不弹确认框、不启动 ASR
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith("start_asr_listen", expect.anything());
-    expect(invokeMock).not.toHaveBeenCalledWith("start_listen", expect.anything());
   });
 
   it("概览页语音合成开关调用 set_tts_enabled", async () => {
@@ -199,14 +218,17 @@ describe("App（KWS 控制面板）", () => {
   });
 
   it("渲染 KWS 配置项", async () => {
+    const user = userEvent.setup();
     renderApp();
-    expect(
-      await screen.findByText("/home/user/.zapmomo/models/sherpa-onnx-kws"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("cpu / 4")).toBeInTheDocument();
+    // 基础配置显示当前模型 basename + 未下载 Badge
+    expect(await screen.findByText("sherpa-onnx-kws")).toBeInTheDocument();
+    expect(screen.getByText("未下载")).toBeInTheDocument();
+    // 模型信息默认折叠；展开后显示只读字段
+    await user.click(screen.getByRole("button", { name: /模型信息/ }));
+    expect(await screen.findByText("推理后端")).toBeInTheDocument();
+    expect(screen.getByText("cpu")).toBeInTheDocument();
     expect(screen.getByText("16000")).toBeInTheDocument();
     expect(screen.getByText("文森特卡索")).toBeInTheDocument();
-    expect(screen.getByText("/home/user/.zapmomo/settings.toml")).toBeInTheDocument();
   });
 
   it("模型缺失时显示警告与下载按钮", async () => {
@@ -215,43 +237,62 @@ describe("App（KWS 控制面板）", () => {
     expect(screen.getByRole("button", { name: /下载模型/ })).toBeInTheDocument();
   });
 
-  it("点击开始监听调用 start_listen 并进入监听中状态", async () => {
+  it("点击顶部开关开启监听：持久化 enabled 并调用 start_listen，开关置 ON", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
+    await user.click(await screen.findByRole("switch", { name: "唤醒词监听开关" }));
 
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_kws_enabled", { enabled: true });
+    });
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("start_listen", {
         device: null,
         keywords: null,
       });
     });
-    // 进入监听中状态：停止监听按钮从禁用变为可用
+    // 开关绑持久化 enabled：set_kws_enabled 回读后置 ON
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+      expect(screen.getByRole("switch", { name: "唤醒词监听开关" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
     });
   });
 
-  it("点击停止监听调用 stop_listen", async () => {
+  it("点击顶部开关关闭监听：停止监听并持久化 enabled=false", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(await screen.findByRole("button", { name: /开始监听/ }));
+    const sw = await screen.findByRole("switch", { name: "唤醒词监听开关" });
+    await user.click(sw);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /停止监听/ })).toBeEnabled();
+      expect(invokeMock).toHaveBeenCalledWith("start_listen", {
+        device: null,
+        keywords: null,
+      });
     });
 
-    await user.click(screen.getByRole("button", { name: /停止监听/ }));
+    await user.click(screen.getByRole("switch", { name: "唤醒词监听开关" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("stop_listen");
     });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_kws_enabled", { enabled: false });
+    });
   });
 
-  it("检测到唤醒词后把结果追加到列表", async () => {
+  it("检测到唤醒词后把结果追加到测试对话框", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
+    const user = userEvent.setup();
     renderApp();
-    await screen.findByText("尚未检测到唤醒词");
+
+    await user.click(await screen.findByRole("button", { name: /测试唤醒词/ }));
+    expect(await screen.findByText("尚未检测到唤醒词")).toBeInTheDocument();
 
     act(() => {
       listeners.get("kws-detected")?.({
@@ -266,7 +307,7 @@ describe("App（KWS 控制面板）", () => {
       });
     });
 
-    expect(await screen.findByText(/start=0\.64s/)).toBeInTheDocument();
+    expect(await screen.findByText("“文森特卡索”")).toBeInTheDocument();
   });
 
   it("点击下载模型调用 download_kws_model 并刷新配置", async () => {
@@ -290,13 +331,37 @@ describe("App（KWS 控制面板）", () => {
     const user = userEvent.setup();
     renderApp("/settings");
 
-    const checkbox = await screen.findByRole("checkbox", { name: /隐藏应用图标/ });
-    expect(checkbox).not.toBeChecked();
+    const toggle = await screen.findByRole("switch", { name: "隐藏应用图标" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
 
-    await user.click(checkbox);
+    await user.click(toggle);
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_hide_dock_icon", { hide: true });
+    });
+  });
+
+  it("设置页可选择麦克风并持久化到后端", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings");
+
+    await user.click(await screen.findByRole("combobox", { name: "麦克风来源" }));
+    await user.click(await screen.findByRole("option", { name: "USB 麦克风" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_microphone", { mic: "USB 麦克风" });
+    });
+  });
+
+  it("设置页刷新设备按钮重新调用 list_devices", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings");
+
+    await user.click(await screen.findByRole("button", { name: "刷新设备列表" }));
+
+    await waitFor(() => {
+      const calls = invokeMock.mock.calls.filter((c) => c[0] === "list_devices");
+      expect(calls.length).toBeGreaterThanOrEqual(2);
     });
   });
 });

@@ -75,6 +75,9 @@ pub struct AppConfig {
     /// 自定义配置项（示例）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom: Option<std::collections::HashMap<String, String>>,
+    /// 全局默认麦克风输入设备名（空 = 系统默认），KWS / ASR 共用；重启后免重选
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<String>,
     /// 唤醒词检测（KWS）配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kws: Option<KwsSettings>,
@@ -98,6 +101,12 @@ pub struct AppConfig {
 /// 因此这里用 `Option` 以区分「未配置」与「配置了」。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct KwsSettings {
+    /// 是否启用 KWS（打开开关即持久化；启动时自动监听的前提），缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// 会话级自定义唤醒词（原始字符串，多个用 / 分隔；持久化后启动自动监听也使用），缺省 None = 模型内置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_keywords: Option<String>,
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
@@ -362,6 +371,7 @@ impl Default for AppConfig {
             log_level: default_log_level(),
             hide_dock_icon: false,
             custom: None,
+            microphone: None,
             kws: None,
             asr: None,
             tts: None,
@@ -515,6 +525,7 @@ mod tests {
         assert!(!config.debug);
         assert_eq!(config.log_level, "info");
         assert!(config.custom.is_none());
+        assert!(config.microphone.is_none());
     }
 
     #[test]
@@ -524,6 +535,7 @@ mod tests {
             log_level: "warn".to_string(),
             hide_dock_icon: true,
             custom: Some(std::collections::HashMap::new()),
+            microphone: Some("内置麦克风".to_string()),
             kws: None,
             asr: None,
             tts: None,
@@ -533,8 +545,9 @@ mod tests {
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, deserialized);
-        // 缺省字段应被反序列化为 false
+        // 缺省字段应被反序列化为 false；microphone 应被序列化
         assert!(toml_str.contains("hide_dock_icon"));
+        assert!(toml_str.contains("microphone"));
     }
 
     #[test]
@@ -553,6 +566,15 @@ mod tests {
             write_toml_settings(home, "hide_dock_icon = true\n");
             let result = load_settings().unwrap().unwrap();
             assert!(result.hide_dock_icon);
+        });
+    }
+
+    #[test]
+    fn test_load_settings_with_microphone() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "microphone = \"内置麦克风\"\n");
+            let result = load_settings().unwrap().unwrap();
+            assert_eq!(result.microphone.as_deref(), Some("内置麦克风"));
         });
     }
 
@@ -671,6 +693,8 @@ mod tests {
     #[test]
     fn test_kws_settings_serde_roundtrip() {
         let kws = KwsSettings {
+            enabled: Some(false),
+            custom_keywords: Some("你好小智".to_string()),
             model_dir: Some("${env.KWS_MODEL_DIR}".to_string()),
             encoder: Some("encoder.onnx".to_string()),
             decoder: None,
@@ -749,6 +773,7 @@ mod tests {
                 log_level: "debug".to_string(),
                 hide_dock_icon: false,
                 custom: None,
+                microphone: None,
                 kws: None,
                 asr: None,
                 tts: None,

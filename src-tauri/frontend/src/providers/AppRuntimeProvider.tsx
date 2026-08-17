@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useAppInfo } from "@/hooks/useAppInfo";
 import { useAsrConfig } from "@/hooks/useAsrConfig";
 import { useAsrListening } from "@/hooks/useAsrListening";
@@ -13,6 +13,7 @@ import { useLlm } from "@/hooks/useLlm";
 import { useModelDownload } from "@/hooks/useModelDownload";
 import { useResults } from "@/hooks/useResults";
 import { useTts } from "@/hooks/useTts";
+import { api } from "@/lib/tauri";
 import { RuntimeContext, type RuntimeState } from "./RuntimeContext";
 
 /**
@@ -35,7 +36,70 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
   const tts = useTts();
   const live2dConfig = useLive2dConfig();
   const live2dModel = useLive2dModel(live2dConfig.refresh);
-  const [device, setDevice] = useState("");
+  // 麦克风选择：跨页面全局共享（KWS/ASR/概览均消费），持久化到 backend settings.toml（顶层 microphone）。
+  // 启动时回读后端；旧版本遗留的 localStorage 记忆做一次性迁移（读后即清，仅在读成功后才清理）。
+  const [device, setDeviceState] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let saved: string;
+      try {
+        saved = await api.getMicrophone();
+      } catch {
+        return; // 读取失败：保持默认，不迁移不清理
+      }
+      if (cancelled) return;
+      if (saved) {
+        setDeviceState(saved);
+      } else {
+        const legacy = localStorage.getItem("zapmomo.microphone");
+        if (legacy) {
+          setDeviceState(legacy);
+          void api.setMicrophone({ mic: legacy }).catch(() => {});
+        }
+      }
+      localStorage.removeItem("zapmomo.microphone");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const setDevice = useCallback((d: string) => {
+    setDeviceState(d);
+    void api.setMicrophone({ mic: d }).catch(() => {});
+  }, []);
+
+  // 设备列表就绪后校验记忆的设备是否仍存在（如外设拔出），否则清空避免 start 时按不存在设备报错
+  useEffect(() => {
+    if (device && devices.devices.length > 0 && !devices.devices.includes(device)) {
+      setDevice("");
+    }
+  }, [device, devices.devices, setDevice]);
+
+  // 会话级自定义唤醒词：随 runtime 常驻路由外，页面切走再回来不丢；
+  // 修改时防抖持久化到 backend（[kws].custom_keywords），启动时回读一次（下次打开仍存在，自动监听也用）。
+  const [sessionKeywords, setSessionKeywordsState] = useState("");
+  const keywordsTimer = useRef<number | null>(null);
+  const keywordsHydrated = useRef(false);
+  const setSessionKeywords = useCallback((kw: string) => {
+    setSessionKeywordsState(kw);
+    if (keywordsTimer.current) window.clearTimeout(keywordsTimer.current);
+    keywordsTimer.current = window.setTimeout(() => {
+      void api.setKwsCustomKeywords({ keywords: kw }).catch(() => {});
+      keywordsTimer.current = null;
+    }, 300);
+  }, []);
+
+  // 配置加载后仅回填一次持久化的自定义唤醒词（避免后续配置刷新覆盖用户正在输入的内容）
+  useEffect(() => {
+    if (keywordsHydrated.current) return;
+    const persisted = kwsConfig.config?.custom_keywords;
+    if (persisted != null) {
+      setSessionKeywordsState(persisted);
+      keywordsHydrated.current = true;
+    }
+  }, [kwsConfig.config?.custom_keywords]);
 
   const anyListening = listening.isListening || asrListening.isListening;
 
@@ -54,6 +118,8 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     live2d: { config: live2dConfig, model: live2dModel },
     device,
     setDevice,
+    sessionKeywords,
+    setSessionKeywords,
     anyListening,
   };
 

@@ -16,6 +16,8 @@ pub const DEFAULT_KEYWORDS_REL: &str = "test_wavs/keywords.txt";
 /// 解析后的完整 KWS 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedKwsConfig {
+    /// 是否启用 KWS（启动自动监听的前提），缺省 false
+    pub enabled: bool,
     pub model_dir: PathBuf,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
@@ -37,6 +39,7 @@ impl Default for ResolvedKwsConfig {
         let model_dir = default_model_dir();
         let join = |name: &str| model_dir.join(name);
         Self {
+            enabled: false,
             keywords_file: join(DEFAULT_KEYWORDS_REL),
             encoder: join(DEFAULT_ENCODER),
             decoder: join(DEFAULT_DECODER),
@@ -167,6 +170,7 @@ pub fn resolve(
     cfg.keywords_score = s.and_then(|s| s.keywords_score).unwrap_or(1.0);
     cfg.keywords_threshold = s.and_then(|s| s.keywords_threshold).unwrap_or(0.25);
     cfg.debug = s.and_then(|s| s.debug).unwrap_or(false);
+    cfg.enabled = s.and_then(|s| s.enabled).unwrap_or(false);
 
     Ok(cfg)
 }
@@ -272,6 +276,16 @@ mod tests {
     fn test_resolve_no_settings_uses_defaults() {
         let cfg = resolve(None, None).unwrap();
         assert_eq!(cfg, ResolvedKwsConfig::default());
+    }
+
+    #[test]
+    fn test_resolve_enabled_default_false_and_override() {
+        assert!(!resolve(None, None).unwrap().enabled);
+        let settings = KwsSettings {
+            enabled: Some(true),
+            ..KwsSettings::default()
+        };
+        assert!(resolve(Some(&settings), None).unwrap().enabled);
     }
 
     /// 构造跨平台绝对路径（Windows 上 `/xxx` 无盘符不是绝对路径，避免测试依赖 POSIX 语义）

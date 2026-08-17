@@ -7,9 +7,7 @@ import {
   Mic,
   Volume2,
 } from "lucide-react";
-import { useState } from "react";
 import { CapabilityRow, type StatusTone } from "@/components/models/CapabilityRow";
-import { ConfirmDialog } from "@/components/models/ConfirmDialog";
 import { useRuntime } from "@/providers/RuntimeContext";
 
 /** 计算 KWS/ASR 这类「监听型」能力的展示状态。 */
@@ -50,29 +48,18 @@ export function CapabilityChain() {
 
   const asrOn = asrListening.isListening;
   const kwsOn = kwsListening.isListening;
-  const [kwsConfirmOpen, setKwsConfirmOpen] = useState(false);
 
   const asrStatus = listenerStatus(asrListening.error, asrOn, asrConfig?.config?.models_present);
   const kwsStatus = listenerStatus(kwsListening.error, kwsOn, kwsConfig?.config?.models_present);
   const llmStatusNow = llmStatus(llm.error, llm.loading, llm.ready, llm.config?.models_present);
 
-  /** KWS 开关：ASR 未开启时先弹确认框，同意则同时开启 ASR 与 KWS。 */
+  /** KWS 开关：直接开始/停止 KWS（与 ASR 相互独立，后端不强关联）。 */
   const handleKwsToggle = () => {
     if (kwsOn) {
       void kwsListening.stop();
-      return;
-    }
-    if (asrOn) {
+    } else {
       void kwsListening.start(device || null, null);
-      return;
     }
-    setKwsConfirmOpen(true);
-  };
-
-  const enableKwsWithAsr = () => {
-    setKwsConfirmOpen(false);
-    void asrListening.start(device || null);
-    void kwsListening.start(device || null, null);
   };
 
   return (
@@ -116,8 +103,7 @@ export function CapabilityChain() {
               statusTone={kwsStatus.tone}
               toggled={kwsOn}
               onToggle={handleKwsToggle}
-              toggleHint={!asrOn && !kwsOn ? "点击开启将同时启用语音输入" : undefined}
-              tooltip="关键词唤醒：说出唤醒词后开始对话，依赖语音输入（ASR）。"
+              tooltip="关键词唤醒：检测到唤醒词后触发事件，可与语音输入配合实现语音对话。"
             />
           </div>
         </div>
@@ -183,15 +169,6 @@ export function CapabilityChain() {
           </div>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={kwsConfirmOpen}
-        title="需要先开启语音输入"
-        description="唤醒词（KWS）依赖语音识别（ASR）。是否同时开启语音识别与唤醒词？"
-        confirmText="同时开启"
-        onConfirm={enableKwsWithAsr}
-        onCancel={() => setKwsConfirmOpen(false)}
-      />
     </section>
   );
 }

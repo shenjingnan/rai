@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppInfo,
   AsrConfigInfo,
+  AsrParamsPatch,
   AsrResult,
   DownloadProgress,
   KwsConfigInfo,
@@ -39,6 +40,7 @@ export const api = {
   getMicrophone: () => invoke<string>("get_microphone"),
   setMicrophone: (args: { mic: string }) => invoke<void>("set_microphone", args),
   getAsrConfig: () => invoke<AsrConfigInfo>("get_asr_config"),
+  setAsrParams: (args: { params: AsrParamsPatch }) => invoke<void>("set_asr_params", args),
   startAsrListen: (args: { device: string | null }) => invoke<void>("start_asr_listen", args),
   stopAsrListen: () => invoke<void>("stop_asr_listen"),
   isAsrListening: () => invoke<boolean>("is_asr_listening"),

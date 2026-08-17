@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.14](https://github.com/shenjingnan/zapmomo/compare/v0.1.13...v0.1.14) - 2026-08-17
+
+### Added
+
+- *(models)* 新增模型库 ([#84](https://github.com/shenjingnan/zapmomo/pull/84))
+- *(tts)* 重构配置页、新增音色库与高级参数，修复合成崩溃 ([#71](https://github.com/shenjingnan/zapmomo/pull/71))
+- *(models)* 重构 ASR 配置页并支持高级参数，模型摘要整行进入配置页 ([#70](https://github.com/shenjingnan/zapmomo/pull/70))
+- *(kws)* 重构唤醒词配置页并支持启用后自动监听 ([#69](https://github.com/shenjingnan/zapmomo/pull/69))
+- *(llm)* 重构 LLM 配置页并开放参数 UI 配置 ([#67](https://github.com/shenjingnan/zapmomo/pull/67))
+- *(models)* 重设计 /models 模型概览页为能力链路 + 模型摘要 ([#66](https://github.com/shenjingnan/zapmomo/pull/66))
+- *(app-shell)* 重构主界面外壳与侧边栏，新增 Dock 图标隐藏设置 ([#54](https://github.com/shenjingnan/zapmomo/pull/54))
+
 ## [0.1.13](https://github.com/shenjingnan/zapmomo/compare/v0.1.12...v0.1.13) - 2026-08-16
 
 ### Other

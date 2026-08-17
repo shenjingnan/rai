@@ -1,11 +1,16 @@
 import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ConfigCard } from "@/components/ConfigCard";
-import { DeviceCard } from "@/components/DeviceCard";
-import { ListenCard } from "@/components/ListenCard";
-import { ResultsCard } from "@/components/ResultsCard";
+import { KwsAdvancedParams } from "@/components/kws/KwsAdvancedParams";
+import { KwsBasicConfig } from "@/components/kws/KwsBasicConfig";
+import { KwsRunControl } from "@/components/kws/KwsRunControl";
+import { KwsTechnicalInfo } from "@/components/kws/KwsTechnicalInfo";
+import { KwsTestDialog } from "@/components/kws/KwsTestDialog";
 
+/** 唤醒词（KWS）配置页：标题行含监听开关 + 基础配置 + 高级参数 + 技术信息。 */
 export function KwsPage() {
+  const [testOpen, setTestOpen] = useState(false);
+
   return (
     <div className="space-y-4">
       <Link
@@ -15,11 +20,21 @@ export function KwsPage() {
         <ArrowLeft className="h-4 w-4" />
         模型与能力
       </Link>
-      <h1 className="text-xl font-semibold tracking-tight text-text-primary">唤醒词（KWS）</h1>
-      <DeviceCard />
-      <ListenCard />
-      <ConfigCard />
-      <ResultsCard />
+
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <h1 className="text-2xl font-semibold tracking-tight text-text-primary">
+          唤醒词（KWS）配置
+        </h1>
+        <KwsRunControl />
+      </header>
+
+      <KwsBasicConfig onTestOpen={() => setTestOpen(true)} />
+
+      <KwsAdvancedParams />
+
+      <KwsTechnicalInfo />
+
+      <KwsTestDialog open={testOpen} onClose={() => setTestOpen(false)} />
     </div>
   );
 }

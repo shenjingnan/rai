@@ -9,14 +9,34 @@ export interface AppInfo {
 
 /** `get_kws_config` 返回 */
 export interface KwsConfigInfo {
+  /** 是否启用 KWS（打开开关即持久化；下次启动自动监听的前提） */
+  enabled: boolean;
+  /** 持久化的会话级自定义唤醒词（原始字符串，多个用 / 分隔；空 = 模型内置） */
+  custom_keywords: string;
   model_dir: string;
   provider: string;
   num_threads: number;
   sample_rate: number;
+  /** 每次喂给模型的采样数（@16k） */
+  chunk_size: number;
+  /** 关键词 boosting 分数 */
+  keywords_score: number;
+  /** 触发阈值（灵敏度，0~1） */
+  keywords_threshold: number;
+  debug: boolean;
   keywords: string[];
   models_present: boolean;
   model_downloading: boolean;
   settings_path: string;
+}
+
+/** `set_kws_params` 载荷：可调整的 KWS 引擎/运行参数（snake_case 直传，缺省项不修改）。 */
+export interface KwsParamsPatch {
+  keywords_threshold?: number;
+  keywords_score?: number;
+  chunk_size?: number;
+  num_threads?: number;
+  debug?: boolean;
 }
 
 /** `kws-detected` 事件载荷（对应后端 KwsResult） */

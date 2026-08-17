@@ -39,6 +39,9 @@ export interface RuntimeState {
   /** 全局选中的麦克风设备（KWS 与 ASR 共用） */
   device: string;
   setDevice: (device: string) => void;
+  /** KWS 自定义唤醒词（路由外层持有；修改时持久化到 backend，重启后仍存在） */
+  sessionKeywords: string;
+  setSessionKeywords: (keywords: string) => void;
   /** 任一监听/识别进行中（用于禁用设备切换等） */
   anyListening: boolean;
 }

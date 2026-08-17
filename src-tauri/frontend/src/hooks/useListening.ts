@@ -3,6 +3,8 @@ import { api, onListenStopped } from "@/lib/tauri";
 
 export interface ListeningState {
   isListening: boolean;
+  /** start/stop 在途标志：消除 command 已发到 isListening 落盘之间的重复点击窗口 */
+  pending: boolean;
   error: string | null;
   start: (device: string | null, keywords: string | null) => Promise<void>;
   stop: () => Promise<void>;
@@ -14,6 +16,7 @@ export interface ListeningState {
  */
 export function useListening(): ListeningState {
   const [isListening, setIsListening] = useState(false);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,23 +36,29 @@ export function useListening(): ListeningState {
   }, []);
 
   const start = async (device: string | null, keywords: string | null) => {
+    setPending(true);
     setError(null);
     try {
       await api.startListen({ device, keywords });
       setIsListening(true);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setPending(false);
     }
   };
 
   const stop = async () => {
+    setPending(true);
     try {
       await api.stopListen();
       setIsListening(false);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setPending(false);
     }
   };
 
-  return { isListening, error, start, stop };
+  return { isListening, pending, error, start, stop };
 }

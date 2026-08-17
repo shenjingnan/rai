@@ -17,9 +17,11 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
+use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
-    self, CompanionWindowPosition, KwsSettings, Live2dSettings, LlmSettings, TtsSettings,
+    self, AsrSettings, CompanionWindowPosition, KwsSettings, Live2dSettings, LlmSettings,
+    TtsSettings,
 };
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
@@ -422,13 +424,23 @@ impl AsrReaction for TauriAsrReaction {
     }
 }
 
-/// GUI 展示用的 ASR 配置信息。
+/// GUI 展示用的 ASR 配置信息（含可经 `set_asr_params` 调整的引擎参数）。
 #[derive(Serialize)]
 struct AsrConfigInfo {
     model_dir: String,
     provider: String,
     num_threads: i32,
     sample_rate: i32,
+    chunk_size: usize,
+    decoding_method: String,
+    enable_endpoint: bool,
+    rule1_min_trailing_silence: f32,
+    rule2_min_trailing_silence: f32,
+    rule3_min_utterance_length: f32,
+    blank_penalty: f32,
+    hotwords: Option<String>,
+    enable_punctuation: bool,
+    debug: bool,
     models_present: bool,
     punctuation_present: bool,
     model_downloading: bool,
@@ -451,6 +463,16 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
         sample_rate: cfg.sample_rate,
+        chunk_size: cfg.chunk_size,
+        decoding_method: cfg.decoding_method.clone(),
+        enable_endpoint: cfg.enable_endpoint,
+        rule1_min_trailing_silence: cfg.rule1_min_trailing_silence,
+        rule2_min_trailing_silence: cfg.rule2_min_trailing_silence,
+        rule3_min_utterance_length: cfg.rule3_min_utterance_length,
+        blank_penalty: cfg.blank_penalty,
+        hotwords: cfg.hotwords.clone(),
+        enable_punctuation: cfg.enable_punctuation,
+        debug: cfg.debug,
         models_present,
         punctuation_present,
         model_downloading: state.in_progress.load(Ordering::Relaxed),
@@ -1165,6 +1187,16 @@ fn set_kws_params(params: KwsParamsPatch) -> Result<(), String> {
     settings::save_settings(&settings)
 }
 
+/// 持久化 ASR 引擎/运行参数（线程/块大小/断句/热词/标点/调试），写入 `[asr]`。
+/// 引擎参数在启动识别时固化：修改后需重启识别才生效（由前端在保存后若在识别则重启）。
+#[tauri::command]
+fn set_asr_params(params: AsrParamsPatch) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let asr = settings.asr.get_or_insert_with(AsrSettings::default);
+    params.apply_to(asr)?;
+    settings::save_settings(&settings)
+}
+
 /// 读取全局默认麦克风输入设备名（空串 = 系统默认），KWS / ASR 共用。
 #[tauri::command]
 fn get_microphone() -> Result<String, String> {
@@ -1486,6 +1518,7 @@ pub fn run() {
             get_microphone,
             set_microphone,
             get_asr_config,
+            set_asr_params,
             start_asr_listen,
             stop_asr_listen,
             is_asr_listening,

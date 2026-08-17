@@ -3,6 +3,7 @@
 /// 负责把 `settings.toml` 的 `[asr]` 表与 CLI flag 合并成一份已展开、已填默认值的
 /// `ResolvedAsrConfig`。优先级：CLI `--model-dir` > settings > 内置默认。
 use crate::config::settings::{AsrSettings, resolve_env_ref};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// 模型包内默认文件名。
@@ -220,6 +221,96 @@ pub fn resolve(
     Ok(cfg)
 }
 
+/// `set_asr_params` 载荷：可调整的 ASR 引擎/运行参数（snake_case 直传，缺省项不修改）。
+///
+/// 与 Tauri crate 的 `KwsParamsPatch` 对称，但放在 lib crate 内以便 `cargo test` 单测。
+/// 引擎参数在 `start_asr_listen` 时固化：保存后需重启识别才生效（由前端处理）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AsrParamsPatch {
+    pub num_threads: Option<i32>,
+    pub chunk_size: Option<usize>,
+    pub enable_endpoint: Option<bool>,
+    pub rule1_min_trailing_silence: Option<f32>,
+    pub rule2_min_trailing_silence: Option<f32>,
+    pub rule3_min_utterance_length: Option<f32>,
+    pub blank_penalty: Option<f32>,
+    pub hotwords: Option<String>,
+    pub enable_punctuation: Option<bool>,
+    pub debug: Option<bool>,
+}
+
+impl AsrParamsPatch {
+    /// 先整体校验（任一越界立即 Err），再逐项写入 `AsrSettings`，保证出错时不部分修改。
+    pub fn apply_to(&self, asr: &mut AsrSettings) -> Result<(), String> {
+        if let Some(v) = self.num_threads
+            && !(1..=32).contains(&v)
+        {
+            return Err(format!("线程数需在 1~32，当前 {v}"));
+        }
+        if let Some(v) = self.chunk_size
+            && !(400..=16_000).contains(&v)
+        {
+            return Err(format!("采样块大小需在 400~16000（@16k），当前 {v}"));
+        }
+        if let Some(v) = self.rule1_min_trailing_silence
+            && !(0.0..=10.0).contains(&v)
+        {
+            return Err(format!("端点规则1尾随静音需在 0~10 秒，当前 {v}"));
+        }
+        if let Some(v) = self.rule2_min_trailing_silence
+            && !(0.0..=10.0).contains(&v)
+        {
+            return Err(format!("端点规则2尾随静音需在 0~10 秒，当前 {v}"));
+        }
+        if let Some(v) = self.rule3_min_utterance_length
+            && !(5.0..=60.0).contains(&v)
+        {
+            return Err(format!("端点最大句长需在 5~60 秒，当前 {v}"));
+        }
+        if let Some(v) = self.blank_penalty
+            && !(0.0..=2.0).contains(&v)
+        {
+            return Err(format!("空白符惩罚需在 0~2，当前 {v}"));
+        }
+
+        if let Some(v) = self.num_threads {
+            asr.num_threads = Some(v);
+        }
+        if let Some(v) = self.chunk_size {
+            asr.chunk_size = Some(v);
+        }
+        if let Some(v) = self.enable_endpoint {
+            asr.enable_endpoint = Some(v);
+        }
+        if let Some(v) = self.rule1_min_trailing_silence {
+            asr.rule1_min_trailing_silence = Some(v);
+        }
+        if let Some(v) = self.rule2_min_trailing_silence {
+            asr.rule2_min_trailing_silence = Some(v);
+        }
+        if let Some(v) = self.rule3_min_utterance_length {
+            asr.rule3_min_utterance_length = Some(v);
+        }
+        if let Some(v) = self.blank_penalty {
+            asr.blank_penalty = Some(v);
+        }
+        if let Some(v) = &self.hotwords {
+            asr.hotwords = if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            };
+        }
+        if let Some(v) = self.enable_punctuation {
+            asr.enable_punctuation = Some(v);
+        }
+        if let Some(v) = self.debug {
+            asr.debug = Some(v);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +454,139 @@ mod tests {
         let cfg = resolve(Some(&settings), None).unwrap();
         assert_eq!(cfg.hotwords, Some("你好小智 文森特卡索".to_string()));
         assert!(!cfg.enable_punctuation);
+    }
+
+    #[test]
+    fn test_asr_params_patch_applies_valid_values() {
+        let patch = AsrParamsPatch {
+            num_threads: Some(8),
+            chunk_size: Some(1600),
+            enable_endpoint: Some(false),
+            rule1_min_trailing_silence: Some(3.0),
+            rule2_min_trailing_silence: Some(1.5),
+            rule3_min_utterance_length: Some(30.0),
+            blank_penalty: Some(0.5),
+            hotwords: Some("你好小智 文森特卡索".to_string()),
+            enable_punctuation: Some(false),
+            debug: Some(true),
+        };
+        let mut asr = AsrSettings::default();
+        patch.apply_to(&mut asr).unwrap();
+        assert_eq!(asr.num_threads, Some(8));
+        assert_eq!(asr.chunk_size, Some(1600));
+        assert_eq!(asr.enable_endpoint, Some(false));
+        assert_eq!(asr.rule1_min_trailing_silence, Some(3.0));
+        assert_eq!(asr.rule2_min_trailing_silence, Some(1.5));
+        assert_eq!(asr.rule3_min_utterance_length, Some(30.0));
+        assert_eq!(asr.blank_penalty, Some(0.5));
+        assert_eq!(asr.hotwords, Some("你好小智 文森特卡索".to_string()));
+        assert_eq!(asr.enable_punctuation, Some(false));
+        assert_eq!(asr.debug, Some(true));
+    }
+
+    #[test]
+    fn test_asr_params_patch_rejects_out_of_range() {
+        let cases: &[(&str, AsrParamsPatch)] = &[
+            (
+                "线程数",
+                AsrParamsPatch {
+                    num_threads: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "线程数",
+                AsrParamsPatch {
+                    num_threads: Some(33),
+                    ..Default::default()
+                },
+            ),
+            (
+                "采样块大小",
+                AsrParamsPatch {
+                    chunk_size: Some(399),
+                    ..Default::default()
+                },
+            ),
+            (
+                "采样块大小",
+                AsrParamsPatch {
+                    chunk_size: Some(16_001),
+                    ..Default::default()
+                },
+            ),
+            (
+                "规则1",
+                AsrParamsPatch {
+                    rule1_min_trailing_silence: Some(-0.1),
+                    ..Default::default()
+                },
+            ),
+            (
+                "规则2",
+                AsrParamsPatch {
+                    rule2_min_trailing_silence: Some(10.1),
+                    ..Default::default()
+                },
+            ),
+            (
+                "最大句长",
+                AsrParamsPatch {
+                    rule3_min_utterance_length: Some(4.9),
+                    ..Default::default()
+                },
+            ),
+            (
+                "空白符",
+                AsrParamsPatch {
+                    blank_penalty: Some(2.1),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (label, patch) in cases {
+            let mut asr = AsrSettings::default();
+            let err = patch.apply_to(&mut asr).unwrap_err();
+            assert!(
+                err.contains(label),
+                "参数「{label}」应被拒绝，实际错误: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_asr_params_patch_all_or_nothing() {
+        let mut asr = AsrSettings {
+            num_threads: Some(4),
+            ..AsrSettings::default()
+        };
+        let patch = AsrParamsPatch {
+            num_threads: Some(16),
+            chunk_size: Some(50_000), // 非法
+            ..Default::default()
+        };
+        let err = patch.apply_to(&mut asr).unwrap_err();
+        assert!(err.contains("采样块大小"));
+        // 校验失败 → num_threads 未被写入（部分修改被阻止）
+        assert_eq!(asr.num_threads, Some(4));
+    }
+
+    #[test]
+    fn test_asr_params_patch_hotwords_empty_becomes_none() {
+        let mut asr = AsrSettings::default();
+        let patch = AsrParamsPatch {
+            hotwords: Some("  ".to_string()),
+            ..Default::default()
+        };
+        patch.apply_to(&mut asr).unwrap();
+        assert_eq!(asr.hotwords, None);
+
+        let mut asr2 = AsrSettings::default();
+        let patch2 = AsrParamsPatch {
+            hotwords: Some(" 你好  ".to_string()),
+            ..Default::default()
+        };
+        patch2.apply_to(&mut asr2).unwrap();
+        assert_eq!(asr2.hotwords, Some("你好".to_string()));
     }
 }

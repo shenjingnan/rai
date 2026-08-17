@@ -63,16 +63,40 @@ export interface DownloadProgress {
   message: string;
 }
 
-/** `get_asr_config` 返回 */
+/** `get_asr_config` 返回（含可经 `set_asr_params` 调整的引擎参数） */
 export interface AsrConfigInfo {
   model_dir: string;
   provider: string;
   num_threads: number;
   sample_rate: number;
+  chunk_size: number;
+  decoding_method: string;
+  enable_endpoint: boolean;
+  rule1_min_trailing_silence: number;
+  rule2_min_trailing_silence: number;
+  rule3_min_utterance_length: number;
+  blank_penalty: number;
+  hotwords: string | null;
+  enable_punctuation: boolean;
+  debug: boolean;
   models_present: boolean;
   punctuation_present: boolean;
   model_downloading: boolean;
   settings_path: string;
+}
+
+/** `set_asr_params` 载荷：可调整的 ASR 引擎/运行参数（snake_case 直传，缺省项不修改）。 */
+export interface AsrParamsPatch {
+  num_threads?: number;
+  chunk_size?: number;
+  enable_endpoint?: boolean;
+  rule1_min_trailing_silence?: number;
+  rule2_min_trailing_silence?: number;
+  rule3_min_utterance_length?: number;
+  blank_penalty?: number;
+  hotwords?: string;
+  enable_punctuation?: boolean;
+  debug?: boolean;
 }
 
 /** `asr-result` 事件载荷（对应后端 AsrResult） */

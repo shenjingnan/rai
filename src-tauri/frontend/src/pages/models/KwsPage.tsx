@@ -7,7 +7,7 @@ import { KwsRunControl } from "@/components/kws/KwsRunControl";
 import { KwsTechnicalInfo } from "@/components/kws/KwsTechnicalInfo";
 import { KwsTestDialog } from "@/components/kws/KwsTestDialog";
 
-/** 唤醒词（KWS）配置页：标题行含监听开关 + 基础配置 + 高级参数 + 技术信息。 */
+/** 唤醒词（KWS）配置页：标题行含监听开关 + 基础配置 + 模型信息 + 高级参数。 */
 export function KwsPage() {
   const [testOpen, setTestOpen] = useState(false);
 
@@ -30,9 +30,9 @@ export function KwsPage() {
 
       <KwsBasicConfig onTestOpen={() => setTestOpen(true)} />
 
-      <KwsAdvancedParams />
-
       <KwsTechnicalInfo />
+
+      <KwsAdvancedParams />
 
       <KwsTestDialog open={testOpen} onClose={() => setTestOpen(false)} />
     </div>

@@ -3,6 +3,8 @@ import { api, onAsrStopped } from "@/lib/tauri";
 
 export interface AsrListeningState {
   isListening: boolean;
+  /** start/stop 在途标志：RunControl 与 TestDialog 共享的唯一 in-flight 状态（消除 command 已发到 isListening 落盘之间的重复点击窗口） */
+  pending: boolean;
   error: string | null;
   start: (device: string | null) => Promise<void>;
   stop: () => Promise<void>;
@@ -14,6 +16,7 @@ export interface AsrListeningState {
  */
 export function useAsrListening(): AsrListeningState {
   const [isListening, setIsListening] = useState(false);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,23 +36,29 @@ export function useAsrListening(): AsrListeningState {
   }, []);
 
   const start = async (device: string | null) => {
+    setPending(true);
     setError(null);
     try {
       await api.startAsrListen({ device });
       setIsListening(true);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setPending(false);
     }
   };
 
   const stop = async () => {
+    setPending(true);
     try {
       await api.stopAsrListen();
       setIsListening(false);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setPending(false);
     }
   };
 
-  return { isListening, error, start, stop };
+  return { isListening, pending, error, start, stop };
 }

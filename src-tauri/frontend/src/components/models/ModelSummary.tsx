@@ -1,11 +1,11 @@
 import {
   AudioWaveform,
   Brain,
+  ChevronRight,
   Database,
   type LucideIcon,
   Mic,
   RefreshCw,
-  Settings,
   Volume2,
 } from "lucide-react";
 import { useState } from "react";
@@ -39,11 +39,11 @@ interface SummaryRowData {
   gearHref?: string;
 }
 
-/** 模型摘要单行：左侧能力/模型，中间 runtime/路径，右侧状态 + 配置入口。 */
+/** 模型摘要单行：整行可点击进入对应配置页；右侧状态 + chevron 指示。 */
 function SummaryRow({ row }: { row: SummaryRowData }) {
   const Icon = row.icon;
-  return (
-    <div className="flex items-center gap-4 px-5 py-3.5">
+  const content = (
+    <>
       <span
         className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", row.accent)}
       >
@@ -77,17 +77,25 @@ function SummaryRow({ row }: { row: SummaryRowData }) {
           <span className="h-1.5 w-1.5 rounded-full bg-current" />
           {row.statusText}
         </span>
-        {row.gearHref && (
-          <Link
-            to={row.gearHref}
-            aria-label={`配置${row.name}`}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-accent hover:text-text-primary"
-          >
-            <Settings className="h-4 w-4" />
-          </Link>
-        )}
+        {row.gearHref && <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" />}
       </div>
-    </div>
+    </>
+  );
+
+  const rowClass = "flex items-center gap-4 px-5 py-3.5";
+
+  if (!row.gearHref) {
+    return <div className={rowClass}>{content}</div>;
+  }
+
+  return (
+    <Link
+      to={row.gearHref}
+      aria-label={`配置${row.name}`}
+      className={cn(rowClass, "transition-colors hover:bg-nav-hover")}
+    >
+      {content}
+    </Link>
   );
 }
 

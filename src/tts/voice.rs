@@ -18,6 +18,8 @@ pub struct TtsVoice {
     pub wav_path: PathBuf,
     /// 参考音频的逐字转写文本。
     pub reference_text: String,
+    /// 是否为用户自定义音色（true = 来自音色库，false = 模型包内置）。
+    pub custom: bool,
 }
 
 /// 内置音色的友好中文名（prompt.txt 只有文件名，这里做一层展示映射）。
@@ -48,6 +50,7 @@ fn parse_prompt_line(line: &str, model_dir: &Path) -> Option<TtsVoice> {
         id,
         wav_path: model_dir.join("test_wavs").join(wav_name),
         reference_text: text.to_string(),
+        custom: false,
     })
 }
 

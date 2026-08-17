@@ -1,8 +1,9 @@
+use crate::config::settings::{TtsSettings, resolve_env_ref};
 /// TTS 配置解析与校验。
 ///
 /// 负责把 `settings.toml` 的 `[tts]` 表与 CLI flag 合并成一份已展开、已填默认值的
 /// `ResolvedTtsConfig`。优先级：CLI `--model-dir` > settings > 内置默认。
-use crate::config::settings::{TtsSettings, resolve_env_ref};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// 模型包内默认文件名（sherpa-onnx 官方 zipvoice distill int8 打包版）。
@@ -200,6 +201,57 @@ pub fn resolve(
     Ok(cfg)
 }
 
+/// `set_tts_params` 载荷：可调整的 TTS 合成参数（snake_case 直传，缺省项不修改）。
+///
+/// 与 `AsrParamsPatch` 对称，放在 lib crate 内以便 `cargo test` 单测。
+/// 引擎在每次合成时新建（`synthesize_tts` → `TtsEngine::new`），因此保存后**下一次合成即生效**，无需重启。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TtsParamsPatch {
+    /// 扩散解码步数（质量/速度权衡）
+    pub num_steps: Option<i32>,
+    /// 默认语速（单次合成可经 `synthesize_tts.speed` 覆盖）
+    pub speed: Option<f32>,
+    /// 推理线程数
+    pub num_threads: Option<i32>,
+    /// 调试输出
+    pub debug: Option<bool>,
+}
+
+impl TtsParamsPatch {
+    /// 先整体校验（任一越界立即 Err），再逐项写入 `TtsSettings`，保证出错时不部分修改。
+    pub fn apply_to(&self, tts: &mut TtsSettings) -> Result<(), String> {
+        if let Some(v) = self.num_steps
+            && !(1..=32).contains(&v)
+        {
+            return Err(format!("扩散步数需在 1~32，当前 {v}"));
+        }
+        if let Some(v) = self.speed
+            && !(0.5..=2.0).contains(&v)
+        {
+            return Err(format!("语速需在 0.5~2.0，当前 {v}"));
+        }
+        if let Some(v) = self.num_threads
+            && !(1..=32).contains(&v)
+        {
+            return Err(format!("线程数需在 1~32，当前 {v}"));
+        }
+
+        if let Some(v) = self.num_steps {
+            tts.num_steps = Some(v);
+        }
+        if let Some(v) = self.speed {
+            tts.speed = Some(v);
+        }
+        if let Some(v) = self.num_threads {
+            tts.num_threads = Some(v);
+        }
+        if let Some(v) = self.debug {
+            tts.debug = Some(v);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +382,72 @@ mod tests {
         assert_eq!(REQUIRED_FILES.len(), 5);
         assert!(REQUIRED_FILES.contains(&DEFAULT_VOCODER));
         assert!(REQUIRED_FILES.contains(&DEFAULT_LEXICON));
+    }
+
+    #[test]
+    fn test_params_patch_applies_all_fields() {
+        let mut tts = TtsSettings::default();
+        let patch = TtsParamsPatch {
+            num_steps: Some(8),
+            speed: Some(1.2),
+            num_threads: Some(4),
+            debug: Some(true),
+        };
+        patch.apply_to(&mut tts).unwrap();
+        assert_eq!(tts.num_steps, Some(8));
+        assert_eq!(tts.speed, Some(1.2));
+        assert_eq!(tts.num_threads, Some(4));
+        assert_eq!(tts.debug, Some(true));
+    }
+
+    #[test]
+    fn test_params_patch_validates_before_writing() {
+        // 任一字段越界即整体失败，且不部分修改其它字段
+        let mut tts = TtsSettings {
+            num_steps: Some(4),
+            ..TtsSettings::default()
+        };
+        let err = TtsParamsPatch {
+            num_steps: Some(100),
+            num_threads: Some(4),
+            ..TtsParamsPatch::default()
+        }
+        .apply_to(&mut tts)
+        .unwrap_err();
+        assert!(err.contains("扩散步数"), "err: {err}");
+        assert_eq!(tts.num_threads, None, "校验失败时不应写入其它字段");
+        assert_eq!(tts.num_steps, Some(4));
+
+        let err = TtsParamsPatch {
+            speed: Some(3.0),
+            ..TtsParamsPatch::default()
+        }
+        .apply_to(&mut TtsSettings::default())
+        .unwrap_err();
+        assert!(err.contains("语速"), "err: {err}");
+
+        let err = TtsParamsPatch {
+            num_threads: Some(64),
+            ..TtsParamsPatch::default()
+        }
+        .apply_to(&mut TtsSettings::default())
+        .unwrap_err();
+        assert!(err.contains("线程数"), "err: {err}");
+    }
+
+    #[test]
+    fn test_params_patch_none_leaves_unchanged() {
+        let mut tts = TtsSettings {
+            num_steps: Some(6),
+            speed: Some(1.5),
+            num_threads: Some(8),
+            debug: Some(true),
+            ..TtsSettings::default()
+        };
+        TtsParamsPatch::default().apply_to(&mut tts).unwrap();
+        assert_eq!(tts.num_steps, Some(6));
+        assert_eq!(tts.speed, Some(1.5));
+        assert_eq!(tts.num_threads, Some(8));
+        assert_eq!(tts.debug, Some(true));
     }
 }

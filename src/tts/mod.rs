@@ -8,6 +8,7 @@
 pub mod config;
 pub mod reaction;
 pub mod voice;
+pub mod voice_store;
 
 use config::ResolvedTtsConfig;
 use sherpa_onnx::{
@@ -99,10 +100,15 @@ impl TtsEngine {
     ) -> Result<GenerationConfig, String> {
         let wave = Wave::read(&reference_wav.to_string_lossy())
             .ok_or_else(|| format!("无法读取参考音频: {}", reference_wav.display()))?;
+        // 把参考音频归一化到模型目标采样率：ZipVoice 的 Mel 频谱在跨采样率
+        // （如 48k→24k）时，sherpa C++ 重采样器可能抛异常，Rust 无法捕获
+        // C++ 异常会直接 abort。统一到目标采样率后 Mel 重采样变为恒等变换。
+        let (reference_audio, reference_sample_rate) =
+            normalize_reference(wave.samples(), wave.sample_rate(), self.sample_rate())?;
         Ok(GenerationConfig {
             speed,
-            reference_audio: Some(wave.samples().to_vec()),
-            reference_sample_rate: wave.sample_rate(),
+            reference_audio: Some(reference_audio),
+            reference_sample_rate,
             reference_text: Some(reference_text.to_string()),
             num_steps: self.cfg.num_steps,
             ..Default::default()
@@ -110,6 +116,9 @@ impl TtsEngine {
     }
 
     /// 把文本合成为 PCM 波形（f32，采样率见 [`Self::sample_rate`]）。
+    ///
+    /// 模型始终以 1.0 语速合成（避免 ZipVoice 高语速时 `kept_frames≤0` 触发
+    /// sherpa C++ 异常导致 Rust abort），目标语速通过对输出重采样实现。
     pub fn synthesize(
         &self,
         text: &str,
@@ -117,17 +126,18 @@ impl TtsEngine {
         reference_wav: &Path,
         reference_text: &str,
     ) -> Result<Vec<f32>, String> {
-        let gen_config = self.generation_config(speed, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
         let audio = self
             .tts
             .generate_with_config(text, &gen_config, None::<fn(&[f32], f32) -> bool>)
             .ok_or_else(|| "语音合成失败。".to_string())?;
-        Ok(audio.samples().to_vec())
+        apply_speed_to_samples(audio.samples(), self.sample_rate(), speed)
     }
 
     /// 把文本合成为 PCM，并在合成过程中回调进度（0..1）。
     ///
     /// `progress` 返回 `false` 提前终止合成（对应 sherpa-onnx 回调语义）。
+    /// 语速同 [`Self::synthesize`]：模型按 1.0 合成，输出重采样实现。
     pub fn synthesize_with_progress<F>(
         &self,
         text: &str,
@@ -139,13 +149,13 @@ impl TtsEngine {
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(speed, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
         let callback = move |_samples: &[f32], p: f32| progress(p);
         let audio = self
             .tts
             .generate_with_config(text, &gen_config, Some(callback))
             .ok_or_else(|| "语音合成失败。".to_string())?;
-        Ok(audio.samples().to_vec())
+        apply_speed_to_samples(audio.samples(), self.sample_rate(), speed)
     }
 
     /// 把文本合成为 wav 文件。
@@ -170,7 +180,7 @@ impl TtsEngine {
 
     /// 把文本合成为 wav 文件，并在合成过程中回调进度（0..1）。
     ///
-    /// 返回采样点数，便于调用方换算音频时长（`samples / sample_rate`）。
+    /// 返回采样点数（已应用语速），便于调用方换算音频时长（`samples / sample_rate`）。
     pub fn synthesize_to_wav_with_progress<F>(
         &self,
         text: &str,
@@ -183,17 +193,57 @@ impl TtsEngine {
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(speed, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
         let callback = move |_samples: &[f32], p: f32| progress(p);
         let audio = self
             .tts
             .generate_with_config(text, &gen_config, Some(callback))
             .ok_or_else(|| "语音合成失败。".to_string())?;
-        if !audio.save(&out_path.to_string_lossy()) {
-            return Err(format!("保存音频失败: {}", out_path.display()));
-        }
-        Ok(audio.samples().len())
+        let sample_rate = self.sample_rate();
+        let samples = apply_speed_to_samples(audio.samples(), sample_rate, speed)?;
+        crate::audio::write_wav_f32(out_path, sample_rate as u32, &samples)?;
+        Ok(samples.len())
     }
+}
+
+/// 把参考音频归一化到目标采样率。
+///
+/// ZipVoice 的 Mel 频谱在跨采样率（如 48k→24k）时，sherpa C++ 重采样器可能抛
+/// 异常，而 Rust 无法捕获 C++ 异常会直接 abort。统一到模型目标采样率后，
+/// Mel 频谱重采样变为恒等变换，避免崩溃。同采样率时原样返回（零开销）。
+fn normalize_reference(
+    samples: &[f32],
+    src_rate: i32,
+    target_rate: i32,
+) -> Result<(Vec<f32>, i32), String> {
+    if src_rate == target_rate {
+        return Ok((samples.to_vec(), src_rate));
+    }
+    let mut resampler = crate::audio::Resampler::new(src_rate, target_rate)?;
+    let out = resampler.process(samples, true);
+    Ok((out, target_rate))
+}
+
+/// 对合成输出应用语速：模型以 1.0 合成后，把样本重采样到 `sample_rate / speed`，
+/// 再以 `sample_rate` 写回，从而改变时长（speed>1 更快、样本更少；speed<1 更慢、样本更多）。
+///
+/// 这是为了避免把 speed 传给 ZipVoice 模型：模型内部 `kept_frames =
+/// num_frames(speed) - 参考帧数`，高语速 + 短文本时 `kept_frames≤0` 会抛 C++
+/// 异常，而 Rust 无法捕获 C++ 异常会直接 abort。改用输出重采样后任何语速都不崩。
+fn apply_speed_to_samples(
+    samples: &[f32],
+    sample_rate: i32,
+    speed: f32,
+) -> Result<Vec<f32>, String> {
+    if speed <= 0.0 {
+        return Err(format!("语速必须为正数，当前 {speed}"));
+    }
+    if (speed - 1.0).abs() < 1e-6 {
+        return Ok(samples.to_vec());
+    }
+    let out_rate = (sample_rate as f32 / speed) as i32;
+    let mut resampler = crate::audio::Resampler::new(sample_rate, out_rate)?;
+    Ok(resampler.process(samples, true))
 }
 
 /// TTS 模型安装目录：`~/.zapmomo/models/<name>`。
@@ -280,5 +330,76 @@ mod tests {
             )
             .unwrap();
         assert!(!samples.is_empty(), "合成音频不应为空");
+    }
+
+    #[test]
+    fn test_normalize_reference_identity_rate() {
+        let samples = vec![0.1f32; 24000];
+        let (out, rate) = normalize_reference(&samples, 24000, 24000).unwrap();
+        assert_eq!(rate, 24000);
+        assert_eq!(out.len(), 24000);
+    }
+
+    #[test]
+    fn test_normalize_reference_resamples_48k_to_24k() {
+        // 用户上传的 48k 参考音频 → 归一化到 24k（之前会导致 sherpa Mel 重采样崩溃）
+        let samples = vec![0.1f32; 48000]; // 1 秒 @48k
+        let (out, rate) = normalize_reference(&samples, 48000, 24000).unwrap();
+        assert_eq!(rate, 24000);
+        assert!(
+            (out.len() as i64 - 24000).abs() <= 64,
+            "resample len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn test_normalize_reference_upsamples_16k_to_24k() {
+        // 录音（16k）→ 归一化到 24k（上采样）
+        let samples = vec![0.1f32; 16000]; // 1 秒 @16k
+        let (out, rate) = normalize_reference(&samples, 16000, 24000).unwrap();
+        assert_eq!(rate, 24000);
+        assert!(
+            (out.len() as i64 - 24000).abs() <= 64,
+            "upsample len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn test_apply_speed_identity() {
+        let samples = vec![0.1f32; 24000];
+        let out = apply_speed_to_samples(&samples, 24000, 1.0).unwrap();
+        assert_eq!(out.len(), 24000);
+    }
+
+    #[test]
+    fn test_apply_speed_faster_shortens() {
+        // speed 1.3 → 样本数 ≈ 1/1.3（24k / 1.3 ≈ 18461 目标采样率）
+        let samples = vec![0.1f32; 24000];
+        let out = apply_speed_to_samples(&samples, 24000, 1.3).unwrap();
+        assert!(
+            (out.len() as i64 - 18461).abs() <= 64,
+            "speed 1.3 len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn test_apply_speed_slower_lengthens() {
+        // speed 0.7 → 样本数 ≈ 1/0.7（24k / 0.7 ≈ 34285 目标采样率）
+        let samples = vec![0.1f32; 24000];
+        let out = apply_speed_to_samples(&samples, 24000, 0.7).unwrap();
+        assert!(
+            (out.len() as i64 - 34285).abs() <= 64,
+            "speed 0.7 len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn test_apply_speed_rejects_non_positive() {
+        assert!(apply_speed_to_samples(&[0.0f32], 24000, 0.0).is_err());
+        assert!(apply_speed_to_samples(&[0.0f32], 24000, -1.0).is_err());
     }
 }

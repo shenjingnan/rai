@@ -17,7 +17,9 @@ import type {
   LlmParamsPatch,
   LlmStatus,
   LlmToken,
+  SaveTtsVoiceRequest,
   TtsConfigInfo,
+  TtsParamsPatch,
   TtsProgress,
   TtsResult,
   TtsVoice,
@@ -49,6 +51,10 @@ export const api = {
   setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
   getTtsConfig: () => invoke<TtsConfigInfo>("get_tts_config"),
   listTtsVoices: () => invoke<TtsVoice[]>("list_tts_voices"),
+  saveTtsVoice: (args: SaveTtsVoiceRequest) => invoke<TtsVoice>("save_tts_voice", args),
+  deleteTtsVoice: (args: { id: string }) => invoke<void>("delete_tts_voice", args),
+  recordTtsVoice: (args: { seconds: number; device: string | null }) =>
+    invoke<string>("record_tts_voice", args),
   transcribeReferenceAudio: (args: { wavPath: string }) =>
     invoke<string>("transcribe_reference_audio", args),
   synthesizeTts: (args: {
@@ -62,6 +68,7 @@ export const api = {
   isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
   downloadTtsModel: () => invoke<void>("download_tts_model"),
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
+  setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
   getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
   loadLlmModel: () => invoke<void>("load_llm_model"),
   unloadLlmModel: () => invoke<void>("unload_llm_model"),

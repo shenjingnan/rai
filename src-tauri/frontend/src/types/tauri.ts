@@ -134,6 +134,20 @@ export interface TtsConfigInfo {
   models_present: boolean;
   model_downloading: boolean;
   settings_path: string;
+  /** 扩散解码步数（质量/速度权衡），可经 `set_tts_params` 修改 */
+  num_steps: number;
+  /** 默认语速，可经 `set_tts_params` 修改 */
+  speed: number;
+  /** 调试输出，可经 `set_tts_params` 修改 */
+  debug: boolean;
+}
+
+/** `set_tts_params` 载荷：可调整的 TTS 合成参数（snake_case 直传，缺省项不修改）。 */
+export interface TtsParamsPatch {
+  num_steps?: number;
+  speed?: number;
+  num_threads?: number;
+  debug?: boolean;
 }
 
 /** `tts-result` 事件载荷（对应后端 TtsResult） */
@@ -154,7 +168,16 @@ export interface TtsVoice {
   name: string;
   wav_path: string;
   reference_text: string;
+  /** 是否为用户自定义音色（true = 来自音色库，false = 模型包内置） */
+  custom: boolean;
 }
+
+/** `save_tts_voice` 载荷：把源 wav 拷贝进音色库并登记。 */
+export type SaveTtsVoiceRequest = {
+  name: string;
+  sourceWavPath: string;
+  referenceText: string;
+};
 
 /** 解析后的 LLM 采样/引擎参数（对应后端 GenParams，snake_case 直传）。 */
 export interface LlmParams {

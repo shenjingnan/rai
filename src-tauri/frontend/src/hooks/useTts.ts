@@ -7,31 +7,38 @@ import {
   onTtsStopped,
   toAssetUrl,
 } from "@/lib/tauri";
-import type { DownloadProgress, TtsConfigInfo, TtsResult, TtsVoice } from "@/types/tauri";
-
-/** 自定义音色在 `selectedVoice` 中的哨兵值。 */
-export const CUSTOM_VOICE = "__custom__";
+import type {
+  DownloadProgress,
+  SaveTtsVoiceRequest,
+  TtsConfigInfo,
+  TtsParamsPatch,
+  TtsResult,
+  TtsVoice,
+} from "@/types/tauri";
 
 export interface TtsState {
   config: TtsConfigInfo | null;
   configError: string | null;
   refreshConfig: () => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
+  /** 批量保存合成参数（扩散步数/默认语速/线程/调试）；失败向上抛出，由调用方展示内联错误。 */
+  setParams: (patch: TtsParamsPatch) => Promise<void>;
+  /** 音色列表（模型包内置 + 用户自定义音色库）。 */
   voices: TtsVoice[];
   selectedVoice: string;
   setSelectedVoice: (id: string) => void;
-  customWav: string | null;
-  setCustomWav: (path: string | null) => void;
-  customText: string | null;
-  setCustomText: (text: string | null) => void;
-  transcribing: boolean;
-  transcribeError: string | null;
-  transcribe: () => Promise<void>;
+  /** 保存一个自定义音色到音色库；成功后刷新 voices。 */
+  saveVoice: (req: SaveTtsVoiceRequest) => Promise<TtsVoice>;
+  /** 删除一个自定义音色；成功后刷新 voices。 */
+  deleteVoice: (id: string) => Promise<void>;
+  /** 录制 N 秒麦克风为 wav，返回路径（供保存为音色）。 */
+  recordVoice: (seconds: number, device?: string | null) => Promise<string>;
   synthesizing: boolean;
   progress: number | null;
   result: TtsResult | null;
   error: string | null;
-  synthesize: (text: string) => Promise<void>;
+  /** 发起一次合成；`opts.speed` 为真实 synthesize_tts 一次性参数（缺省走后端配置默认）。 */
+  synthesize: (text: string, opts?: { speed?: number | null }) => Promise<void>;
   stop: () => Promise<void>;
   downloading: boolean;
   downloadProgress: DownloadProgress | null;
@@ -43,7 +50,7 @@ export interface TtsState {
 }
 
 /**
- * TTS 状态管理：配置读取、音色列表、合成触发/进度/结果、模型下载、播放。
+ * TTS 状态管理：配置读取、音色列表、合成触发/进度/结果、模型下载、播放、自定义音色库。
  * 合成走后台线程，进度与结果经 `tts-progress` / `tts-result` / `tts-stopped` 事件同步。
  */
 export function useTts(): TtsState {
@@ -51,10 +58,6 @@ export function useTts(): TtsState {
   const [configError, setConfigError] = useState<string | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
-  const [customWav, setCustomWav] = useState<string | null>(null);
-  const [customText, setCustomText] = useState<string | null>(null);
-  const [transcribing, setTranscribing] = useState(false);
-  const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<TtsResult | null>(null);
@@ -90,13 +93,18 @@ export function useTts(): TtsState {
     [refreshConfig],
   );
 
-  // 加载内置音色列表（模型下载后可用；未下载时为空）。
-  useEffect(() => {
-    api
-      .listTtsVoices()
-      .then(setVoices)
-      .catch(() => setVoices([]));
+  // 加载音色列表（模型包内置 + 用户自定义音色库）。
+  const refreshVoices = useCallback(async () => {
+    try {
+      setVoices(await api.listTtsVoices());
+    } catch {
+      setVoices([]);
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshVoices();
+  }, [refreshVoices]);
 
   useEffect(() => {
     const unsubs = [
@@ -116,44 +124,62 @@ export function useTts(): TtsState {
   }, []);
 
   const synthesize = useCallback(
-    async (text: string) => {
+    async (text: string, opts?: { speed?: number | null }) => {
       const trimmed = text.trim();
       if (!trimmed) return;
       setError(null);
       setResult(null);
       setProgress(null);
       setSynthesizing(true);
-      const isCustom = selectedVoice === CUSTOM_VOICE;
+      // 选中已保存自定义音色 → 直接传其存储的 wav + 转写文本；否则走内置/默认音色。
+      const savedVoice = voices.find((v) => v.custom && v.id === selectedVoice);
       try {
         await api.synthesizeTts({
           text: trimmed,
-          speed: null,
-          voice: isCustom ? null : selectedVoice || null,
-          referenceWav: isCustom ? customWav : null,
-          referenceText: isCustom ? customText : null,
+          speed: opts?.speed ?? null,
+          voice: savedVoice ? null : selectedVoice || null,
+          referenceWav: savedVoice ? savedVoice.wav_path : null,
+          referenceText: savedVoice ? savedVoice.reference_text : null,
         });
       } catch (e) {
         setError(String(e));
         setSynthesizing(false);
       }
     },
-    [selectedVoice, customWav, customText],
+    [voices, selectedVoice],
   );
 
-  // 用 ASR 离线转写参考音频，自动填充「逐字转写文本」（用户可再手动修正）。
-  const transcribe = useCallback(async () => {
-    if (!customWav) return;
-    setTranscribing(true);
-    setTranscribeError(null);
-    try {
-      const text = await api.transcribeReferenceAudio({ wavPath: customWav });
-      setCustomText(text);
-    } catch (e) {
-      setTranscribeError(String(e));
-    } finally {
-      setTranscribing(false);
-    }
-  }, [customWav]);
+  // 批量保存合成参数（扩散步数/默认语速/线程/调试），写入 [tts] 后刷新配置。
+  // 不 catch：保存失败向上抛出，由调用方（高级参数表单）展示内联错误。
+  const setParams = useCallback(
+    async (patch: TtsParamsPatch) => {
+      await api.setTtsParams({ params: patch });
+      await refreshConfig();
+    },
+    [refreshConfig],
+  );
+
+  // 音色库：保存/删除/录音，成功后刷新 voices。
+  const saveVoice = useCallback(
+    async (req: SaveTtsVoiceRequest) => {
+      const v = await api.saveTtsVoice(req);
+      await refreshVoices();
+      return v;
+    },
+    [refreshVoices],
+  );
+
+  const deleteVoice = useCallback(
+    async (id: string) => {
+      await api.deleteTtsVoice({ id });
+      await refreshVoices();
+    },
+    [refreshVoices],
+  );
+
+  const recordVoice = useCallback(async (seconds: number, device?: string | null) => {
+    return api.recordTtsVoice({ seconds, device: device ?? null });
+  }, []);
 
   const stop = useCallback(async () => {
     try {
@@ -171,14 +197,13 @@ export function useTts(): TtsState {
     try {
       await api.downloadTtsModel();
       void refreshConfig();
-      const v = await api.listTtsVoices();
-      setVoices(v);
+      await refreshVoices();
     } catch (e) {
       setDownloadError(String(e));
     } finally {
       setDownloading(false);
     }
-  }, [refreshConfig]);
+  }, [refreshConfig, refreshVoices]);
 
   const play = useCallback(() => {
     const el = audioRef.current;
@@ -193,16 +218,13 @@ export function useTts(): TtsState {
     configError,
     refreshConfig,
     setEnabled,
+    setParams,
     voices,
     selectedVoice,
     setSelectedVoice,
-    customWav,
-    setCustomWav,
-    customText,
-    setCustomText,
-    transcribing,
-    transcribeError,
-    transcribe,
+    saveVoice,
+    deleteVoice,
+    recordVoice,
     synthesizing,
     progress,
     result,

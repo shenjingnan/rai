@@ -6,6 +6,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Sample, SampleFormat, SizedSample, StreamConfig};
 use sherpa_onnx::LinearResampler;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 /// 麦克风句柄：持有 `cpal::Stream`（保持回调存活），并提供阻塞收块。
@@ -148,6 +149,93 @@ impl Resampler {
     }
 }
 
+/// 录制 N 秒麦克风并保存为 16k mono PCM wav。
+///
+/// 返回 wav 路径（位于 `~/.zapmomo/tts/`）。采集复用 `start_capture`，
+/// 在调用线程按截止时间循环收块，重采样到 16k 后写入。
+pub fn record_voice(seconds: u32, device: Option<&str>) -> Result<PathBuf, String> {
+    let out_dir = crate::config::settings::get_tts_output_dir();
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建录音目录失败: {e}"))?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let out_path = out_dir.join(format!("rec-{millis}.wav"));
+
+    let mut mic = start_capture(device)?;
+    let src_rate = mic.device_sample_rate();
+    let mut resampler = Resampler::new(src_rate as i32, 16_000)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds as u64);
+    let mut samples: Vec<i16> = Vec::new();
+
+    loop {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        match mic.recv_chunk_timeout(std::time::Duration::from_millis(50)) {
+            Ok(chunk) => {
+                let out = resampler.process(&chunk, false);
+                samples.extend(out.iter().map(|&s| f32_to_i16(s)));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("麦克风采集已断开".to_string());
+            }
+        }
+    }
+    // 冲刷重采样器尾部缓冲
+    let tail = resampler.process(&[], true);
+    samples.extend(tail.iter().map(|&s| f32_to_i16(s)));
+
+    if samples.is_empty() {
+        return Err("未采集到有效音频".to_string());
+    }
+    write_wav(&out_path, 16_000, &samples)?;
+    Ok(out_path)
+}
+
+/// f32 归一化样本转 i16 PCM（裁剪到 [-1, 1]）。
+fn f32_to_i16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+}
+
+/// 写 16-bit PCM mono wav（最小 RIFF/WAVE 头，无第三方依赖）。
+fn write_wav(path: &Path, sample_rate: u32, samples: &[i16]) -> Result<(), String> {
+    use std::io::Write;
+    let data_len = samples.len() as u32 * 2;
+    let mut buf = Vec::with_capacity(44 + data_len as usize);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36 + data_len).to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_len.to_le_bytes());
+    for &s in samples {
+        buf.extend_from_slice(&s.to_le_bytes());
+    }
+    let mut f = std::fs::File::create(path).map_err(|e| format!("创建录音文件失败: {e}"))?;
+    f.write_all(&buf)
+        .map_err(|e| format!("写入录音失败: {e}"))?;
+    Ok(())
+}
+
+/// 把 f32 归一化样本写成 16-bit PCM mono wav（用于语速重采样后的合成输出）。
+pub fn write_wav_f32(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
+    let pcm: Vec<i16> = samples.iter().map(|&s| f32_to_i16(s)).collect();
+    write_wav(path, sample_rate, &pcm)
+}
+
 fn mic_permission_hint() -> String {
     "未找到默认麦克风。\n  macOS 请在「系统设置 → 隐私与安全性 → 麦克风」中授权当前终端 App，然后重试。\n  可用 `kws list-devices` 查看设备，`kws run --device <名称>` 指定设备。"
         .to_string()
@@ -216,5 +304,34 @@ mod tests {
             "downsample len={}",
             out.len()
         );
+    }
+
+    #[test]
+    fn test_write_wav_header_and_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.wav");
+        let samples = [0i16, i16::MAX, i16::MIN, 1234];
+        write_wav(&path, 16000, &samples).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(&bytes[24..28], &16000u32.to_le_bytes());
+        assert_eq!(&bytes[34..36], &16u16.to_le_bytes()); // 16-bit
+        // data chunk 长度 = 样本数 * 2
+        assert_eq!(&bytes[40..44], &(samples.len() as u32 * 2).to_le_bytes());
+        // 样本按 little-endian 写入
+        assert_eq!(&bytes[44..46], &samples[0].to_le_bytes());
+        assert_eq!(&bytes[46..48], &samples[1].to_le_bytes());
+    }
+
+    #[test]
+    fn test_f32_to_i16_clamps() {
+        // 对称映射：f32 [-1,1] × 32767 → i16（-1.0 映射到 -32767，非 i16::MIN）
+        assert_eq!(f32_to_i16(1.0), i16::MAX);
+        assert_eq!(f32_to_i16(-1.0), -i16::MAX);
+        assert_eq!(f32_to_i16(2.0), i16::MAX); // 超界裁剪
+        assert_eq!(f32_to_i16(-2.0), -i16::MAX);
+        assert_eq!(f32_to_i16(0.0), 0);
     }
 }

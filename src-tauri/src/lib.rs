@@ -1191,6 +1191,9 @@ fn get_hide_dock_icon() -> Result<bool, String> {
 ///
 /// 写入 `~/.zapmomo/settings.toml` 顶层的 `hide_dock_icon` 字段；非 macOS 仅持久化，
 /// 不改变激活策略（该设置仅对 macOS 的 Dock / Cmd+Tab 有意义）。
+///
+/// `app` 仅在 macOS 上用于切换 ActivationPolicy，其它平台未使用，故非 macOS 允许未使用变量。
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 #[tauri::command]
 fn set_hide_dock_icon(app: AppHandle, hide: bool) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();

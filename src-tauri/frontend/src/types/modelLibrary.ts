@@ -38,6 +38,12 @@ export interface LibraryModel {
   runtimeStatus: RuntimeStatus;
   localPath: string | null;
   installedAt: string | null;
+  /** 稳定安装身份（set_current_model / delete_model 按此定位具体 Artifact） */
+  installId: string | null;
+  /** HF repo_id（若可映射） */
+  repoId: string | null;
+  /** 兼容性级别（verified/compatible/possible/unsupported） */
+  compatibility: string | null;
 }
 
 export interface SystemResources {

@@ -380,7 +380,8 @@ fn progress(
 /// 流式下载到临时文件，带进度回调；失败重试 3 次（退避等待）。
 ///
 /// `cancel` 命中时立即返回 [`ModelError::Cancelled`]（不重试），并删除临时文件。
-fn download_to(
+/// `pub(crate)`：模型库下载（download.rs）复用同一流式核心。
+pub(crate) fn download_to(
     url: &str,
     tmp_archive: &Path,
     manifest_total: u64,
@@ -416,9 +417,60 @@ fn try_download_once(
     on_progress: &mut ProgressFn,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), ModelError> {
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| ModelError::Http(e.to_string()))?;
+    try_download_once_core(url, None, tmp_archive, manifest_total, on_progress, cancel)
+}
+
+/// 带 Authorization 的流式下载（HF gated 模型；token 只进 header）。
+pub(crate) fn download_to_with_auth(
+    url: &str,
+    token: &str,
+    tmp_archive: &Path,
+    manifest_total: u64,
+    on_progress: &mut ProgressFn,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), ModelError> {
+    let mut last_err: Option<ModelError> = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(400 * (1 << attempt)));
+        }
+        match try_download_once_core(
+            url,
+            Some(token),
+            tmp_archive,
+            manifest_total,
+            on_progress,
+            cancel,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if matches!(e, ModelError::Cancelled) {
+                    let _ = std::fs::remove_file(tmp_archive);
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.map_or_else(
+        || ModelError::Download("未知错误".to_string()),
+        |e| ModelError::Download(e.to_string()),
+    ))
+}
+
+fn try_download_once_core(
+    url: &str,
+    token: Option<&str>,
+    tmp_archive: &Path,
+    manifest_total: u64,
+    on_progress: &mut ProgressFn,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), ModelError> {
+    let mut req = ureq::get(url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let resp = req.call().map_err(|e| ModelError::Http(e.to_string()))?;
     let total = resp
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok())
@@ -457,7 +509,8 @@ fn try_download_once(
 }
 
 /// 对临时压缩包整包计算 sha256 并比对；不匹配则删除损坏文件并报错。
-fn verify_sha256(path: &Path, expected: &str) -> Result<(), ModelError> {
+/// `pub(crate)`：HF 下载文件完整性校验复用。
+pub(crate) fn verify_sha256(path: &Path, expected: &str) -> Result<(), ModelError> {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();

@@ -53,6 +53,8 @@ docs/out/
 # 模型资产按 models/manifest.json 按需下载，本体不入库；清单与声明保留
 /models/*
 !/models/manifest.json
+!/models/model_registry.json
+!/models/verified_registry.json
 !/models/THIRD_PARTY_NOTICES.md
 tmp
 .claude/worktrees

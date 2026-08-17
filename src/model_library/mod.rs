@@ -10,8 +10,15 @@
 //! 模型完整性判断、`set_selected_model`/`restore_selected_model`、下载安装编排。
 //! 模型加载/引擎生命周期由各能力模块与 Tauri 层负责，本模块**不复制任何 runtime**。
 
+pub mod catalog;
+pub mod compat;
+pub mod download;
+pub mod gguf;
+pub mod huggingface;
+pub mod install;
 pub mod registry;
 pub mod sysinfo;
+pub mod verified;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,6 +40,8 @@ use registry::{ModelType, RegistryModel};
 pub enum ModelSource {
     Registry,
     Local,
+    /// Hugging Face 在线下载安装。
+    Hf,
 }
 
 /// 文件所有权：由「来源行为」确定，不由路径位置猜测。
@@ -150,6 +159,12 @@ pub struct LibraryModel {
     /// 已安装/已注册的本地路径
     pub local_path: Option<String>,
     pub installed_at: Option<String>,
+    /// 稳定安装身份（`set_current_model` / `delete_model` 按此唯一定位具体 Artifact）。
+    pub install_id: Option<String>,
+    /// HF repo_id（若可映射）。
+    pub repo_id: Option<String>,
+    /// 兼容性级别字符串（verified/compatible/possible/unsupported；本地模型可空）。
+    pub compatibility: Option<String>,
 }
 
 /// 四个能力的当前 selection（复用现有 settings，不新增字段）。
@@ -437,7 +452,10 @@ pub fn enrich_runtime_status(models: &mut [LibraryModel], a: &RuntimeActuals) {
 // 列表构建
 // ---------------------------------------------------------------------------
 
-/// 构建模型库列表（含 registry 条目 + standalone external 条目）。
+/// 构建模型库列表（registry 精选 + standalone external + HF 已安装）。
+///
+/// installed inventory 的唯一事实来源是 `ModelStorage` 扫描 + external 注册；
+/// registry 精选卡片用于展示内置模型（含其下载/导入动作）。
 pub fn list_models() -> Vec<LibraryModel> {
     let sel = current_selections();
     let locals = get_local_models();
@@ -448,7 +466,141 @@ pub fn list_models() -> Vec<LibraryModel> {
     for lm in locals.iter().filter(|l| l.registry_id.is_none()) {
         out.push(build_local_model(lm, &sel));
     }
+    // HF 在线下载安装（scan `.zapmomo-lib.json`）
+    for (dir, meta) in crate::model_library::install::ModelStorage::scan_installs() {
+        if meta.source == "hf"
+            && let Some(m) = build_installed_model(&dir, &meta)
+        {
+            out.push(m);
+        }
+    }
     out
+}
+
+/// 按 `id` 或 `install_id` 解析（Current/Delete 能唯一定位具体安装实例）。
+pub fn resolve_model(id: &str) -> Option<LibraryModel> {
+    list_models()
+        .into_iter()
+        .find(|m| m.id == id || m.install_id.as_deref() == Some(id))
+}
+
+/// 模型级本地状态聚合（按 model_id / repo_id 分组），供 unified 列表 merge。
+pub fn local_install_summary()
+-> std::collections::HashMap<String, crate::model_library::catalog::LocalModelSummary> {
+    use crate::model_library::catalog::LocalModelSummary;
+    let mut map: std::collections::HashMap<String, LocalModelSummary> =
+        std::collections::HashMap::new();
+    for m in list_models() {
+        if !matches!(m.source, ModelSource::Hf | ModelSource::Registry) {
+            continue;
+        }
+        let key = m.repo_id.clone().unwrap_or_else(|| m.id.clone());
+        let e = map.entry(key).or_default();
+        if matches!(
+            m.install_state,
+            InstallState::Installed | InstallState::Invalid
+        ) {
+            e.installed_artifact_count += 1;
+        }
+        if m.current {
+            e.has_current_artifact = true;
+        }
+    }
+    map
+}
+
+/// 从 HF 安装元数据构建 LibraryModel。
+fn build_installed_model(
+    dir: &std::path::Path,
+    meta: &crate::model_library::install::InstallMeta,
+) -> Option<LibraryModel> {
+    use crate::model_library::catalog::CompatibilityLevel;
+
+    let mt = ModelType::from_str_value(&meta.model_type).unwrap_or(ModelType::Llm);
+    let (runtime_path, install_state) = if mt == ModelType::Llm {
+        let gguf = first_gguf_in(dir);
+        match gguf {
+            Some(p) if crate::llm::local::llama::is_gguf_file(&p) => (p, InstallState::Installed),
+            Some(p) => (p, InstallState::Invalid),
+            None => (dir.to_path_buf(), InstallState::Invalid),
+        }
+    } else {
+        let ok = match mt {
+            ModelType::Kws => crate::kws::model::is_installed(dir),
+            ModelType::Asr => crate::asr::is_installed(dir),
+            ModelType::Tts => crate::tts::is_installed(dir),
+            ModelType::Llm => false,
+        };
+        (
+            dir.to_path_buf(),
+            if ok {
+                InstallState::Installed
+            } else {
+                InstallState::Invalid
+            },
+        )
+    };
+    let current = is_path_current(mt, &runtime_path);
+    let display_name = meta
+        .model_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(&meta.model_id)
+        .to_string();
+    let verified = crate::model_library::verified::VerifiedRegistry::builtin()
+        .is_verified_repo(meta.repo_id.as_deref().unwrap_or(""));
+    let install_id = Some(meta.install_id.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| meta.registry_id.clone());
+    let id = install_id.clone().unwrap_or_else(|| meta.model_id.clone());
+    Some(LibraryModel {
+        id,
+        name: meta.model_id.clone(),
+        display_name,
+        model_type: mt,
+        runtime: if mt == ModelType::Llm {
+            "llama.cpp"
+        } else {
+            "sherpa-onnx"
+        }
+        .to_string(),
+        format: if mt == ModelType::Llm { "GGUF" } else { "ONNX" }.to_string(),
+        description: "Hugging Face 在线下载".to_string(),
+        languages: Vec::new(),
+        tags: Vec::new(),
+        parameter_count: None,
+        quantization: meta.variant.clone(),
+        version: meta.revision.clone().unwrap_or_default(),
+        size_bytes: None,
+        homepage: None,
+        downloadable: true,
+        source: ModelSource::Hf,
+        ownership: StorageOwnership::Managed,
+        install_state,
+        current,
+        runtime_status: RuntimeStatus::Inactive,
+        local_path: Some(runtime_path.display().to_string()),
+        installed_at: Some(meta.installed_at.clone()),
+        install_id,
+        repo_id: meta.repo_id.clone(),
+        compatibility: if verified {
+            Some(CompatibilityLevel::Verified.as_str().to_string())
+        } else {
+            None
+        },
+    })
+}
+
+/// 目录内第一个 .gguf 文件（LLM runtime_path）。
+fn first_gguf_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("gguf") {
+            return Some(p);
+        }
+    }
+    None
 }
 
 fn build_registry_model(
@@ -499,6 +651,16 @@ fn build_registry_model(
                 .as_deref()
                 .and_then(|p| read_managed_installed_at(Path::new(p).parent().unwrap_or(&root)))
         });
+        let verified_entry =
+            crate::model_library::verified::VerifiedRegistry::builtin().entry_for_model(&reg.id);
+        let install_id = if matches!(
+            install_state,
+            InstallState::Installed | InstallState::Invalid
+        ) {
+            Some(reg.id.clone())
+        } else {
+            None
+        };
         return LibraryModel {
             id: reg.id.clone(),
             name: reg.name.clone(),
@@ -522,6 +684,13 @@ fn build_registry_model(
             runtime_status: RuntimeStatus::Inactive,
             local_path: local_path.map(|p| p.display().to_string()),
             installed_at,
+            install_id,
+            repo_id: verified_entry.and_then(|e| e.repo_id.clone()),
+            compatibility: verified_entry.map(|_| {
+                crate::model_library::catalog::CompatibilityLevel::Verified
+                    .as_str()
+                    .to_string()
+            }),
         };
     }
 
@@ -547,6 +716,16 @@ fn build_registry_model(
         ModelType::Llm => sel.llm.as_ref(),
     };
     let current = sel_path.is_some_and(|s| paths_equal(s, &dest));
+    let verified_entry =
+        crate::model_library::verified::VerifiedRegistry::builtin().entry_for_model(&reg.id);
+    let install_id = if matches!(
+        install_state,
+        InstallState::Installed | InstallState::Invalid
+    ) {
+        Some(reg.id.clone())
+    } else {
+        None
+    };
     LibraryModel {
         id: reg.id.clone(),
         name: reg.name.clone(),
@@ -574,6 +753,13 @@ fn build_registry_model(
             None
         },
         installed_at: read_managed_installed_at(&dest),
+        install_id,
+        repo_id: verified_entry.and_then(|e| e.repo_id.clone()),
+        compatibility: verified_entry.map(|_| {
+            crate::model_library::catalog::CompatibilityLevel::Verified
+                .as_str()
+                .to_string()
+        }),
     }
 }
 
@@ -649,6 +835,9 @@ fn build_local_model(lm: &LocalModel, sel: &Selections) -> LibraryModel {
         runtime_status: RuntimeStatus::Inactive,
         local_path: Some(lm.path.clone()),
         installed_at: Some(lm.added_at.clone()),
+        install_id: Some(lm.id.clone()),
+        repo_id: None,
+        compatibility: None,
     }
 }
 
@@ -827,6 +1016,28 @@ pub fn delete_managed_dir(dir: &Path) -> Result<(), String> {
 /// 按目录删除（供 CLI/测试复用）。
 pub fn remove_dir_tree_checked(dir: &Path) -> Result<(), String> {
     delete_managed_dir(dir)
+}
+
+/// 删除 HF 安装目录（**只删该 artifact 的文件**），并清理空父目录（不误删同 repo 其他 variant）。
+pub fn delete_hf_install_dir(dir: &Path) -> Result<(), String> {
+    delete_managed_dir(dir)?;
+    // 向上清理空目录：storageKey 层 → category 层
+    let mut p = dir.parent().map(Path::to_path_buf);
+    while let Some(d) = p {
+        if is_empty_dir(&d) {
+            let _ = std::fs::remove_dir(&d);
+        } else {
+            break;
+        }
+        p = d.parent().map(Path::to_path_buf);
+    }
+    Ok(())
+}
+
+fn is_empty_dir(p: &Path) -> bool {
+    std::fs::read_dir(p)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
 }
 
 /// 安装 managed 模型：全部 required assets → staging → 整体校验 → commit → 写 metadata。
@@ -1342,6 +1553,156 @@ mod tests {
             // 切换走后不再是 current（供 command 层「移除前需先切换」判定使用）
             set_selected_model(ModelType::Llm, Path::new("/tmp/other.gguf")).unwrap();
             assert!(!is_path_current(ModelType::Llm, &gguf));
+        });
+    }
+
+    /// 造一个 HF 安装（meta v2 + gguf 文件），返回 (install_dir, runtime_path, install_id)。
+    fn make_hf_install(repo: &str, variant: &str, gguf_name: &str) -> (PathBuf, PathBuf, String) {
+        use crate::model_library::catalog::ModelCategory;
+        use crate::model_library::download::ArtifactSource;
+        use crate::model_library::install::{
+            InstallMeta, META_SCHEMA_VERSION, ModelStorage, derive_install_id,
+        };
+
+        let artifact_id = format!("{repo}-{variant}");
+        let dir = ModelStorage::install_dir("hf", repo, ModelCategory::Llm, &artifact_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = dir.join(gguf_name);
+        std::fs::write(&runtime, b"GGUFxxxxx").unwrap();
+        let install_id = derive_install_id(
+            &ArtifactSource::HuggingFace,
+            repo,
+            &artifact_id,
+            Some(variant),
+        );
+        let meta = InstallMeta {
+            schema_version: META_SCHEMA_VERSION,
+            install_id: install_id.clone(),
+            source: "hf".into(),
+            model_id: repo.into(),
+            repo_id: Some(repo.into()),
+            revision: Some("main".into()),
+            model_type: "llm".into(),
+            artifact_id: artifact_id.clone(),
+            variant: Some(variant.into()),
+            architecture: Some("llama-cpp-gguf".into()),
+            installed_at: "2026-08-17T00:00:00Z".into(),
+            registry_id: None,
+            version: None,
+            managed: Some(true),
+        };
+        ModelStorage::write_meta(&dir, &meta).unwrap();
+        (dir, runtime, install_id)
+    }
+
+    /// 同 repo 多 variant 并存：Q4 已装+Current / Q5 已装，list_models 与 summary 正确表达。
+    #[test]
+    fn test_hf_multi_variant_install_and_current_derived() {
+        run_with_temp_home(|_| {
+            let repo = "Qwen/Qwen3-4B-GGUF";
+            let (_, q4_runtime, q4_install) =
+                make_hf_install(repo, "Q4_K_M", "Qwen3-4B-Q4_K_M.gguf");
+            let (_, q5_runtime, q5_install) =
+                make_hf_install(repo, "Q5_K_M", "Qwen3-4B-Q5_K_M.gguf");
+
+            let models = list_models();
+            let hf: Vec<_> = models
+                .iter()
+                .filter(|m| m.source == ModelSource::Hf)
+                .collect();
+            assert_eq!(hf.len(), 2, "两个 variant 各自一条 HF 安装");
+            // install_id 稳定且唯一
+            let ids: Vec<_> = hf
+                .iter()
+                .map(|m| m.install_id.as_deref().unwrap())
+                .collect();
+            assert!(ids.contains(&q4_install.as_str()));
+            assert!(ids.contains(&q5_install.as_str()));
+            assert_ne!(q4_install, q5_install);
+
+            // 设为 Q4 current → 仅 Q4 is_current（is_current 不持久化，从 settings 派生）
+            set_selected_model(ModelType::Llm, &q4_runtime).unwrap();
+            let models2 = list_models();
+            let q4 = models2
+                .iter()
+                .find(|m| m.install_id.as_deref() == Some(&q4_install))
+                .unwrap();
+            let q5 = models2
+                .iter()
+                .find(|m| m.install_id.as_deref() == Some(&q5_install))
+                .unwrap();
+            assert!(q4.current);
+            assert!(!q5.current);
+
+            // 切换后无需改 metadata
+            set_selected_model(ModelType::Llm, &q5_runtime).unwrap();
+            let models3 = list_models();
+            let q4b = models3
+                .iter()
+                .find(|m| m.install_id.as_deref() == Some(&q4_install))
+                .unwrap();
+            let q5b = models3
+                .iter()
+                .find(|m| m.install_id.as_deref() == Some(&q5_install))
+                .unwrap();
+            assert!(!q4b.current);
+            assert!(q5b.current);
+
+            // local_install_summary：同 repo 聚合
+            let summary = local_install_summary();
+            let s = summary.get(repo).unwrap();
+            assert_eq!(s.installed_artifact_count, 2);
+            assert!(s.has_current_artifact);
+        });
+    }
+
+    /// 删除具体 variant 不误删同 repo 其他 variant。
+    #[test]
+    fn test_delete_hf_install_only_removes_one_variant() {
+        run_with_temp_home(|_| {
+            let repo = "Qwen/Qwen3-4B-GGUF";
+            let (q4_dir, _, q4_install) = make_hf_install(repo, "Q4_K_M", "Qwen3-4B-Q4_K_M.gguf");
+            let (q5_dir, _, q5_install) = make_hf_install(repo, "Q5_K_M", "Qwen3-4B-Q5_K_M.gguf");
+
+            // 按 installId 定位 Q5 目录并删除
+            let models = list_models();
+            let q5 = models
+                .iter()
+                .find(|m| m.install_id.as_deref() == Some(&q5_install))
+                .unwrap();
+            let p = Path::new(q5.local_path.as_ref().unwrap());
+            let dir = p.parent().unwrap();
+            delete_hf_install_dir(dir).unwrap();
+
+            assert!(!q5_dir.exists(), "Q5 应被删除");
+            assert!(q4_dir.exists(), "Q4 不得误删");
+            // 删除后再列出只剩 Q4
+            let models2 = list_models();
+            let hf_ids: Vec<_> = models2
+                .iter()
+                .filter(|m| m.source == ModelSource::Hf)
+                .map(|m| m.install_id.clone())
+                .collect();
+            assert_eq!(hf_ids, vec![Some(q4_install.clone())]);
+        });
+    }
+
+    /// settings 不保存 installed inventory（HF 安装只来自 scan）。
+    #[test]
+    fn test_settings_has_no_installed_inventory() {
+        run_with_temp_home(|_| {
+            let repo = "Qwen/Qwen3-4B-GGUF";
+            make_hf_install(repo, "Q4_K_M", "Qwen3-4B-Q4_K_M.gguf");
+            let cfg = crate::config::settings::load_settings()
+                .unwrap()
+                .unwrap_or_default();
+            let locals = cfg.model_library.map(|m| m.local_models.len()).unwrap_or(0);
+            assert_eq!(locals, 0, "Settings 不保存 HF 安装 inventory");
+            // scan 是唯一来源
+            assert_eq!(
+                crate::model_library::install::ModelStorage::scan_installs().len(),
+                1
+            );
         });
     }
 }

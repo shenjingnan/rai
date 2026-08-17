@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
-import type { LibraryModel } from "@/types/modelLibrary";
+import { queryClient } from "@/lib/queryClient";
+import type { CatalogPage, UnifiedModelItem } from "@/types/catalog";
 
 const { invokeMock, listeners } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -33,52 +34,48 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
 
-const BASE: Omit<LibraryModel, "id" | "name" | "displayName" | "modelType"> = {
-  runtime: "sherpa-onnx",
-  format: "ONNX",
-  description: "测试模型",
-  languages: ["zh", "en"],
-  tags: [],
-  parameterCount: null,
-  quantization: null,
-  version: "1.0",
-  sizeBytes: 1024,
-  homepage: null,
-  downloadable: false,
-  source: "registry",
-  ownership: "managed",
-  installState: "not_installed",
-  current: false,
-  runtimeStatus: "inactive",
-  localPath: null,
-  installedAt: null,
-};
-
-const MODELS: LibraryModel[] = [
-  {
-    ...BASE,
-    id: "qwen3-1.7b-q4-k-m",
-    name: "Qwen3-1.7B",
-    displayName: "Qwen3 1.7B Q4_K_M",
+function unifiedItem(
+  modelId: string,
+  compatibility: UnifiedModelItem["compatibility"] = "compatible",
+): UnifiedModelItem {
+  return {
+    canonicalKey: `huggingface:${modelId.toLowerCase()}`,
+    modelId,
+    provider: "huggingface",
+    remote: {
+      repoId: modelId,
+      author: "Qwen",
+      displayName: modelId.split("/")[1] ?? modelId,
+      description: `测试描述 ${modelId}`,
+      pipelineTag: "text-generation",
+      libraryName: "gguf",
+      tags: ["qwen3"],
+      downloads: 1000,
+      likes: 50,
+      trendingScore: null,
+      lastModified: "2025-05-20T00:00:00Z",
+      createdAt: null,
+      license: "apache-2.0",
+      languages: ["zh"],
+      parameterCount: "4B",
+      gated: null,
+      private: null,
+      sha: null,
+    },
+    builtin: null,
     modelType: "llm",
-    runtime: "llama.cpp",
-    format: "GGUF",
-    tags: ["qwen3", "thinking"],
-  },
-  {
-    ...BASE,
-    id: "kws-zipformer-zh-en-3m",
-    name: "sherpa-onnx-kws-zipformer-zh-en-3M",
-    displayName: "唤醒词模型（Zipformer）",
-    modelType: "kws",
-    downloadable: true,
-    tags: ["streaming", "lightweight"],
-  },
-];
+    compatibility,
+    compatibilityNotes: null,
+    recommendedVariant: null,
+    installs: [],
+    localSummary: { installedArtifactCount: 0, hasCurrentArtifact: false, activeDownloadCount: 0 },
+    confirmed: false,
+  };
+}
 
-let models: LibraryModel[];
+let catalogPage: CatalogPage<UnifiedModelItem>;
 
-function defaultInvoke(cmd: string) {
+function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
   switch (cmd) {
     case "get_app_info":
       return Promise.resolve({ version: "0.1.4", product_name: "ZapMomo" });
@@ -106,7 +103,43 @@ function defaultInvoke(cmd: string) {
         enable_thinking: false,
       });
     case "list_model_library":
-      return Promise.resolve(models);
+      return Promise.resolve([]);
+    case "catalog_search_models": {
+      // 支持 category / search 的简单过滤（模拟 HF 服务端）
+      const query = args?.query as { category?: string; search?: string };
+      let items = catalogPage.items;
+      if (query?.category) items = items.filter((i) => i.modelType === query.category);
+      if (query?.search) {
+        const q = query.search.toLowerCase();
+        items = items.filter(
+          (i) =>
+            i.modelId.toLowerCase().includes(q) ||
+            (i.remote?.description ?? "").toLowerCase().includes(q),
+        );
+      }
+      return Promise.resolve({ items, hasMore: false });
+    }
+    case "catalog_get_model_detail":
+      return Promise.resolve({
+        repoId: "",
+        description: null,
+        pipelineTag: null,
+        libraryName: null,
+        tags: [],
+        license: null,
+        languages: [],
+        downloads: 0,
+        likes: 0,
+        lastModified: null,
+        createdAt: null,
+        sha: null,
+        gated: null,
+        private: null,
+        cardData: null,
+        siblings: [],
+      });
+    case "download_snapshot":
+      return Promise.resolve([]);
     case "is_listening":
     case "is_asr_listening":
     case "is_tts_synthesizing":
@@ -118,73 +151,116 @@ function defaultInvoke(cmd: string) {
       return Promise.resolve({ model_dir: "", models_present: false });
     case "get_microphone":
       return Promise.resolve("");
-    case "get_system_resources":
-      return Promise.resolve({
-        totalMemory: 16 * 1024 ** 3,
-        availableMemory: 8 * 1024 ** 3,
-        diskTotal: 500 * 1024 ** 3,
-        diskAvailable: 200 * 1024 ** 3,
-        cpuUsage: 12,
-      });
     default:
       return Promise.resolve(undefined);
   }
 }
 
 beforeEach(() => {
-  models = MODELS.map((m) => ({ ...m }));
+  catalogPage = {
+    items: [unifiedItem("Qwen/Qwen3-4B-GGUF"), unifiedItem("Qwen/Qwen3-0.6B-GGUF")],
+    hasMore: false,
+  };
+  queryClient.clear(); // 隔离 React Query 缓存（单例跨测试共享）
   invokeMock.mockReset();
-  invokeMock.mockImplementation((cmd: string) => defaultInvoke(cmd));
+  invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) =>
+    defaultInvoke(cmd, args),
+  );
 });
 
 describe("LibraryPage", () => {
-  it("渲染模型列表：KWS 可下载、LLM 需导入", async () => {
+  it("渲染在线目录（HF 真实数据形态）", async () => {
     render(
       <MemoryRouter initialEntries={["/models/library"]}>
         <App />
       </MemoryRouter>,
     );
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "模型库" })).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByText("Qwen3-4B-GGUF")).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+    expect(screen.getByText("Qwen3-0.6B-GGUF")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加本地模型" })).toBeInTheDocument();
+    expect(screen.getByText("Hugging Face")).toBeInTheDocument();
+  });
+
+  it("搜索触发远程查询（debounce 后）", async () => {
+    render(
+      <MemoryRouter initialEntries={["/models/library"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("Qwen3-4B-GGUF")).toBeInTheDocument(), {
+      timeout: 3000,
     });
-    expect(await screen.findByText("Qwen3 1.7B Q4_K_M")).toBeInTheDocument();
-    expect(screen.getByText("唤醒词模型（Zipformer）")).toBeInTheDocument();
-    // LLM（无内置下载源）→ 导入 GGUF；KWS（可下载）→ 下载
-    expect(screen.getByRole("button", { name: "导入 GGUF" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "下载" })).toBeInTheDocument();
+    await userEvent.type(screen.getByPlaceholderText("搜索模型名称、描述、标签或作者..."), "0.6B");
+    // 等 debounce 后的远程查询：0.6B 出现且 4B 消失（服务端过滤）
+    await waitFor(
+      () => {
+        expect(screen.getByText("Qwen3-0.6B-GGUF")).toBeInTheDocument();
+        expect(screen.queryByText("Qwen3-4B-GGUF")).not.toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
   });
 
-  it("类型 Tab 只显示对应类型", async () => {
+  it("分类 Tab 存在且切换不崩溃", async () => {
     render(
       <MemoryRouter initialEntries={["/models/library"]}>
         <App />
       </MemoryRouter>,
     );
-    await screen.findByText("Qwen3 1.7B Q4_K_M");
-    await userEvent.click(screen.getByRole("button", { name: "LLM" }));
-    expect(screen.getByText("Qwen3 1.7B Q4_K_M")).toBeInTheDocument();
-    expect(screen.queryByText("唤醒词模型（Zipformer）")).not.toBeInTheDocument();
-  });
-
-  it("搜索实时过滤名称/描述/标签", async () => {
-    render(
-      <MemoryRouter initialEntries={["/models/library"]}>
-        <App />
-      </MemoryRouter>,
-    );
-    await screen.findByText("Qwen3 1.7B Q4_K_M");
-    await userEvent.type(screen.getByPlaceholderText("搜索模型名称、描述或标签..."), "Qwen");
-    expect(screen.getByText("Qwen3 1.7B Q4_K_M")).toBeInTheDocument();
-    expect(screen.queryByText("唤醒词模型（Zipformer）")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Qwen3-4B-GGUF")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    const llmTab = screen.getByRole("button", { name: "LLM" });
+    expect(llmTab).toBeInTheDocument();
+    await userEvent.click(llmTab);
+    expect(screen.getByText("Qwen3-4B-GGUF")).toBeInTheDocument();
   });
 
   it("空结果显示空状态", async () => {
-    models = [];
+    catalogPage = { items: [], hasMore: false };
     render(
       <MemoryRouter initialEntries={["/models/library"]}>
         <App />
       </MemoryRouter>,
     );
-    expect(await screen.findByText("没有找到符合条件的模型")).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByText("没有找到符合条件的模型")).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("默认只显示可用模型；打开「显示全部模型」后展示可能兼容/不兼容", async () => {
+    catalogPage = {
+      items: [
+        unifiedItem("Qwen/Qwen3-4B-GGUF", "compatible"),
+        unifiedItem("Some/Transformers", "possible"),
+        unifiedItem("Some/Whisper", "unsupported"),
+      ],
+      hasMore: false,
+    };
+    render(
+      <MemoryRouter initialEntries={["/models/library"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("Qwen3-4B-GGUF")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    // 默认：只显示可用（compatible），possible / unsupported 项隐藏
+    expect(screen.queryByText("Transformers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Whisper")).not.toBeInTheDocument();
+    // 打开「显示全部模型」→ 所有兼容级别出现
+    await userEvent.click(screen.getByText("显示全部模型"));
+    await waitFor(() => expect(screen.getByText("Transformers")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    expect(screen.getByText("Whisper")).toBeInTheDocument();
   });
 });

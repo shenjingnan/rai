@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "model_id": "kws-zipformer-zh-en-3m",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "kws",
+      "architecture": "sherpa-kws-streaming-zipformer",
+      "compatibility_notes": "内置唤醒词模型，sherpa-onnx KeywordSpotter 验证可用（中英 3M）。"
+    },
+    {
+      "model_id": "asr-streaming-bilingual-zh-en",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR（中英双语），sherpa-onnx OnlineRecognizer 验证可用。"
+    },
+    {
+      "model_id": "asr-streaming-small-bilingual-zh-en",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR 小号（中英），sherpa-onnx 验证可用。"
+    },
+    {
+      "model_id": "asr-streaming-zh-14m",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR 轻量（中文），sherpa-onnx 验证可用。"
+    },
+    {
+      "model_id": "asr-streaming-en-20m",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR 轻量（英文），sherpa-onnx 验证可用。"
+    },
+    {
+      "model_id": "asr-streaming-en-2023-06-21",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR（英文），sherpa-onnx 验证可用。"
+    },
+    {
+      "model_id": "asr-streaming-en-2023-02-21",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-zipformer",
+      "compatibility_notes": "内置流式 ASR（英文），sherpa-onnx 验证可用。"
+    },
+    {
+      "model_id": "tts-zipvoice-distill-int8",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "tts",
+      "architecture": "sherpa-tts-zipvoice",
+      "compatibility_notes": "内置 TTS（ZipVoice），sherpa-onnx OfflineTts 验证可用。"
+    },
+    {
+      "model_id": "qwen3-0.6b-q4-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-0.6B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "recommended_variant": "Q4_K_M",
+      "compatibility_notes": "Qwen3-0.6B，llama.cpp Q4_K_M 验证可用。"
+    },
+    {
+      "model_id": "qwen3-0.6b-q8-0",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-0.6B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "compatibility_notes": "Qwen3-0.6B Q8_0（高质量），llama.cpp 验证可用。"
+    },
+    {
+      "model_id": "qwen3-1.7b-q4-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-1.7B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "recommended_variant": "Q4_K_M",
+      "compatibility_notes": "Qwen3-1.7B，llama.cpp Q4_K_M 验证可用。"
+    },
+    {
+      "model_id": "qwen3-1.7b-q5-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-1.7B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "compatibility_notes": "Qwen3-1.7B Q5_K_M，llama.cpp 验证可用。"
+    },
+    {
+      "model_id": "qwen3-1.7b-q8-0",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-1.7B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "compatibility_notes": "Qwen3-1.7B Q8_0（高质量），llama.cpp 验证可用。"
+    },
+    {
+      "model_id": "qwen3-4b-instruct-2507-q4-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "recommended_variant": "Q4_K_M",
+      "compatibility_notes": "Qwen3-4B Instruct 2507，llama.cpp Q4_K_M 验证可用。"
+    },
+    {
+      "model_id": "qwen3-4b-instruct-2507-q5-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "compatibility_notes": "Qwen3-4B Instruct 2507 Q5_K_M，llama.cpp 验证可用。"
+    },
+    {
+      "model_id": "qwen3-8b-q4-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Qwen3-8B-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "recommended_variant": "Q4_K_M",
+      "compatibility_notes": "Qwen3-8B，llama.cpp Q4_K_M 验证可用。"
+    },
+    {
+      "model_id": "llama-3.2-1b-instruct-q4-k-m",
+      "provider": "huggingface",
+      "repo_id": "unsloth/Llama-3.2-1B-Instruct-GGUF",
+      "model_type": "llm",
+      "architecture": "llama-cpp-gguf",
+      "recommended_variant": "Q4_K_M",
+      "compatibility_notes": "Llama-3.2-1B Instruct，llama.cpp Q4_K_M 验证可用。"
+    }
+  ]
+}

@@ -2,64 +2,8 @@ import { Cpu, Gauge, HardDrive, MemoryStick, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import type { LibraryModel, SystemResources } from "@/types/modelLibrary";
-import { formatBytes, tagLabel } from "./libraryMeta";
-
-// -------------------------------------------------------------- 热门标签 ----
-
-interface PopularTagsProps {
-  models: LibraryModel[];
-  activeTag: string | null;
-  onToggleTag: (tag: string) => void;
-}
-
-/** 热门标签：从当前类型下模型聚合数量，点击组合过滤。 */
-export function PopularTags({ models, activeTag, onToggleTag }: PopularTagsProps) {
-  const counts = new Map<string, number>();
-  for (const m of models) {
-    for (const t of m.tags) {
-      counts.set(t, (counts.get(t) ?? 0) + 1);
-    }
-  }
-  const tags = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
-
-  if (tags.length === 0) return null;
-
-  return (
-    <section>
-      <h3 className="px-1 text-xs font-medium text-text-muted">热门标签</h3>
-      <ul className="mt-2 space-y-0.5">
-        {tags.map(([tag, count]) => {
-          const active = activeTag === tag;
-          return (
-            <li key={tag}>
-              <button
-                type="button"
-                onClick={() => onToggleTag(tag)}
-                className={cn(
-                  "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors",
-                  active
-                    ? "bg-nav-active text-primary"
-                    : "text-text-secondary hover:bg-nav-hover hover:text-text-primary",
-                )}
-              >
-                <span className="truncate">{tagLabel(tag)}</span>
-                <span
-                  className={cn(
-                    "shrink-0 text-[11px] tabular-nums",
-                    active ? "text-primary" : "text-text-muted",
-                  )}
-                >
-                  {count}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
+import type { SystemResources } from "@/types/modelLibrary";
+import { formatBytes } from "./libraryMeta";
 
 // ------------------------------------------------------------ 系统资源卡 ----
 

@@ -7,7 +7,7 @@ import {
   ModelConfirmDialog,
   ModelDetailDialog,
 } from "@/components/library/LibraryDialogs";
-import { PopularTags, SystemResourcesCard } from "@/components/library/LibrarySidebar";
+import { SystemResourcesCard } from "@/components/library/LibrarySidebar";
 import { MODEL_TYPE_SHORT, TYPE_META } from "@/components/library/libraryMeta";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -89,7 +89,6 @@ export function LibraryPage() {
   const [activeType, setActiveType] = useState<TypeFilter>("all");
   const [langFilter, setLangFilter] = useState<LangFilter>("all");
   const [installFilter, setInstallFilter] = useState<InstallFilter>("all");
-  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("recommended");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -126,7 +125,7 @@ export function LibraryPage() {
   );
 
   const filtered = useMemo(() => {
-    const list = activeTag ? byLang.filter((m) => m.tags.includes(activeTag)) : byLang;
+    const list = byLang;
     switch (sort) {
       case "size":
         return [...list].sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
@@ -142,14 +141,13 @@ export function LibraryPage() {
             Number(b.installState === "installed") - Number(a.installState === "installed"),
         );
     }
-  }, [byLang, activeTag, sort]);
+  }, [byLang, sort]);
 
   const clearFilters = () => {
     setSearch("");
     setActiveType("all");
     setLangFilter("all");
     setInstallFilter("all");
-    setActiveTag(null);
     setSort("recommended");
   };
 
@@ -317,7 +315,6 @@ export function LibraryPage() {
       {/* 左右布局 */}
       <div className="grid grid-cols-[190px_minmax(0,1fr)] items-start gap-3">
         <aside className="space-y-4">
-          <PopularTags models={byType} activeTag={activeTag} onToggleTag={setActiveTag} />
           <SystemResourcesCard
             resources={lib.resources}
             loading={lib.resourcesLoading}

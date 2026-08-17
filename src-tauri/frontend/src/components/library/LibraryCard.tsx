@@ -71,7 +71,6 @@ export function LibraryCard({
 }: LibraryCardProps) {
   const navigate = useNavigate();
   const meta = TYPE_META[model.modelType];
-  const Icon = meta.icon;
   const isDownloading = downloadingId === model.id;
   const installed = model.installState === "installed";
   const invalid = model.installState === "invalid";
@@ -165,15 +164,6 @@ export function LibraryCard({
         >
           {selected && <Check className="h-3 w-3" />}
         </button>
-
-        <span
-          className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-            meta.iconClass,
-          )}
-        >
-          <Icon className="h-4 w-4" />
-        </span>
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

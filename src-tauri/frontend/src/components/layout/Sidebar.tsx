@@ -1,5 +1,15 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Home, Layers, MessageCircle, Minus, Settings, Square, Users, X } from "lucide-react";
+import {
+  Home,
+  Layers,
+  MessageCircle,
+  Minus,
+  Package,
+  Settings,
+  Square,
+  Users,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
@@ -11,7 +21,8 @@ const PRIMARY_NAV = [
   { to: "/home", icon: Home, label: "概览", end: true },
   { to: "/chat", icon: MessageCircle, label: "对话" },
   { to: "/companion", icon: Users, label: "伙伴" },
-  { to: "/models", icon: Layers, label: "模型" },
+  { to: "/models", icon: Layers, label: "模型", exclude: ["/models/library"] },
+  { to: "/models/library", icon: Package, label: "模型库", end: true },
   { to: "/settings", icon: Settings, label: "设置", end: true },
 ];
 
@@ -83,7 +94,14 @@ export function Sidebar() {
 
       <nav className="mt-5 flex flex-col gap-1.5 px-4">
         {PRIMARY_NAV.map((item) => (
-          <NavItem key={item.to} to={item.to} icon={item.icon} label={item.label} end={item.end} />
+          <NavItem
+            key={item.to}
+            to={item.to}
+            icon={item.icon}
+            label={item.label}
+            end={item.end}
+            exclude={item.exclude}
+          />
         ))}
       </nav>
 

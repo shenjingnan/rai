@@ -93,6 +93,36 @@ pub struct AppConfig {
     /// 本地 LLM 配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmSettings>,
+    /// 模型库配置（用户通过「添加本地模型」注册的 external 模型等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_library: Option<ModelLibrarySettings>,
+}
+
+/// 用户「添加本地模型」注册的模型（external）。
+///
+/// 只保存注册路径，**不复制/不管理用户文件**；移除时只删除本条目。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LocalModel {
+    /// 稳定 id（`local-` + sha256(规范化绝对路径) 前 12 位）
+    pub id: String,
+    /// 目录/文件基名（展示用）
+    pub name: String,
+    /// 能力类型：kws | asr | llm | tts
+    pub model_type: String,
+    /// 绝对路径（LLM 必须是具体 .gguf 文件路径）
+    pub path: String,
+    /// 注册时间（RFC3339）
+    pub added_at: String,
+    /// 显式关联的 Registry 模型 id（从 Registry 卡片导入时携带；顶部添加本地模型为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_id: Option<String>,
+}
+
+/// 模型库配置段。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ModelLibrarySettings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_models: Vec<LocalModel>,
 }
 
 /// 唤醒词检测（KWS）配置。
@@ -377,6 +407,7 @@ impl Default for AppConfig {
             tts: None,
             live2d: None,
             llm: None,
+            model_library: None,
         }
     }
 }
@@ -399,13 +430,29 @@ pub fn load_settings() -> Result<Option<AppConfig>, String> {
 }
 
 /// 保存配置到 `~/.zapmomo/settings.toml`（自动创建父目录）。
+///
+/// 采用「临时文件 + 替换」的安全写：先把完整内容写入带 pid 后缀的临时文件，
+/// 再 rename 到正式路径。POSIX 上 rename 同文件系统是原子的（直接覆盖）；Windows
+/// 上 rename 无法覆盖已存在目标，先移除旧文件再 rename（存在短暂窗口）。若替换失败
+/// 会保留临时文件便于恢复，并返回明确错误——**不做严格 atomic replace 的承诺**。
 pub fn save_settings(config: &AppConfig) -> Result<(), String> {
     let file_path = get_settings_path();
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
     }
     let content = toml::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
-    std::fs::write(&file_path, content).map_err(|e| format!("写入配置失败: {e}"))
+    let tmp = file_path.with_file_name(format!("settings.toml.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, &content).map_err(|e| format!("写入临时配置失败: {e}"))?;
+    match std::fs::rename(&tmp, &file_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // Windows：目标存在时 rename 可能失败，先移除再重试；失败则保留 tmp 便于恢复。
+            if file_path.exists() {
+                std::fs::remove_file(&file_path).map_err(|e| format!("移除旧配置失败: {e}"))?;
+            }
+            std::fs::rename(&tmp, &file_path).map_err(|e| format!("替换配置失败: {e}"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -541,6 +588,7 @@ mod tests {
             tts: None,
             live2d: None,
             llm: None,
+            model_library: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -782,12 +830,68 @@ mod tests {
                     ..Default::default()
                 }),
                 llm: None,
+                model_library: None,
             };
             save_settings(&config).unwrap();
             let loaded = load_settings().unwrap().unwrap();
             assert_eq!(loaded, config);
             // 文件确实写到了 HOME 下
             assert!(home.join(".zapmomo/settings.toml").is_file());
+        });
+    }
+
+    #[test]
+    fn test_model_library_settings_roundtrip() {
+        run_with_temp_home(|home| {
+            let config = AppConfig {
+                model_library: Some(ModelLibrarySettings {
+                    local_models: vec![LocalModel {
+                        id: "local-abcdef123456".to_string(),
+                        name: "MyModel.gguf".to_string(),
+                        model_type: "llm".to_string(),
+                        path: "/tmp/models/MyModel.gguf".to_string(),
+                        added_at: "2026-08-17T00:00:00Z".to_string(),
+                        registry_id: Some("qwen3-1.7b-q4-k-m".to_string()),
+                    }],
+                }),
+                ..Default::default()
+            };
+            save_settings(&config).unwrap();
+            let loaded = load_settings().unwrap().unwrap();
+            assert_eq!(loaded, config);
+            // external 注册信息存在 settings 中，不写用户模型目录
+            assert!(home.join(".zapmomo/settings.toml").is_file());
+            // 缺省 local_models 不序列化
+            let empty = AppConfig {
+                model_library: Some(ModelLibrarySettings::default()),
+                ..Default::default()
+            };
+            let toml_str = toml::to_string(&empty).unwrap();
+            assert!(!toml_str.contains("local_models"));
+        });
+    }
+
+    #[test]
+    fn test_save_settings_safe_replace_and_tmp_cleanup() {
+        run_with_temp_home(|home| {
+            let config = AppConfig {
+                log_level: "debug".to_string(),
+                ..Default::default()
+            };
+            save_settings(&config).unwrap();
+            // 正式文件存在
+            assert!(home.join(".zapmomo/settings.toml").is_file());
+            // 临时文件被清理（rename 成功）
+            let tmp = home.join(format!(".zapmomo/settings.toml.tmp.{}", std::process::id()));
+            assert!(!tmp.exists());
+            // 覆盖保存仍成功且内容完整
+            let config2 = AppConfig {
+                log_level: "warn".to_string(),
+                ..Default::default()
+            };
+            save_settings(&config2).unwrap();
+            let loaded = load_settings().unwrap().unwrap();
+            assert_eq!(loaded.log_level, "warn");
         });
     }
 }

@@ -4,7 +4,7 @@
 //! - 通过 Tauri command 暴露设备列表、KWS 配置、开始/停止监听；
 //! - 监听循环跑在独立 `std::thread`，检测到唤醒词经 `TauriReaction`
 //!   以 `kws-detected` 事件推给前端；结束（正常/出错/手动停止）发 `kws-stopped`。
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,11 @@ use zapmomo::config::settings::{
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
 use zapmomo::llm::{LlmEngine, LlmEvent};
+use zapmomo::model_library;
+use zapmomo::model_library::{
+    InstallState as LibInstallState, LibraryModel, RuntimeAction as LibRuntimeAction,
+    SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
+};
 use zapmomo::tts::config::TtsParamsPatch;
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
@@ -43,10 +48,12 @@ tauri_nspanel::tauri_panel! {
     })
 }
 
-/// 监听线程状态：共享停止标志 + 线程句柄。
+/// 监听线程状态：共享停止标志 + 线程句柄 + 运行时实际模型目录（RuntimeActual）。
 struct ListenState {
     running: Arc<AtomicBool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 当前会话真正使用的模型目录（启动监听时固化；停止/线程退出时清空）
+    active_model_dir: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl ListenState {
@@ -54,11 +61,36 @@ impl ListenState {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             handle: Mutex::new(None),
+            active_model_dir: Arc::new(Mutex::new(None)),
         }
     }
 
     fn is_listening(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    fn active_model_dir(&self) -> Option<PathBuf> {
+        self.active_model_dir.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// RAII：进入监听时置 `active_model_dir`，无论正常/错误/panic 退出监听线程都会清空。
+struct ActiveModelGuard {
+    target: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl ActiveModelGuard {
+    fn set(target: &Arc<Mutex<Option<PathBuf>>>, path: PathBuf) -> Self {
+        *target.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+        Self {
+            target: target.clone(),
+        }
+    }
+}
+
+impl Drop for ActiveModelGuard {
+    fn drop(&mut self) {
+        *self.target.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -283,8 +315,11 @@ fn start_listen_impl(
 
     let running = state.running.clone();
     running.store(true, Ordering::Relaxed);
+    // RuntimeActual：记录本次会话使用的模型目录；随线程退出（RAII）自动清空
+    let _active_guard = ActiveModelGuard::set(&state.active_model_dir, cfg.model_dir.clone());
     let thread_app = app.clone();
     let handle = std::thread::spawn(move || {
+        let _active = _active_guard;
         tracing::info!("KWS listen thread started");
         let mut reaction = TauriReaction { app: thread_app };
         let result = zapmomo::kws::run_realtime_with(
@@ -336,6 +371,11 @@ fn stop_listen(state: State<'_, ListenState>) -> Result<(), String> {
     if let Some(handle) = handle {
         let _ = handle.join();
     }
+    // RAII guard 在线程退出时已清空；这里兜底确保一致
+    *state
+        .active_model_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
@@ -385,6 +425,8 @@ async fn download_kws_model(app: AppHandle, state: State<'_, DownloadState>) -> 
 struct AsrListenState {
     running: Arc<AtomicBool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 当前会话真正使用的模型目录（RuntimeActual）
+    active_model_dir: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl AsrListenState {
@@ -392,11 +434,16 @@ impl AsrListenState {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             handle: Mutex::new(None),
+            active_model_dir: Arc::new(Mutex::new(None)),
         }
     }
 
     fn is_listening(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    fn active_model_dir(&self) -> Option<PathBuf> {
+        self.active_model_dir.lock().ok().and_then(|g| g.clone())
     }
 }
 
@@ -512,8 +559,11 @@ fn start_asr_listen(
 
     let running = state.running.clone();
     running.store(true, Ordering::Relaxed);
+    // RuntimeActual：记录本次识别会话使用的模型目录；随线程退出自动清空
+    let _active_guard = ActiveModelGuard::set(&state.active_model_dir, cfg.model_dir.clone());
     let thread_app = app.clone();
     let handle = std::thread::spawn(move || {
+        let _active = _active_guard;
         tracing::info!("ASR listen thread started");
         let mut reaction = TauriAsrReaction { app: thread_app };
         let result = zapmomo::asr::run_realtime_with(
@@ -555,6 +605,10 @@ fn stop_asr_listen(state: State<'_, AsrListenState>) -> Result<(), String> {
     if let Some(handle) = handle {
         let _ = handle.join();
     }
+    *state
+        .active_model_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
@@ -951,13 +1005,64 @@ async fn download_tts_model(
 /// 本地 LLM 引擎状态：懒创建的 worker 线程引擎。
 struct LlmState {
     engine: Arc<Mutex<Option<Arc<LlmEngine>>>>,
+    /// 模型切换进行中（防二次切换 / 防止切换期间删除涉及的模型）
+    switch_in_progress: Arc<AtomicBool>,
+    /// 正在切换的目标模型路径（用于 `RuntimeStatus::Switching` 精确匹配）
+    switch_target_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl LlmState {
     fn new() -> Self {
         Self {
             engine: Arc::new(Mutex::new(None)),
+            switch_in_progress: Arc::new(AtomicBool::new(false)),
+            switch_target_path: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn is_switching(&self) -> bool {
+        self.switch_in_progress.load(Ordering::Relaxed)
+    }
+
+    fn switch_target(&self) -> Option<PathBuf> {
+        self.switch_target_path.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 当前实际加载的模型路径（RuntimeActual）。
+    fn loaded_model_path(&self) -> Option<PathBuf> {
+        self.engine
+            .lock()
+            .ok()
+            .and_then(|e| e.as_ref().and_then(|e| e.loaded_model_path()))
+    }
+}
+
+/// RAII：模型切换事务 guard，所有出口（成功/失败/回滚/早退/panic）都复位标志。
+struct LlmSwitchGuard {
+    in_progress: Arc<AtomicBool>,
+    target: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl LlmSwitchGuard {
+    fn begin(state: &LlmState, target: PathBuf) -> Result<Self, String> {
+        if state.switch_in_progress.swap(true, Ordering::SeqCst) {
+            return Err("模型切换正在进行中，请稍候".to_string());
+        }
+        *state
+            .switch_target_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(target);
+        Ok(Self {
+            in_progress: state.switch_in_progress.clone(),
+            target: state.switch_target_path.clone(),
+        })
+    }
+}
+
+impl Drop for LlmSwitchGuard {
+    fn drop(&mut self) {
+        self.in_progress.store(false, Ordering::SeqCst);
+        *self.target.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -969,6 +1074,8 @@ struct LlmConfigInfo {
     model_path: String,
     models_present: bool,
     ready: bool,
+    /// RuntimeActual：当前真正加载的模型路径（None = 未加载）
+    loaded_model_path: Option<String>,
     enable_thinking: bool,
     auto_load: bool,
     settings_path: String,
@@ -1027,12 +1134,19 @@ fn get_llm_config(state: State<'_, LlmState>) -> Result<LlmConfigInfo, String> {
         .ok()
         .and_then(|e| e.as_ref().map(|e| e.is_ready()))
         .unwrap_or(false);
+    let loaded_model_path = state
+        .engine
+        .lock()
+        .ok()
+        .and_then(|e| e.as_ref().and_then(|e| e.loaded_model_path()))
+        .map(|p| p.display().to_string());
     Ok(LlmConfigInfo {
         enabled: cfg.enabled,
         provider: cfg.provider,
         model_path: cfg.model_path.display().to_string(),
         models_present: cfg.model_path.is_file(),
         ready,
+        loaded_model_path,
         enable_thinking: cfg.params.enable_thinking,
         auto_load: cfg.auto_load,
         settings_path: zapmomo::config::settings::get_settings_path()
@@ -1525,6 +1639,509 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// ===========================================================================
+// 模型库（Model Library）
+// ===========================================================================
+
+/// 模型库下载任务状态：单任务 + 可取消 + 记录当前下载的模型 id。
+#[derive(Default)]
+struct ModelLibraryState {
+    in_progress: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    current_id: Arc<Mutex<Option<String>>>,
+}
+
+/// 模型库下载进度事件载荷。
+#[derive(Clone, Serialize)]
+struct ModelLibraryProgressPayload {
+    model_id: String,
+    stage: String,
+    asset: String,
+    overall_percent: f64,
+    bytes_downloaded: u64,
+    total_bytes: u64,
+    message: String,
+}
+
+/// 下载任务 guard：所有出口（成功/失败/取消/panic）都复位下载标志与 cancel。
+struct LibraryDownloadGuard {
+    in_progress: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    current_id: Arc<Mutex<Option<String>>>,
+}
+
+impl Drop for LibraryDownloadGuard {
+    fn drop(&mut self) {
+        self.in_progress.store(false, Ordering::SeqCst);
+        self.cancel.store(false, Ordering::SeqCst);
+        *self.current_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+fn download_stage_str(stage: zapmomo::kws::model::DownloadStage) -> &'static str {
+    use zapmomo::kws::model::DownloadStage::*;
+    match stage {
+        Downloading => "downloading",
+        Verifying => "verifying",
+        Extracting => "extracting",
+        Done => "done",
+    }
+}
+
+/// 从模型库列表解析模型（registry 或 standalone external）。
+fn resolve_library_model(id: &str) -> Result<LibraryModel, String> {
+    model_library::list_models()
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("未知的模型：{id}"))
+}
+
+/// 平台化打开目录（macOS `open` / Linux `xdg-open` / Windows `explorer`）。
+fn open_path(p: &Path) -> Result<(), String> {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(cmd)
+        .arg(p)
+        .spawn()
+        .map_err(|e| format!("打开目录失败：{e}"))?;
+    Ok(())
+}
+
+/// 模型库列表（含每个模型的安装状态 / current / runtime_status）。
+#[tauri::command]
+fn list_model_library(
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    llm: State<'_, LlmState>,
+) -> Result<Vec<LibraryModel>, String> {
+    let mut models = model_library::list_models();
+    let kws_actual = kws.active_model_dir();
+    let asr_actual = asr.active_model_dir();
+    let llm_actual = llm.loaded_model_path();
+    let llm_target = llm.switch_target();
+    let llm_error_path = llm
+        .engine
+        .lock()
+        .ok()
+        .and_then(|e| e.as_ref().and_then(|e| e.last_load_error()))
+        .map(|e| e.model_path);
+    let actuals = model_library::RuntimeActuals {
+        kws: kws_actual.as_deref(),
+        asr: asr_actual.as_deref(),
+        llm: llm_actual.as_deref(),
+        llm_switching: llm.is_switching(),
+        llm_switch_target: llm_target.as_deref(),
+        llm_load_error_path: llm_error_path.as_deref(),
+    };
+    model_library::enrich_runtime_status(&mut models, &actuals);
+    Ok(models)
+}
+
+/// 系统资源（独立命令，CPU 采样在阻塞线程执行）。
+#[tauri::command]
+async fn get_system_resources() -> Result<SystemResources, String> {
+    tauri::async_runtime::spawn_blocking(model_library::sysinfo::get_system_resources)
+        .await
+        .map_err(|e| format!("资源检测失败：{e}"))
+}
+
+/// 下载并安装模型库中的 registry 模型（单任务，真实进度，可取消）。
+#[tauri::command]
+async fn download_library_model(
+    app: AppHandle,
+    state: State<'_, ModelLibraryState>,
+    id: String,
+) -> Result<(), String> {
+    let flag = state.in_progress.clone();
+    if flag.swap(true, Ordering::SeqCst) {
+        return Err("已有模型下载进行中，请稍候".to_string());
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    *state.current_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+
+    let model = model_library::registry::model_by_id(&id)
+        .ok_or_else(|| format!("未知的 Registry 模型：{id}"))?;
+    if model.download.is_none() {
+        flag.store(false, Ordering::SeqCst);
+        *state.current_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Err("该模型没有内置下载源，请使用「导入 GGUF」".to_string());
+    }
+
+    let app = app.clone();
+    let cancel = state.cancel.clone();
+    let current_id = state.current_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LibraryDownloadGuard {
+            in_progress: flag,
+            cancel: cancel.clone(),
+            current_id,
+        };
+        let emit = |stage: &str, percent: f64, msg: &str| {
+            let _ = app.emit(
+                "model-library-download-progress",
+                ModelLibraryProgressPayload {
+                    model_id: id.clone(),
+                    stage: stage.to_string(),
+                    asset: String::new(),
+                    overall_percent: percent,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    message: msg.to_string(),
+                },
+            );
+        };
+        emit("preparing", 0.0, "准备下载…");
+        let mut progress = |p: zapmomo::kws::model::DownloadProgress| {
+            let _ = app.emit(
+                "model-library-download-progress",
+                ModelLibraryProgressPayload {
+                    model_id: id.clone(),
+                    stage: download_stage_str(p.stage).to_string(),
+                    asset: String::new(),
+                    overall_percent: p.percent,
+                    bytes_downloaded: p.bytes_downloaded,
+                    total_bytes: p.total_bytes,
+                    message: p.message,
+                },
+            );
+        };
+        let install_cancel = cancel.clone();
+        let result =
+            model_library::install_managed_model(model, &mut progress, Some(&*install_cancel));
+        match result {
+            Ok(_) => {
+                emit("done", 100.0, "模型安装完成");
+                Ok(())
+            }
+            Err(zapmomo::kws::model::ModelError::Cancelled) => {
+                emit("cancelled", 0.0, "已取消下载");
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("下载任务异常：{e}"))?
+}
+
+/// 取消当前下载。
+#[tauri::command]
+fn cancel_model_download(state: State<'_, ModelLibraryState>) -> Result<(), String> {
+    if !state.in_progress.load(Ordering::Relaxed) {
+        return Err("没有正在进行的下载".to_string());
+    }
+    state.cancel.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// 设为当前模型（「使用」）。
+///
+/// 只写 `model_dir` / `model_path`，**绝不写 enabled / 自动启动能力**。
+/// LLM 走完整事务：验证 → 写 selection → 卸载旧 → 加载新 → 失败回滚。
+#[tauri::command]
+async fn set_current_model(
+    app: AppHandle,
+    llm: State<'_, LlmState>,
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    id: String,
+) -> Result<SetCurrentResult, String> {
+    let model = resolve_library_model(&id)?;
+    if model.install_state != LibInstallState::Installed {
+        return Err("该模型未安装或正在下载，无法设为当前模型".to_string());
+    }
+    let path = PathBuf::from(model.local_path.clone().ok_or("该模型没有可用路径")?);
+    let mt = model.model_type;
+
+    // ---- KWS / ASR / TTS：只写 selection，不触碰 enabled ----
+    if mt != LibModelType::Llm {
+        model_library::set_selected_model(mt, &path)?;
+        let (action, effective, message) = match mt {
+            LibModelType::Kws if kws.is_listening() => (
+                LibRuntimeAction::RestartRequired,
+                false,
+                format!(
+                    "已将 {} 设为 KWS 当前模型，将在下次启动监听时生效",
+                    model.display_name
+                ),
+            ),
+            LibModelType::Asr if asr.is_listening() => (
+                LibRuntimeAction::RestartRequired,
+                false,
+                format!(
+                    "已将 {} 设为 ASR 当前模型，将在下次启动识别时生效",
+                    model.display_name
+                ),
+            ),
+            _ => (
+                LibRuntimeAction::None,
+                true,
+                format!("已将 {} 设为当前模型", model.display_name),
+            ),
+        };
+        return Ok(SetCurrentResult {
+            model_type: mt,
+            model_id: model.id,
+            path: path.display().to_string(),
+            runtime_action: action,
+            effective_immediately: effective,
+            message,
+        });
+    }
+
+    // ---- LLM 事务 ----
+    if !path.is_file() {
+        return Err("模型文件不存在".to_string());
+    }
+    if !zapmomo::llm::local::llama::is_gguf_file(&path) {
+        return Err("不是有效的 GGUF 模型文件".to_string());
+    }
+    let _guard = LlmSwitchGuard::begin(llm.inner(), path.clone())?;
+
+    let old_path =
+        model_library::selection_path(LibModelType::Llm).map(|p| p.display().to_string());
+    let was_loaded = llm
+        .engine
+        .lock()
+        .ok()
+        .map(|e| e.as_ref().is_some())
+        .unwrap_or(false);
+
+    // 1. 写新 selection（短锁）
+    model_library::set_selected_model(LibModelType::Llm, &path)?;
+    if !was_loaded {
+        return Ok(SetCurrentResult {
+            model_type: mt,
+            model_id: model.id,
+            path: path.display().to_string(),
+            runtime_action: LibRuntimeAction::None,
+            effective_immediately: true,
+            message: format!(
+                "已将 {} 设为 LLM 当前模型，将在下次加载时生效",
+                model.display_name
+            ),
+        });
+    }
+
+    // 2. 替换引擎（旧引擎 Drop 会 join worker 并卸载旧模型），随后才加载新模型
+    let cfg = llm_resolved_config()?;
+    let new_engine = Arc::new(zapmomo::llm::LlmEngine::new(cfg).map_err(|e| e.to_string())?);
+    let old = llm
+        .engine
+        .lock()
+        .expect("llm lock poisoned")
+        .replace(new_engine.clone());
+    drop(old);
+
+    let loader = new_engine.clone();
+    let load_result = tauri::async_runtime::spawn_blocking(move || {
+        loader.load_blocking(std::time::Duration::from_secs(600))
+    })
+    .await
+    .map_err(|e| format!("加载任务异常：{e}"))?;
+
+    match load_result {
+        Ok(()) => {
+            std::thread::spawn(move || forward_llm_events(app, new_engine, true));
+            Ok(SetCurrentResult {
+                model_type: mt,
+                model_id: model.id,
+                path: path.display().to_string(),
+                runtime_action: LibRuntimeAction::Reloaded,
+                effective_immediately: true,
+                message: format!("已将 {} 设为 LLM 当前模型", model.display_name),
+            })
+        }
+        Err(new_err) => {
+            tracing::warn!("切换 LLM 到新模型失败：{new_err}");
+            // 3. 回滚：恢复 selection + 尽力重载旧模型
+            model_library::restore_selected_model(LibModelType::Llm, old_path)?;
+            let old_cfg = llm_resolved_config().map_err(|e| format!("恢复配置失败：{e}"))?;
+            let old_engine =
+                Arc::new(zapmomo::llm::LlmEngine::new(old_cfg).map_err(|e| e.to_string())?);
+            let _prev = llm
+                .engine
+                .lock()
+                .expect("llm lock poisoned")
+                .replace(old_engine.clone());
+            let old_loader = old_engine.clone();
+            let old_result = tauri::async_runtime::spawn_blocking(move || {
+                old_loader.load_blocking(std::time::Duration::from_secs(600))
+            })
+            .await
+            .map_err(|e| format!("恢复加载任务异常：{e}"))?;
+            match old_result {
+                Ok(()) => {
+                    std::thread::spawn(move || forward_llm_events(app, old_engine, true));
+                    Ok(SetCurrentResult {
+                        model_type: mt,
+                        model_id: model.id,
+                        path: path.display().to_string(),
+                        runtime_action: LibRuntimeAction::ReloadFailedRolledBack,
+                        effective_immediately: true,
+                        message: "模型切换失败，已恢复之前的模型".to_string(),
+                    })
+                }
+                Err(old_err) => {
+                    tracing::warn!("恢复旧 LLM 模型也失败：{old_err}");
+                    llm.engine.lock().expect("llm lock poisoned").take();
+                    Ok(SetCurrentResult {
+                        model_type: mt,
+                        model_id: model.id,
+                        path: path.display().to_string(),
+                        runtime_action: LibRuntimeAction::ReloadFailedRollbackFailed,
+                        effective_immediately: false,
+                        message: "模型切换失败，原模型也未能重新加载，请手动重新加载模型"
+                            .to_string(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// 删除模型：managed 删文件；external 只移除注册。后端全量安全检查。
+#[tauri::command]
+fn delete_model(
+    dl: State<'_, ModelLibraryState>,
+    llm: State<'_, LlmState>,
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    id: String,
+) -> Result<(), String> {
+    let model = resolve_library_model(&id)?;
+    let downloading = dl.in_progress.load(Ordering::Relaxed)
+        && dl
+            .current_id
+            .lock()
+            .map(|g| g.as_deref() == Some(id.as_str()))
+            .unwrap_or(false);
+    if downloading {
+        return Err("该模型正在下载，请先取消下载".to_string());
+    }
+    if model.model_type == LibModelType::Llm && llm.is_switching() {
+        return Err("模型切换正在进行中，请稍候".to_string());
+    }
+    if model.current {
+        return Err("该模型当前正在使用，请先切换到其他模型".to_string());
+    }
+    if let Some(lp) = &model.local_path {
+        let lp = Path::new(lp);
+        let loaded = llm
+            .loaded_model_path()
+            .is_some_and(|p| model_library::paths_equal(&p, lp))
+            || kws
+                .active_model_dir()
+                .is_some_and(|d| model_library::paths_equal(&d, lp))
+            || asr
+                .active_model_dir()
+                .is_some_and(|d| model_library::paths_equal(&d, lp));
+        if loaded {
+            return Err("该模型当前仍在运行，请先停止或切换模型".to_string());
+        }
+    }
+
+    if let Some(ext_id) = model_library::external_binding_to_remove(&id) {
+        // external：只移除注册，绝不删原始文件
+        model_library::remove_local_model_record(&ext_id)?;
+        return Ok(());
+    }
+    let reg = model_library::registry::model_by_id(&id)
+        .ok_or_else(|| format!("未知的 Registry 模型：{id}"))?;
+    let dir = model_library::managed_install_dir(reg);
+    if dir.exists() {
+        model_library::delete_managed_dir(&dir)?;
+    }
+    Ok(())
+}
+
+/// 移除 external 模型注册（不删文件）。current / runtime-loaded / switching 时拒绝。
+#[tauri::command]
+fn remove_local_model(
+    llm: State<'_, LlmState>,
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    id: String,
+) -> Result<(), String> {
+    let rec = model_library::get_local_models()
+        .into_iter()
+        .find(|l| l.id == id)
+        .ok_or("未找到该本地模型")?;
+    let mt = LibModelType::from_str_value(&rec.model_type).unwrap_or(LibModelType::Llm);
+    let lp = Path::new(&rec.path);
+    if model_library::is_path_current(mt, lp) {
+        return Err("该模型当前被设为当前模型，请先切换到其他模型".to_string());
+    }
+    if mt == LibModelType::Llm && llm.is_switching() {
+        return Err("模型切换正在进行中，请稍候".to_string());
+    }
+    let running = llm
+        .loaded_model_path()
+        .is_some_and(|p| model_library::paths_equal(&p, lp))
+        || kws
+            .active_model_dir()
+            .is_some_and(|d| model_library::paths_equal(&d, lp))
+        || asr
+            .active_model_dir()
+            .is_some_and(|d| model_library::paths_equal(&d, lp));
+    if running {
+        return Err("该模型当前仍在运行，请先切换或卸载模型".to_string());
+    }
+    model_library::remove_local_model_record(&id)
+}
+
+/// 添加本地模型（Registry 卡片「导入 GGUF」显式携带 registry_id；顶部添加为 None）。
+#[tauri::command]
+fn add_local_model(
+    llm: State<'_, LlmState>,
+    path: String,
+    model_type: Option<String>,
+    registry_id: Option<String>,
+) -> Result<LibraryModel, String> {
+    // registry 重绑定时：旧绑定正在运行/切换中则拒绝
+    if let Some(rid) = &registry_id
+        && let Some(existing) = model_library::get_local_models()
+            .into_iter()
+            .find(|l| l.registry_id.as_deref() == Some(rid.as_str()))
+    {
+        let mt = LibModelType::from_str_value(&existing.model_type).unwrap_or(LibModelType::Llm);
+        let ep = Path::new(&existing.path);
+        if mt == LibModelType::Llm && llm.is_switching() {
+            return Err("模型切换正在进行中，请稍候".to_string());
+        }
+        if llm
+            .loaded_model_path()
+            .is_some_and(|p| model_library::paths_equal(&p, ep))
+        {
+            return Err("该模型正在运行，请先切换或卸载后再重新导入".to_string());
+        }
+    }
+    model_library::add_local_model(
+        Path::new(&path),
+        model_type.as_deref(),
+        registry_id.as_deref(),
+    )
+}
+
+/// 打开模型目录（后端按 id 解析真实路径，不接收任意 path）。
+#[tauri::command]
+fn open_model_directory(id: String) -> Result<(), String> {
+    let model = resolve_library_model(&id)?;
+    let path = model.local_path.ok_or("该模型没有安装路径")?;
+    let p = PathBuf::from(&path);
+    let dir = if p.is_dir() {
+        p
+    } else {
+        p.parent().map(Path::to_path_buf).unwrap_or(p)
+    };
+    open_path(&dir)
+}
+
 /// 角色窗口初始尺寸（逻辑像素，与 `setup` 中的 `inner_size` 保持一致）。
 const COMPANION_INITIAL_W: f64 = 360.0;
 const COMPANION_INITIAL_H: f64 = 480.0;
@@ -1559,6 +2176,7 @@ pub fn run() {
         .manage(TtsSynthesizeState::new())
         .manage(TtsDownloadState::default())
         .manage(LlmState::new())
+        .manage(ModelLibraryState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
@@ -1601,6 +2219,15 @@ pub fn run() {
             set_llm_system_prompt,
             set_tts_enabled,
             set_tts_params,
+            list_model_library,
+            get_system_resources,
+            download_library_model,
+            cancel_model_download,
+            set_current_model,
+            delete_model,
+            remove_local_model,
+            add_local_model,
+            open_model_directory,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,

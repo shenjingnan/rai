@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  LibraryModel,
+  ModelLibraryProgress,
+  ModelType,
+  SetCurrentResult,
+  SystemResources,
+} from "@/types/modelLibrary";
+import type {
   AppInfo,
   AsrConfigInfo,
   AsrParamsPatch,
@@ -80,6 +87,20 @@ export const api = {
   setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
   setLlmParams: (args: { params: LlmParamsPatch }) => invoke<void>("set_llm_params", args),
   setLlmSystemPrompt: (args: { prompt: string }) => invoke<void>("set_llm_system_prompt", args),
+  // ---- 模型库 ----
+  listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
+  getSystemResources: () => invoke<SystemResources>("get_system_resources"),
+  downloadLibraryModel: (args: { id: string }) => invoke<void>("download_library_model", args),
+  cancelModelDownload: () => invoke<void>("cancel_model_download"),
+  setCurrentModel: (args: { id: string }) => invoke<SetCurrentResult>("set_current_model", args),
+  deleteModel: (args: { id: string }) => invoke<void>("delete_model", args),
+  removeLocalModel: (args: { id: string }) => invoke<void>("remove_local_model", args),
+  addLocalModel: (args: {
+    path: string;
+    modelType?: ModelType | null;
+    registryId?: string | null;
+  }) => invoke<LibraryModel>("add_local_model", args),
+  openModelDirectory: (args: { id: string }) => invoke<void>("open_model_directory", args),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
@@ -146,6 +167,12 @@ export function onLive2dModelChanged(
 
 export function onCompanionScaleChanged(handler: (scale: number) => void): Promise<UnlistenFn> {
   return listen<number>("companion-scale-changed", (e) => handler(e.payload));
+}
+
+export function onModelLibraryDownloadProgress(
+  handler: (p: ModelLibraryProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ModelLibraryProgress>("model-library-download-progress", (e) => handler(e.payload));
 }
 
 export function onLlmToken(handler: (delta: LlmToken) => void): Promise<UnlistenFn> {

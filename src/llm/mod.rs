@@ -48,18 +48,30 @@ enum LlmCommand {
     Shutdown,
 }
 
+/// 带模型 identity 的加载错误（用于 `RuntimeStatus::LoadFailed` 精确匹配，避免 stale）。
+#[derive(Debug, Clone)]
+pub struct LlmLoadError {
+    pub model_path: std::path::PathBuf,
+    pub message: String,
+}
+
 /// LLM 引擎门面。
 ///
 /// 内部 spawn 一个专用 worker OS 线程持有 `Box<dyn LlmProvider>`（llama.cpp 的
 /// `LlamaContext` 非线程安全，必须在单线程内使用），命令经 `cmd_tx` 投递，
 /// 结果经 `evt_rx` 流式返回。这与项目现有 `std::thread::spawn + mpsc + Arc<AtomicBool>`
 /// 的模式（`src/kws/mod.rs`）一致。
+///
+/// RuntimeActual：`loaded_path` 只在 worker `Load` 成功后置位（带模型 identity），
+/// 卸载/失败清空；`last_load_error` 记录「哪个模型」加载失败。
 pub struct LlmEngine {
     cmd_tx: Sender<LlmCommand>,
     evt_rx: Mutex<Receiver<LlmEvent>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     ready: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    loaded_path: Arc<Mutex<Option<std::path::PathBuf>>>,
+    last_load_error: Arc<Mutex<Option<LlmLoadError>>>,
 }
 
 impl LlmEngine {
@@ -68,11 +80,24 @@ impl LlmEngine {
         let (evt_tx, evt_rx) = mpsc::channel();
         let ready = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
+        let loaded_path = Arc::new(Mutex::new(None));
+        let last_load_error = Arc::new(Mutex::new(None));
 
         let ready_clone = ready.clone();
+        let loaded_clone = loaded_path.clone();
+        let error_clone = last_load_error.clone();
         let handle = std::thread::Builder::new()
             .name("llm-worker".to_string())
-            .spawn(move || worker_loop(config, cmd_rx, evt_tx, ready_clone))
+            .spawn(move || {
+                worker_loop(
+                    config,
+                    cmd_rx,
+                    evt_tx,
+                    ready_clone,
+                    loaded_clone,
+                    error_clone,
+                )
+            })
             .map_err(|e| LlmError::BackendUnavailable(e.to_string()))?;
 
         Ok(Self {
@@ -81,12 +106,62 @@ impl LlmEngine {
             handle: Mutex::new(Some(handle)),
             ready,
             cancel,
+            loaded_path,
+            last_load_error,
         })
     }
 
     /// 模型是否已加载。
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Relaxed)
+    }
+
+    /// 当前实际加载的模型路径（`None` = 未加载）。
+    pub fn loaded_model_path(&self) -> Option<std::path::PathBuf> {
+        self.loaded_path.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 最近一次加载失败（带模型 identity），成功后清空。
+    pub fn last_load_error(&self) -> Option<LlmLoadError> {
+        self.last_load_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 阻塞等待加载完成（模型库切换事务用）。
+    ///
+    /// 入队 `Load` 后等待 worker 发出 `Status{ready:true}` 或 `Error`；`timeout` 只是
+    /// 错误检测的安全网——即使超时，调用方 drop 本引擎时 `Drop` 会 `join` worker，
+    /// 保证加载任务彻底结束、资源释放后才返回（见 `Drop` 注释）。
+    pub fn load_blocking(&self, timeout: std::time::Duration) -> Result<(), String> {
+        self.cmd_tx
+            .send(LlmCommand::Load)
+            .map_err(|_| "LLM worker 线程已退出".to_string())?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err("LLM 模型加载超时".to_string());
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let recv = self
+                .evt_rx
+                .lock()
+                .map_err(|_| "LLM 事件通道不可用".to_string())?
+                .recv_timeout(remaining);
+            match recv {
+                Ok(LlmEvent::Status { ready: true }) => return Ok(()),
+                Ok(LlmEvent::Status { ready: false }) => {
+                    return Err("LLM 模型加载失败".to_string());
+                }
+                Ok(LlmEvent::Error(e)) => return Err(e),
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("LLM 模型加载超时".to_string());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("LLM worker 线程已退出".to_string());
+                }
+            }
+        }
     }
 
     /// 加载模型（异步：结果经 [`LlmEvent::Status`]/[`LlmEvent::Error`] 返回）。
@@ -155,7 +230,10 @@ fn worker_loop(
     cmd_rx: Receiver<LlmCommand>,
     evt_tx: Sender<LlmEvent>,
     ready: Arc<AtomicBool>,
+    loaded_path: Arc<Mutex<Option<std::path::PathBuf>>>,
+    last_load_error: Arc<Mutex<Option<LlmLoadError>>>,
 ) {
+    let model_path = config.model_path.clone();
     let mut provider = match create_provider(config) {
         Ok(p) => p,
         Err(e) => {
@@ -170,15 +248,26 @@ fn worker_loop(
             LlmCommand::Load => match provider.load() {
                 Ok(()) => {
                     ready.store(true, Ordering::Relaxed);
+                    *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(model_path.clone());
+                    *last_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     let _ = evt_tx.send(LlmEvent::Status { ready: true });
                 }
                 Err(e) => {
+                    *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    *last_load_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(LlmLoadError {
+                            model_path: model_path.clone(),
+                            message: e.to_string(),
+                        });
                     let _ = evt_tx.send(LlmEvent::Error(e.to_string()));
                 }
             },
             LlmCommand::Unload => {
                 provider.unload();
                 ready.store(false, Ordering::Relaxed);
+                *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *last_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 let _ = evt_tx.send(LlmEvent::Status { ready: false });
             }
             LlmCommand::Generate {
@@ -209,4 +298,5 @@ fn worker_loop(
 
     provider.unload();
     ready.store(false, Ordering::Relaxed);
+    *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }

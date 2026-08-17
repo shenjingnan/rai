@@ -1,0 +1,1342 @@
+//! 模型库核心服务（core）。
+//!
+//! 分层（不依赖 Tauri runtime state）：
+//! - `registry`：RegistryModel 目录（这个模型是什么）
+//! - `Installation`：managed 安装目录（`.zapmomo-lib.json`）与 external 注册（settings）
+//! - `RuntimeSelection`：复用现有 `model_dir / model_path`（用户选择哪个）
+//! - `RuntimeActual`：由 Tauri 层持有的运行时状态，经 `enrich_runtime_status` 注入
+//!
+//! core 只负责：目录/安装/external 注册、路径解析与安全、settings 读写（带锁）、
+//! 模型完整性判断、`set_selected_model`/`restore_selected_model`、下载安装编排。
+//! 模型加载/引擎生命周期由各能力模块与 Tauri 层负责，本模块**不复制任何 runtime**。
+
+pub mod registry;
+pub mod sysinfo;
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+
+use crate::config::settings::{self, AppConfig, LocalModel, ModelLibrarySettings};
+use crate::kws::model::{DownloadProgress, ModelError, ProgressFn, has_required_files};
+use registry::{ModelType, RegistryModel};
+
+// ---------------------------------------------------------------------------
+// 枚举
+// ---------------------------------------------------------------------------
+
+/// 模型来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    Registry,
+    Local,
+}
+
+/// 文件所有权：由「来源行为」确定，不由路径位置猜测。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageOwnership {
+    /// ZapMomo 自己下载安装到 `~/.zapmomo/models`，拥有文件生命周期管理权
+    Managed,
+    /// 用户注册，ZapMomo 不拥有文件（移除时绝不删除原始文件）
+    External,
+}
+
+/// 安装状态（本地文件系统是最终事实来源）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallState {
+    NotInstalled,
+    Downloading,
+    Installed,
+    /// 路径存在但模型不完整 / 注册文件丢失 / GGUF 无效
+    Invalid,
+}
+
+/// 运行状态：区分「已选择但未运行」与「正在运行旧模型」与「已经是当前 runtime」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStatus {
+    /// 模型是 selection，但能力当前没有 runtime（正常，不是错误）
+    Inactive,
+    /// selected path == RuntimeActual path 且能力正在运行
+    Active,
+    /// LLM 正在切换到此 target（runtime 加载中）
+    Switching,
+    /// RuntimeActual = A、RuntimeSelection = B（下次 start 使用 B）
+    PendingRestart,
+    /// selection model == last_load_error.model_path 且 RuntimeActual = None
+    LoadFailed,
+}
+
+/// 一次「设为当前模型」最终发生了什么（set current 的返回值语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAction {
+    /// 只更新了 selection（runtime 未运行，下次加载/启动生效）
+    None,
+    /// 切换并成功 reload 到新模型
+    Reloaded,
+    /// KWS/ASR 正在监听：已更新 selection，需下次启动生效
+    RestartRequired,
+    /// LLM：B 加载失败，已恢复 A 且 A 重新加载成功
+    ReloadFailedRolledBack,
+    /// LLM：B 加载失败，恢复 A 后 A 也加载失败
+    ReloadFailedRollbackFailed,
+}
+
+// ---------------------------------------------------------------------------
+// 对外数据结构
+// ---------------------------------------------------------------------------
+
+/// `set_current_model` 的返回结果（camelCase 直供前端，UI 据此 Toast）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCurrentResult {
+    pub model_type: ModelType,
+    pub model_id: String,
+    pub path: String,
+    pub runtime_action: RuntimeAction,
+    pub effective_immediately: bool,
+    pub message: String,
+}
+
+/// 系统资源（独立命令，不阻塞模型列表）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemResources {
+    /// 字节
+    pub total_memory: u64,
+    /// 字节
+    pub available_memory: u64,
+    /// 字节（模型目录所在挂载点）
+    pub disk_total: u64,
+    /// 字节（模型目录所在挂载点）
+    pub disk_available: u64,
+    /// 0..=100，瞬时采样
+    pub cpu_usage: f32,
+}
+
+/// 模型库列表中的一条模型（camelCase 直供前端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryModel {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub model_type: ModelType,
+    pub runtime: String,
+    pub format: String,
+    pub description: String,
+    pub languages: Vec<String>,
+    pub tags: Vec<String>,
+    pub parameter_count: Option<String>,
+    pub quantization: Option<String>,
+    pub version: String,
+    pub size_bytes: Option<u64>,
+    pub homepage: Option<String>,
+    /// 是否有内置下载源（false = LLM 需导入 GGUF）
+    pub downloadable: bool,
+    pub source: ModelSource,
+    pub ownership: StorageOwnership,
+    pub install_state: InstallState,
+    /// 是否为该能力当前选择的模型（RuntimeSelection）
+    pub current: bool,
+    /// 运行状态（仅 current 模型有意义；非 current 恒 Inactive）
+    pub runtime_status: RuntimeStatus,
+    /// 已安装/已注册的本地路径
+    pub local_path: Option<String>,
+    pub installed_at: Option<String>,
+}
+
+/// 四个能力的当前 selection（复用现有 settings，不新增字段）。
+#[derive(Debug, Clone, Default)]
+pub struct Selections {
+    pub kws: Option<PathBuf>,
+    pub asr: Option<PathBuf>,
+    pub tts: Option<PathBuf>,
+    pub llm: Option<PathBuf>,
+}
+
+/// 供 `enrich_runtime_status` 注入的 RuntimeActual（来自 Tauri 层 runtime state）。
+pub struct RuntimeActuals<'a> {
+    pub kws: Option<&'a Path>,
+    pub asr: Option<&'a Path>,
+    pub llm: Option<&'a Path>,
+    pub llm_switching: bool,
+    pub llm_switch_target: Option<&'a Path>,
+    pub llm_load_error_path: Option<&'a Path>,
+}
+
+/// managed 安装元数据（`.zapmomo-lib.json`）。只记录安装信息，不含 current/enabled。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedMeta {
+    pub schema_version: u32,
+    pub registry_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub installed_at: Option<String>,
+    pub managed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Settings 读写（带锁，仅保护模型库自身操作）
+// ---------------------------------------------------------------------------
+
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+
+/// 带锁的 settings 更新：load → mutate → save。模型库自身的 RMW 操作互不覆盖。
+pub fn update_settings<F>(f: F) -> Result<(), String>
+where
+    F: FnOnce(&mut AppConfig),
+{
+    let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cfg = settings::load_settings()?.unwrap_or_default();
+    f(&mut cfg);
+    settings::save_settings(&cfg)
+}
+
+/// 读取所有 external 注册记录。
+pub fn get_local_models() -> Vec<LocalModel> {
+    settings::load_settings()
+        .ok()
+        .flatten()
+        .and_then(|s| s.model_library)
+        .map(|lib| lib.local_models)
+        .unwrap_or_default()
+}
+
+/// 新增/更新 external 注册；同一 `registry_id` 只保留一条绑定。
+pub fn add_local_model_record(m: LocalModel) -> Result<(), String> {
+    update_settings(|cfg| {
+        let lib = cfg
+            .model_library
+            .get_or_insert_with(ModelLibrarySettings::default);
+        if let Some(rid) = &m.registry_id {
+            lib.local_models
+                .retain(|x| x.registry_id.as_deref() != Some(rid.as_str()));
+        }
+        if let Some(existing) = lib.local_models.iter_mut().find(|x| x.id == m.id) {
+            *existing = m;
+        } else {
+            lib.local_models.push(m);
+        }
+    })
+}
+
+/// 移除 external 注册（不删任何用户文件）。
+pub fn remove_local_model_record(id: &str) -> Result<(), String> {
+    update_settings(|cfg| {
+        if let Some(lib) = cfg.model_library.as_mut() {
+            lib.local_models.retain(|x| x.id != id);
+        }
+    })
+}
+
+/// 若模型通过 external 注册存在（registry 绑定或 standalone），返回需移除的注册 id；
+/// managed 安装返回 `None`（命令层据此决定「移除注册」还是「删除文件」）。
+pub fn external_binding_to_remove(model_id: &str) -> Option<String> {
+    let locals = get_local_models();
+    if let Some(l) = locals
+        .iter()
+        .find(|l| l.registry_id.as_deref() == Some(model_id))
+    {
+        return Some(l.id.clone());
+    }
+    if locals.iter().any(|l| l.id == model_id) {
+        return Some(model_id.to_string());
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// 路径工具
+// ---------------------------------------------------------------------------
+
+/// 规范化路径：优先 canonicalize，失败回退 absolute（Windows 大小写不敏感）。
+pub fn normalize_path(p: &Path) -> PathBuf {
+    if let Ok(c) = p.canonicalize() {
+        c
+    } else {
+        std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+    }
+}
+
+/// 稳定路径比较（跨平台 / symlink / 相对路径）。
+pub fn paths_equal(a: &Path, b: &Path) -> bool {
+    let a = normalize_path(a);
+    let b = normalize_path(b);
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+fn local_model_id(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let key = if cfg!(windows) {
+        path.to_string_lossy().to_lowercase()
+    } else {
+        path.to_string_lossy().to_string()
+    };
+    let hash = hex::encode(Sha256::digest(key.as_bytes()));
+    format!("local-{}", &hash[..12])
+}
+
+fn unique_suffix() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+}
+
+// ---------------------------------------------------------------------------
+// 当前 selection
+// ---------------------------------------------------------------------------
+
+pub fn current_selections() -> Selections {
+    let s = settings::load_settings().ok().flatten();
+    Selections {
+        kws: s
+            .as_ref()
+            .and_then(|c| crate::kws::config::resolve(c.kws.as_ref(), None).ok())
+            .map(|c| c.model_dir),
+        asr: s
+            .as_ref()
+            .and_then(|c| crate::asr::config::resolve(c.asr.as_ref(), None).ok())
+            .map(|c| c.model_dir),
+        tts: s
+            .as_ref()
+            .and_then(|c| crate::tts::config::resolve(c.tts.as_ref(), None).ok())
+            .map(|c| c.model_dir),
+        llm: s
+            .as_ref()
+            .and_then(|c| crate::llm::config::resolve(c.llm.as_ref(), None).ok())
+            .map(|c| c.model_path),
+    }
+}
+
+/// 指定能力的当前 selection 路径。
+pub fn selection_path(mt: ModelType) -> Option<PathBuf> {
+    let s = current_selections();
+    match mt {
+        ModelType::Kws => s.kws,
+        ModelType::Asr => s.asr,
+        ModelType::Tts => s.tts,
+        ModelType::Llm => s.llm,
+    }
+}
+
+/// 路径是否为该能力当前 selection。
+pub fn is_path_current(mt: ModelType, path: &Path) -> bool {
+    selection_path(mt).is_some_and(|p| paths_equal(&p, path))
+}
+
+/// 设置当前模型（只写 `model_dir` / `model_path`，绝不写 enabled）。
+pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
+    let path_str = path.to_string_lossy().to_string();
+    update_settings(|cfg| match mt {
+        ModelType::Kws => {
+            cfg.kws.get_or_insert_with(Default::default).model_dir = Some(path_str);
+        }
+        ModelType::Asr => {
+            cfg.asr.get_or_insert_with(Default::default).model_dir = Some(path_str);
+        }
+        ModelType::Tts => {
+            cfg.tts.get_or_insert_with(Default::default).model_dir = Some(path_str);
+        }
+        ModelType::Llm => {
+            cfg.llm.get_or_insert_with(Default::default).model_path = Some(path_str);
+        }
+    })
+}
+
+/// 恢复之前的选择（回滚用）。`old` 为 `None` 表示恢复为「未配置」。
+pub fn restore_selected_model(mt: ModelType, old: Option<String>) -> Result<(), String> {
+    update_settings(|cfg| match mt {
+        ModelType::Kws => cfg.kws.get_or_insert_with(Default::default).model_dir = old,
+        ModelType::Asr => cfg.asr.get_or_insert_with(Default::default).model_dir = old,
+        ModelType::Tts => cfg.tts.get_or_insert_with(Default::default).model_dir = old,
+        ModelType::Llm => cfg.llm.get_or_insert_with(Default::default).model_path = old,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeStatus 纯函数（可单测，不依赖 runtime state）
+// ---------------------------------------------------------------------------
+
+pub fn runtime_status(
+    model_path: Option<&Path>,
+    actual: Option<&Path>,
+    capability_active: bool,
+    switching_for_this: bool,
+    load_failed_for_this: bool,
+) -> RuntimeStatus {
+    if switching_for_this {
+        return RuntimeStatus::Switching;
+    }
+    match actual {
+        Some(a) => {
+            let same = model_path.is_some_and(|m| paths_equal(m, a));
+            if same {
+                if capability_active {
+                    RuntimeStatus::Active
+                } else {
+                    RuntimeStatus::Inactive
+                }
+            } else if capability_active {
+                RuntimeStatus::PendingRestart
+            } else {
+                RuntimeStatus::Inactive
+            }
+        }
+        None => {
+            if load_failed_for_this {
+                RuntimeStatus::LoadFailed
+            } else {
+                RuntimeStatus::Inactive
+            }
+        }
+    }
+}
+
+/// 用 RuntimeActual 批量填充每个模型的 `runtime_status`（core 不依赖 Tauri state）。
+pub fn enrich_runtime_status(models: &mut [LibraryModel], a: &RuntimeActuals) {
+    for m in models.iter_mut() {
+        if !m.current {
+            m.runtime_status = RuntimeStatus::Inactive;
+            continue;
+        }
+        let mp = m.local_path.as_deref().map(Path::new);
+        let (actual, active) = match m.model_type {
+            ModelType::Kws => (a.kws, a.kws.is_some()),
+            ModelType::Asr => (a.asr, a.asr.is_some()),
+            ModelType::Llm => (a.llm, a.llm.is_some()),
+            ModelType::Tts => (None, false),
+        };
+        let switching = m.model_type == ModelType::Llm
+            && a.llm_switching
+            && mp.is_some_and(|p| a.llm_switch_target.is_some_and(|t| paths_equal(p, t)));
+        let load_failed = m.model_type == ModelType::Llm
+            && mp.is_some_and(|p| a.llm_load_error_path.is_some_and(|e| paths_equal(p, e)));
+        m.runtime_status = runtime_status(mp, actual, active, switching, load_failed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 列表构建
+// ---------------------------------------------------------------------------
+
+/// 构建模型库列表（含 registry 条目 + standalone external 条目）。
+pub fn list_models() -> Vec<LibraryModel> {
+    let sel = current_selections();
+    let locals = get_local_models();
+    let mut out = Vec::new();
+    for reg in registry::all_models() {
+        out.push(build_registry_model(reg, &sel, &locals));
+    }
+    for lm in locals.iter().filter(|l| l.registry_id.is_none()) {
+        out.push(build_local_model(lm, &sel));
+    }
+    out
+}
+
+fn build_registry_model(
+    reg: &RegistryModel,
+    sel: &Selections,
+    locals: &[LocalModel],
+) -> LibraryModel {
+    let root = crate::config::settings::get_models_dir();
+    if reg.is_llm() {
+        let binding = locals
+            .iter()
+            .find(|l| l.registry_id.as_deref() == Some(reg.id.as_str()));
+        let canonical = reg.file_name.as_ref().map(|f| root.join(&reg.name).join(f));
+        let (local_path, ownership, install_state) = if let Some(b) = binding {
+            let p = PathBuf::from(&b.path);
+            let state = if p.is_file() && crate::llm::local::llama::is_gguf_file(&p) {
+                InstallState::Installed
+            } else {
+                InstallState::Invalid
+            };
+            (Some(p), StorageOwnership::External, state)
+        } else if let Some(c) = &canonical {
+            if c.is_file() && crate::llm::local::llama::is_gguf_file(c) {
+                ensure_managed_meta(reg, c.parent().unwrap_or(&root));
+                (
+                    Some(c.clone()),
+                    StorageOwnership::Managed,
+                    InstallState::Installed,
+                )
+            } else if c.exists() || c.parent().is_some_and(|d| d.exists()) {
+                (
+                    Some(c.clone()),
+                    StorageOwnership::Managed,
+                    InstallState::Invalid,
+                )
+            } else {
+                (None, StorageOwnership::Managed, InstallState::NotInstalled)
+            }
+        } else {
+            (None, StorageOwnership::Managed, InstallState::NotInstalled)
+        };
+        let current = sel
+            .llm
+            .as_ref()
+            .is_some_and(|s| local_path.as_ref().is_some_and(|p| paths_equal(s, p)));
+        let installed_at = binding.as_ref().map(|b| b.added_at.clone()).or_else(|| {
+            local_path
+                .as_deref()
+                .and_then(|p| read_managed_installed_at(Path::new(p).parent().unwrap_or(&root)))
+        });
+        return LibraryModel {
+            id: reg.id.clone(),
+            name: reg.name.clone(),
+            display_name: reg.display_name.clone(),
+            model_type: reg.model_type,
+            runtime: reg.runtime.clone(),
+            format: reg.format.clone(),
+            description: reg.description.clone(),
+            languages: reg.languages.clone(),
+            tags: reg.tags.clone(),
+            parameter_count: reg.parameter_count.clone(),
+            quantization: reg.quantization.clone(),
+            version: reg.version.clone(),
+            size_bytes: reg.size_bytes,
+            homepage: reg.homepage.clone(),
+            downloadable: reg.download.is_some(),
+            source: ModelSource::Registry,
+            ownership,
+            install_state,
+            current,
+            runtime_status: RuntimeStatus::Inactive,
+            local_path: local_path.map(|p| p.display().to_string()),
+            installed_at,
+        };
+    }
+
+    // sherpa managed 模型
+    let dest = root.join(&reg.name);
+    let required: Vec<&str> = reg
+        .required_assets
+        .iter()
+        .flat_map(|r| registry::required_files_for_role(r).iter().copied())
+        .collect();
+    let install_state = if has_required_files(&dest, &required) {
+        ensure_managed_meta(reg, &dest);
+        InstallState::Installed
+    } else if dest.exists() {
+        InstallState::Invalid
+    } else {
+        InstallState::NotInstalled
+    };
+    let sel_path = match reg.model_type {
+        ModelType::Kws => sel.kws.as_ref(),
+        ModelType::Asr => sel.asr.as_ref(),
+        ModelType::Tts => sel.tts.as_ref(),
+        ModelType::Llm => sel.llm.as_ref(),
+    };
+    let current = sel_path.is_some_and(|s| paths_equal(s, &dest));
+    LibraryModel {
+        id: reg.id.clone(),
+        name: reg.name.clone(),
+        display_name: reg.display_name.clone(),
+        model_type: reg.model_type,
+        runtime: reg.runtime.clone(),
+        format: reg.format.clone(),
+        description: reg.description.clone(),
+        languages: reg.languages.clone(),
+        tags: reg.tags.clone(),
+        parameter_count: reg.parameter_count.clone(),
+        quantization: reg.quantization.clone(),
+        version: reg.version.clone(),
+        size_bytes: reg.size_bytes,
+        homepage: reg.homepage.clone(),
+        downloadable: reg.download.is_some(),
+        source: ModelSource::Registry,
+        ownership: StorageOwnership::Managed,
+        install_state,
+        current,
+        runtime_status: RuntimeStatus::Inactive,
+        local_path: if dest.exists() {
+            Some(dest.display().to_string())
+        } else {
+            None
+        },
+        installed_at: read_managed_installed_at(&dest),
+    }
+}
+
+fn build_local_model(lm: &LocalModel, sel: &Selections) -> LibraryModel {
+    let mt = ModelType::from_str_value(&lm.model_type).unwrap_or(ModelType::Llm);
+    let path = PathBuf::from(&lm.path);
+    let install_state = if !path.exists() {
+        InstallState::Invalid
+    } else {
+        match mt {
+            ModelType::Llm => {
+                if crate::llm::local::llama::is_gguf_file(&path) {
+                    InstallState::Installed
+                } else {
+                    InstallState::Invalid
+                }
+            }
+            ModelType::Kws => {
+                if crate::kws::model::is_installed(&path) {
+                    InstallState::Installed
+                } else {
+                    InstallState::Invalid
+                }
+            }
+            ModelType::Asr => {
+                if crate::asr::is_installed(&path) {
+                    InstallState::Installed
+                } else {
+                    InstallState::Invalid
+                }
+            }
+            ModelType::Tts => {
+                if crate::tts::is_installed(&path) {
+                    InstallState::Installed
+                } else {
+                    InstallState::Invalid
+                }
+            }
+        }
+    };
+    let sel_path = match mt {
+        ModelType::Kws => sel.kws.as_ref(),
+        ModelType::Asr => sel.asr.as_ref(),
+        ModelType::Tts => sel.tts.as_ref(),
+        ModelType::Llm => sel.llm.as_ref(),
+    };
+    let current = sel_path.is_some_and(|s| paths_equal(s, &path));
+    let (runtime, format) = if mt == ModelType::Llm {
+        ("llama.cpp".to_string(), "GGUF".to_string())
+    } else {
+        ("sherpa-onnx".to_string(), "ONNX".to_string())
+    };
+    LibraryModel {
+        id: lm.id.clone(),
+        name: lm.name.clone(),
+        display_name: lm.name.clone(),
+        model_type: mt,
+        runtime,
+        format,
+        description: "本地模型".to_string(),
+        languages: Vec::new(),
+        tags: Vec::new(),
+        parameter_count: None,
+        quantization: None,
+        version: String::new(),
+        size_bytes: None,
+        homepage: None,
+        downloadable: false,
+        source: ModelSource::Local,
+        ownership: StorageOwnership::External,
+        install_state,
+        current,
+        runtime_status: RuntimeStatus::Inactive,
+        local_path: Some(lm.path.clone()),
+        installed_at: Some(lm.added_at.clone()),
+    }
+}
+
+fn managed_meta_path(dir: &Path) -> PathBuf {
+    dir.join(".zapmomo-lib.json")
+}
+
+fn read_managed_installed_at(dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(managed_meta_path(dir)).ok()?;
+    let meta: ManagedMeta = serde_json::from_str(&content).ok()?;
+    meta.installed_at
+}
+
+/// legacy managed 识别：完整目录无 metadata 时 best-effort 补写，失败不影响 Installed。
+fn ensure_managed_meta(reg: &RegistryModel, dest: &Path) {
+    let meta_path = managed_meta_path(dest);
+    if meta_path.is_file() {
+        return;
+    }
+    let meta = ManagedMeta {
+        schema_version: 1,
+        registry_id: reg.id.clone(),
+        version: reg.version.clone(),
+        installed_at: None,
+        managed: true,
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&meta) {
+        let _ = std::fs::write(&meta_path, json);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 添加本地模型（external 注册）
+// ---------------------------------------------------------------------------
+
+/// 目录/文件自动识别：仅当唯一匹配时才返回类型（`.gguf` 文件 → LLM；目录按 required files）。
+fn detect_model_type(path: &Path) -> Option<ModelType> {
+    if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+        return Some(ModelType::Llm);
+    }
+    if !path.is_dir() {
+        return None;
+    }
+    let mut found = Vec::new();
+    if crate::kws::model::is_installed(path) {
+        found.push(ModelType::Kws);
+    }
+    if crate::asr::is_installed(path) {
+        found.push(ModelType::Asr);
+    }
+    if crate::tts::is_installed(path) {
+        found.push(ModelType::Tts);
+    }
+    if found.len() == 1 { found.pop() } else { None }
+}
+
+/// 注册本地模型。`registry_id` 来自 Registry 卡片的显式导入动作（不做 basename 推断）。
+pub fn add_local_model(
+    path: &Path,
+    model_type: Option<&str>,
+    registry_id: Option<&str>,
+) -> Result<LibraryModel, String> {
+    let reg = match registry_id {
+        Some(rid) => {
+            let m =
+                registry::model_by_id(rid).ok_or_else(|| format!("未知的 Registry 模型：{rid}"))?;
+            if let Some(t) = model_type
+                && m.model_type.as_str() != t
+            {
+                return Err("Registry 模型类型与所选类型不一致".to_string());
+            }
+            Some(m)
+        }
+        None => None,
+    };
+    let abs = std::path::absolute(path).map_err(|e| format!("无效路径：{e}"))?;
+    let abs = abs.canonicalize().unwrap_or(abs);
+
+    let mt = match &reg {
+        Some(r) => r.model_type,
+        None => {
+            if let Some(t) = model_type {
+                ModelType::from_str_value(t).ok_or_else(|| format!("无效的模型类型：{t}"))?
+            } else {
+                // 未指定类型：仅当能唯一识别时才自动推断，否则让用户选择
+                detect_model_type(&abs)
+                    .ok_or_else(|| "无法确定模型类型，请手动选择模型类型".to_string())?
+            }
+        }
+    };
+    match mt {
+        ModelType::Llm => {
+            if abs.is_dir() {
+                return Err("LLM 模型请选择具体的 .gguf 文件（而非目录）".to_string());
+            }
+            if !abs.is_file() {
+                return Err(format!("文件不存在：{}", abs.display()));
+            }
+            if !crate::llm::local::llama::is_gguf_file(&abs) {
+                return Err("不是有效的 GGUF 模型文件".to_string());
+            }
+        }
+        ModelType::Kws | ModelType::Asr | ModelType::Tts => {
+            if !abs.is_dir() {
+                return Err("该类型模型请选择模型目录".to_string());
+            }
+        }
+    }
+
+    let name = abs
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "本地模型".to_string());
+    let id = local_model_id(&abs);
+
+    // 唯一绑定：同一 registry_id 已绑定且在使用则拒绝（runtime/切换安全由 command 层把关）
+    if let Some(rid) = registry_id
+        && let Some(existing) = get_local_models()
+            .into_iter()
+            .find(|l| l.registry_id.as_deref() == Some(rid))
+        && is_path_current(mt, Path::new(&existing.path))
+    {
+        return Err("该模型已导入且当前被设为当前模型，请先切换到其他模型后再重新导入".to_string());
+    }
+
+    let record = LocalModel {
+        id,
+        name,
+        model_type: mt.as_str().to_string(),
+        path: abs.display().to_string(),
+        added_at: crate::datetime::iso_timestamp_now(),
+        registry_id: registry_id.map(str::to_string),
+    };
+    add_local_model_record(record.clone())?;
+
+    let sel = current_selections();
+    if let Some(rid) = registry_id {
+        // 返回绑定后的 registry 模型
+        let models = list_models();
+        models
+            .into_iter()
+            .find(|m| m.id == rid)
+            .ok_or_else(|| "注册成功但无法刷新模型".to_string())
+    } else {
+        Ok(build_local_model(&record, &sel))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 安装（managed，model-level staging）
+// ---------------------------------------------------------------------------
+
+/// managed 模型的标准安装目录。
+pub fn managed_install_dir(model: &RegistryModel) -> PathBuf {
+    crate::config::settings::get_models_dir().join(&model.name)
+}
+
+/// 删除前路径安全校验并删除（目标必须在 `~/.zapmomo/models` 内）。
+pub fn delete_managed_dir(dir: &Path) -> Result<(), String> {
+    let root = crate::config::settings::get_models_dir();
+    let real_root = root.canonicalize().unwrap_or(root);
+    let real = dir
+        .canonicalize()
+        .map_err(|e| format!("无法访问模型目录：{e}"))?;
+    if !real.starts_with(&real_root) {
+        return Err("拒绝删除：模型目录不在 ZapMomo 管理目录内".to_string());
+    }
+    if dir.is_dir() {
+        std::fs::remove_dir_all(dir)
+    } else {
+        std::fs::remove_file(dir)
+    }
+    .map_err(|e| format!("删除模型文件失败：{e}"))
+}
+
+/// 按目录删除（供 CLI/测试复用）。
+pub fn remove_dir_tree_checked(dir: &Path) -> Result<(), String> {
+    delete_managed_dir(dir)
+}
+
+/// 安装 managed 模型：全部 required assets → staging → 整体校验 → commit → 写 metadata。
+///
+/// 原子提交单位是整个模型；任何 required asset 失败/校验失败/取消都会删除 staging，
+/// 正式目录绝不出现半安装状态。optional assets（如 punctuation）在 commit 后 best-effort 安装。
+pub fn install_managed_model(
+    model: &RegistryModel,
+    on_progress: &mut ProgressFn,
+    cancel: Option<&AtomicBool>,
+) -> Result<PathBuf, ModelError> {
+    if model.download.is_none() {
+        return Err(ModelError::Download("该模型没有内置下载源".to_string()));
+    }
+    if cancelled(cancel) {
+        return Err(ModelError::Cancelled);
+    }
+
+    // 资产清单：required + optional（optional 计入总字节，保证总体进度 ≤ 100%）
+    let mut roles: Vec<&str> = model.required_assets.iter().map(String::as_str).collect();
+    roles.extend(model.optional_assets.iter().map(String::as_str));
+    let mut total_bytes: u64 = 0;
+    let mut assets: Vec<(
+        &'static crate::kws::model::ModelAsset,
+        &'static [&'static str],
+    )> = Vec::new();
+    for role in &roles {
+        let asset = crate::kws::model::asset_by_role(role)
+            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
+        total_bytes += asset.size_bytes;
+        assets.push((asset, registry::required_files_for_role(role)));
+    }
+
+    let final_dir = stage_and_commit(model, &assets, total_bytes, on_progress, cancel)?;
+
+    // optional assets best-effort（独立目录，失败仅 warn，不回滚主模型）
+    let mut progress = on_progress;
+    for role in &model.optional_assets {
+        let asset = match crate::kws::model::asset_by_role(role) {
+            Some(a) => a,
+            None => continue,
+        };
+        let dest = if role == "punctuation" {
+            crate::kws::model::punctuation_user_model_dir()
+        } else {
+            final_dir.clone()
+        };
+        let required = registry::required_files_for_role(role);
+        if let Err(e) = crate::kws::model::install_asset_to_cancellable(
+            asset,
+            &dest,
+            false,
+            &mut progress,
+            required,
+            cancel,
+        ) {
+            tracing::warn!("安装可选组件 {role} 失败（不影响主模型）: {e}");
+        }
+    }
+
+    Ok(final_dir)
+}
+
+/// staging + 整体校验 + commit 的可测试核心：给定具体资产（可注入本地测试服务器）。
+fn stage_and_commit<'a>(
+    model: &RegistryModel,
+    assets: &[(&'a crate::kws::model::ModelAsset, &'a [&'a str])],
+    total_bytes: u64,
+    on_progress: &mut ProgressFn,
+    cancel: Option<&AtomicBool>,
+) -> Result<PathBuf, ModelError> {
+    let root = crate::config::settings::get_models_dir();
+    let final_dir = root.join(&model.name);
+
+    let install_root = root.join(".install");
+    std::fs::create_dir_all(&install_root)?;
+    let staging = install_root.join(format!("{}-{}", model.id, unique_suffix()));
+    let staging_model = staging.join(&model.name);
+
+    let done_bytes = Arc::new(AtomicU64::new(0));
+    let mut progress = {
+        let done_bytes = done_bytes.clone();
+        let total = total_bytes;
+        move |p: DownloadProgress| {
+            let cur = done_bytes.load(Ordering::Relaxed) + p.bytes_downloaded;
+            let overall = if total > 0 {
+                ((cur as f64 / total as f64) * 100.0).min(100.0)
+            } else {
+                p.percent
+            };
+            on_progress(DownloadProgress {
+                stage: p.stage,
+                percent: overall,
+                bytes_downloaded: cur,
+                total_bytes: total,
+                message: p.message,
+            });
+        }
+    };
+
+    // 1. required assets 安装到 staging
+    let install_result = (|| -> Result<(), ModelError> {
+        for (asset, required) in assets {
+            if asset.is_raw() {
+                let dest = staging_model.join(&asset.archive);
+                crate::kws::model::install_raw_file_to_cancellable(
+                    asset,
+                    &dest,
+                    false,
+                    &mut progress,
+                    cancel,
+                )?;
+            } else {
+                crate::kws::model::install_asset_to_cancellable(
+                    asset,
+                    &staging_model,
+                    false,
+                    &mut progress,
+                    required,
+                    cancel,
+                )?;
+            }
+            done_bytes.fetch_add(asset.size_bytes, Ordering::Relaxed);
+        }
+        // 2. 整体完整性校验（staging）
+        let required_files: Vec<&str> = model
+            .required_assets
+            .iter()
+            .flat_map(|r| registry::required_files_for_role(r).iter().copied())
+            .collect();
+        if !has_required_files(&staging_model, &required_files) {
+            return Err(ModelError::Download("安装后完整性校验失败".to_string()));
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = install_result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    if cancelled(cancel) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(ModelError::Cancelled);
+    }
+
+    // 3. commit：staging_model → final_dir（path-safety 后移除旧 Invalid 目录）
+    if final_dir.exists() {
+        delete_managed_dir(&final_dir).map_err(|e| ModelError::Io(std::io::Error::other(e)))?;
+    }
+    std::fs::rename(&staging_model, &final_dir)?;
+    let _ = std::fs::remove_dir_all(&staging);
+
+    // 4. 写 managed 元数据
+    ensure_managed_meta(model, &final_dir);
+
+    Ok(final_dir)
+}
+
+// ---------------------------------------------------------------------------
+// 测试
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::run_with_temp_home;
+
+    #[test]
+    fn test_runtime_status_matrix() {
+        let a = Path::new("/models/A");
+        let b = Path::new("/models/B");
+        // KWS 正在监听 A、selected=A → Active（不 Pending）
+        assert_eq!(
+            runtime_status(Some(a), Some(a), true, false, false),
+            RuntimeStatus::Active
+        );
+        // selected=B, actual=A, running → PendingRestart
+        assert_eq!(
+            runtime_status(Some(b), Some(a), true, false, false),
+            RuntimeStatus::PendingRestart
+        );
+        // selected=B, actual=None → Inactive（不是 Pending）
+        assert_eq!(
+            runtime_status(Some(b), None, false, false, false),
+            RuntimeStatus::Inactive
+        );
+        // actual 同 selected 但 running=false → Inactive（异常态不显示 Active）
+        assert_eq!(
+            runtime_status(Some(a), Some(a), false, false, false),
+            RuntimeStatus::Inactive
+        );
+        // LLM selected=B, loaded=None + load_failed → LoadFailed
+        assert_eq!(
+            runtime_status(Some(b), None, false, false, true),
+            RuntimeStatus::LoadFailed
+        );
+        // Switching
+        assert_eq!(
+            runtime_status(Some(b), None, false, true, false),
+            RuntimeStatus::Switching
+        );
+    }
+
+    #[test]
+    fn test_current_selection_and_set_restore() {
+        run_with_temp_home(|_| {
+            // set/restore LLM selection
+            set_selected_model(ModelType::Llm, Path::new("/tmp/x.gguf")).unwrap();
+            let s = current_selections();
+            assert!(paths_equal(
+                s.llm.as_ref().unwrap(),
+                Path::new("/tmp/x.gguf")
+            ));
+            assert!(!s.llm.as_ref().unwrap().is_file(), "不应要求文件存在");
+
+            // 绝不写 enabled
+            restore_selected_model(ModelType::Llm, Some("/tmp/y.gguf".into())).unwrap();
+            let s2 = current_selections();
+            assert!(paths_equal(
+                s2.llm.as_ref().unwrap(),
+                Path::new("/tmp/y.gguf")
+            ));
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            // set/restore 不触碰 kws/tts enabled
+            assert!(cfg.kws.is_none());
+            assert!(cfg.tts.is_none());
+        });
+    }
+
+    #[test]
+    fn test_add_local_model_registry_binding() {
+        run_with_temp_home(|home| {
+            // 造一个合法的 GGUF（magic 头）
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gguf = dir.join("arbitrary-name.gguf");
+            std::fs::write(&gguf, b"GGUFxxxxx").unwrap();
+
+            // 从 Registry 卡片导入（registry_id 显式绑定，不依赖 basename）
+            let m = add_local_model(&gguf, Some("llm"), Some("qwen3-1.7b-q4-k-m")).unwrap();
+            assert_eq!(m.id, "qwen3-1.7b-q4-k-m");
+            assert_eq!(m.install_state, InstallState::Installed);
+            assert_eq!(m.ownership, StorageOwnership::External);
+            assert_eq!(m.source, ModelSource::Registry);
+            // registry 卡片 local_path 指向导入的文件
+            let records = get_local_models();
+            let rec = records
+                .iter()
+                .find(|l| l.registry_id.as_deref() == Some("qwen3-1.7b-q4-k-m"))
+                .expect("应存在绑定");
+            assert!(rec.path.ends_with("arbitrary-name.gguf"));
+            // 不产生 standalone 重复卡片
+            let models = list_models();
+            assert_eq!(
+                models
+                    .iter()
+                    .filter(|m| m.id == "qwen3-1.7b-q4-k-m")
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn test_add_local_model_generic_and_errors() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gguf = dir.join("random.gguf");
+            std::fs::write(&gguf, b"GGUFxxxxx").unwrap();
+
+            // 顶部添加本地模型：registry_id=None
+            let m = add_local_model(&gguf, Some("llm"), None).unwrap();
+            assert_eq!(m.source, ModelSource::Local);
+            assert_eq!(m.ownership, StorageOwnership::External);
+            assert!(m.id.starts_with("local-"));
+
+            // 同目录多个 GGUF：选目录 → Err（不能自动挑）
+            let err = add_local_model(&dir, Some("llm"), None).unwrap_err();
+            assert!(err.contains("具体的 .gguf 文件"), "err={err}");
+
+            // 未知 registry_id
+            let err = add_local_model(&gguf, Some("llm"), Some("nope")).unwrap_err();
+            assert!(err.contains("未知的 Registry 模型"));
+
+            // registry_id 类型不一致
+            let err = add_local_model(&gguf, Some("asr"), Some("qwen3-1.7b-q4-k-m")).unwrap_err();
+            assert!(err.contains("类型与所选类型不一致"));
+
+            // 非 GGUF
+            let txt = dir.join("plain.txt");
+            std::fs::write(&txt, b"hello").unwrap();
+            let err = add_local_model(&txt, Some("llm"), None).unwrap_err();
+            assert!(err.contains("不是有效的 GGUF"));
+        });
+    }
+
+    #[test]
+    fn test_external_remove_never_deletes_file() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gguf = dir.join("keepme.gguf");
+            std::fs::write(&gguf, b"GGUFxxxxx").unwrap();
+            let m = add_local_model(&gguf, Some("llm"), None).unwrap();
+            assert!(m.id.starts_with("local-"));
+            let id = m.id.clone();
+            remove_local_model_record(&id).unwrap();
+            // 原始文件仍在
+            assert!(gguf.is_file());
+            assert!(get_local_models().is_empty());
+        });
+    }
+
+    #[test]
+    fn test_duplicate_registry_binding_replaced() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.gguf");
+            let b = dir.join("b.gguf");
+            std::fs::write(&a, b"GGUFxxxxx").unwrap();
+            std::fs::write(&b, b"GGUFxxxxx").unwrap();
+            add_local_model(&a, Some("llm"), Some("qwen3-0.6b-q4-k-m")).unwrap();
+            // 第二次导入另一个 GGUF → 重新关联（旧绑定被替换）
+            add_local_model(&b, Some("llm"), Some("qwen3-0.6b-q4-k-m")).unwrap();
+            let records = get_local_models();
+            let bindings: Vec<_> = records
+                .iter()
+                .filter(|l| l.registry_id.as_deref() == Some("qwen3-0.6b-q4-k-m"))
+                .collect();
+            assert_eq!(bindings.len(), 1, "同一 registry_id 只允许一条绑定");
+            assert!(bindings[0].path.ends_with("b.gguf"));
+        });
+    }
+
+    #[test]
+    fn test_registry_linked_external_missing_shows_invalid() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gguf = dir.join("vanishing.gguf");
+            std::fs::write(&gguf, b"GGUFxxxxx").unwrap();
+            add_local_model(&gguf, Some("llm"), Some("qwen3-4b-instruct-2507-q4-k-m")).unwrap();
+            // 用户手动删除文件
+            std::fs::remove_file(&gguf).unwrap();
+            let models = list_models();
+            let m = models
+                .iter()
+                .find(|m| m.id == "qwen3-4b-instruct-2507-q4-k-m")
+                .unwrap();
+            assert_eq!(
+                m.install_state,
+                InstallState::Invalid,
+                "丢失文件必须 Invalid，不能退回需导入"
+            );
+            assert_eq!(m.ownership, StorageOwnership::External);
+        });
+    }
+
+    #[test]
+    fn test_delete_managed_dir_safety() {
+        run_with_temp_home(|home| {
+            let models = home.join(".zapmomo/models");
+            std::fs::create_dir_all(&models).unwrap();
+            let inside = models.join("some-model");
+            std::fs::create_dir_all(&inside).unwrap();
+            delete_managed_dir(&inside).unwrap();
+            assert!(!inside.exists());
+
+            // 目录外的路径被拒绝
+            let outside = home.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            let err = delete_managed_dir(&outside).unwrap_err();
+            assert!(err.contains("管理目录内"));
+        });
+    }
+
+    fn test_reg_model(name: &str, id: &str) -> RegistryModel {
+        RegistryModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            display_name: name.to_string(),
+            model_type: ModelType::Kws,
+            runtime: "sherpa-onnx".into(),
+            format: "ONNX".into(),
+            description: String::new(),
+            languages: Vec::new(),
+            tags: Vec::new(),
+            parameter_count: None,
+            quantization: None,
+            file_name: None,
+            version: "test".into(),
+            size_bytes: None,
+            homepage: None,
+            required_assets: vec!["wake-word".into()],
+            optional_assets: Vec::new(),
+            download: None,
+        }
+    }
+
+    /// staging 保证：任一 required asset 失败，正式模型目录不得出现半安装状态。
+    #[test]
+    fn test_install_staging_failure_leaves_no_partial() {
+        use crate::kws::model::tests::{mini_tarbz2, serve_many, sha256_hex};
+        use crate::kws::model::{KWS_REQUIRED_FILES, ModelAsset, is_installed};
+
+        run_with_temp_home(|_| {
+            let bytes = mini_tarbz2("test-kws-model");
+            let url = serve_many(bytes.clone());
+            let mk_asset = |sha: String, archive: &str| ModelAsset {
+                name: "test-kws-model".into(),
+                role: "wake-word".into(),
+                version: "test".into(),
+                kind: None,
+                archive: archive.into(),
+                source: url.clone(),
+                sha256: sha,
+                size_bytes: bytes.len() as u64,
+                license: "Apache-2.0".into(),
+            };
+
+            // 成功：完整安装 + 写 metadata
+            let good = mk_asset(sha256_hex(&bytes), "mini.tar.bz2");
+            let reg_ok = test_reg_model("test-kws-model", "kws-test-ok");
+            let dest = stage_and_commit(
+                &reg_ok,
+                &[(&good, &KWS_REQUIRED_FILES)],
+                good.size_bytes,
+                &mut |_| {},
+                None,
+            )
+            .unwrap();
+            assert!(is_installed(&dest));
+            assert!(dest.join(".zapmomo-lib.json").is_file());
+
+            // 失败：sha 不匹配 → 正式目录绝不能出现，staging 被清理
+            let bad = mk_asset("0".repeat(64), "mini.tar.bz2");
+            let reg_bad = test_reg_model("test-kws-model-bad", "kws-test-bad");
+            let err = stage_and_commit(
+                &reg_bad,
+                &[(&bad, &KWS_REQUIRED_FILES)],
+                bad.size_bytes,
+                &mut |_| {},
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(err, ModelError::Sha256Mismatch { .. }));
+            let final_bad = crate::config::settings::get_models_dir().join("test-kws-model-bad");
+            assert!(!final_bad.exists(), "失败不得留下正式目录");
+            let install_root = crate::config::settings::get_models_dir().join(".install");
+            let leftovers = std::fs::read_dir(&install_root)
+                .map(|it| it.filter_map(Result::ok).count())
+                .unwrap_or(0);
+            assert_eq!(leftovers, 0, "staging 应被清理干净");
+        });
+    }
+
+    /// legacy managed 识别：完整目录无 metadata → Installed；metadata 补写失败仍 Installed。
+    #[test]
+    fn test_legacy_managed_recognition_and_metadata_best_effort() {
+        run_with_temp_home(|home| {
+            // 用 KWS 资产字段摆一个「完整但无 metadata」的旧目录
+            use crate::kws::config::{
+                DEFAULT_DECODER, DEFAULT_ENCODER, DEFAULT_JOINER, DEFAULT_KEYWORDS_REL,
+                DEFAULT_TOKENS,
+            };
+            let models = home.join(".zapmomo/models");
+            let dest = models.join("sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20");
+            std::fs::create_dir_all(dest.join("test_wavs")).unwrap();
+            for f in [
+                DEFAULT_ENCODER,
+                DEFAULT_DECODER,
+                DEFAULT_JOINER,
+                DEFAULT_TOKENS,
+            ] {
+                std::fs::write(dest.join(f), b"x").unwrap();
+            }
+            std::fs::write(dest.join(DEFAULT_KEYWORDS_REL), b"k").unwrap();
+
+            let models_list = list_models();
+            let m = models_list
+                .iter()
+                .find(|m| m.id == "kws-zipformer-zh-en-3m")
+                .unwrap();
+            assert_eq!(
+                m.install_state,
+                InstallState::Installed,
+                "legacy 完整目录应识别为已安装"
+            );
+            // 补写 metadata 成功（best-effort）
+            assert!(dest.join(".zapmomo-lib.json").is_file());
+        });
+    }
+
+    /// current 判定可用于 external：设置为 current 后 `is_path_current` 为真。
+    #[test]
+    fn test_is_path_current_for_external() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models-local");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gguf = dir.join("current.gguf");
+            std::fs::write(&gguf, b"GGUFxxxxx").unwrap();
+            let m = add_local_model(&gguf, Some("llm"), None).unwrap();
+            set_selected_model(ModelType::Llm, Path::new(&m.local_path.unwrap())).unwrap();
+            assert!(is_path_current(ModelType::Llm, &gguf));
+            // 切换走后不再是 current（供 command 层「移除前需先切换」判定使用）
+            set_selected_model(ModelType::Llm, Path::new("/tmp/other.gguf")).unwrap();
+            assert!(!is_path_current(ModelType::Llm, &gguf));
+        });
+    }
+}

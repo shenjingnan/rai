@@ -152,10 +152,12 @@ pub enum ModelError {
     Extract(String),
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+    #[error("下载已取消")]
+    Cancelled,
 }
 
 /// KWS 模型安装完成所需的文件（相对目标目录）。
-const KWS_REQUIRED_FILES: [&str; 5] = [
+pub const KWS_REQUIRED_FILES: [&str; 5] = [
     DEFAULT_ENCODER,
     DEFAULT_DECODER,
     DEFAULT_JOINER,
@@ -209,6 +211,8 @@ pub fn install_punctuation_model_to(
 }
 
 /// 按指定资产安装（测试/多模型可复用）。`required_files` 用于幂等性判断。
+///
+/// 等价于 `install_asset_to_cancellable(..., None)`（不可取消）。
 pub fn install_asset_to(
     asset: &ModelAsset,
     dest_dir: &Path,
@@ -216,6 +220,24 @@ pub fn install_asset_to(
     on_progress: &mut ProgressFn,
     required_files: &[&str],
 ) -> Result<(), ModelError> {
+    install_asset_to_cancellable(asset, dest_dir, force, on_progress, required_files, None)
+}
+
+/// 可取消版本的 [`install_asset_to`]。
+///
+/// `cancel` 为 `Some(&AtomicBool)` 时，下载读循环每轮检查；命中即清理临时文件并返回
+/// [`ModelError::Cancelled`]。各阶段前也会再检查一次（下载/校验/解压/落位）。
+pub fn install_asset_to_cancellable(
+    asset: &ModelAsset,
+    dest_dir: &Path,
+    force: bool,
+    on_progress: &mut ProgressFn,
+    required_files: &[&str],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), ModelError> {
+    if cancelled(cancel) {
+        return Err(ModelError::Cancelled);
+    }
     let parent = dest_dir
         .parent()
         .ok_or_else(|| ModelError::Extract("目标目录缺少父目录".to_string()))?;
@@ -228,7 +250,17 @@ pub fn install_asset_to(
     std::fs::create_dir_all(parent)?;
     let tmp_archive = parent.join(format!(".{}.tmp", asset.archive));
 
-    download_to(&asset.source, &tmp_archive, asset.size_bytes, on_progress)?;
+    download_to(
+        &asset.source,
+        &tmp_archive,
+        asset.size_bytes,
+        on_progress,
+        cancel,
+    )?;
+    if cancelled(cancel) {
+        let _ = std::fs::remove_file(&tmp_archive);
+        return Err(ModelError::Cancelled);
+    }
 
     on_progress(progress(
         DownloadStage::Verifying,
@@ -255,6 +287,11 @@ pub fn install_asset_to(
     Ok(())
 }
 
+/// 取消标志是否已置位。
+fn cancelled(cancel: Option<&std::sync::atomic::AtomicBool>) -> bool {
+    cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// 安装「裸文件」资产（单文件，无解压）到 `dest_path`。
 ///
 /// 用于 TTS 声码器这类与主包分离发布的独立 .onnx 文件。流程：
@@ -265,6 +302,20 @@ pub fn install_raw_file_to(
     force: bool,
     on_progress: &mut ProgressFn,
 ) -> Result<(), ModelError> {
+    install_raw_file_to_cancellable(asset, dest_path, force, on_progress, None)
+}
+
+/// 可取消版本的 [`install_raw_file_to`]。
+pub fn install_raw_file_to_cancellable(
+    asset: &ModelAsset,
+    dest_path: &Path,
+    force: bool,
+    on_progress: &mut ProgressFn,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), ModelError> {
+    if cancelled(cancel) {
+        return Err(ModelError::Cancelled);
+    }
     let parent = dest_path
         .parent()
         .ok_or_else(|| ModelError::Extract("目标文件缺少父目录".to_string()))?;
@@ -282,7 +333,11 @@ pub fn install_raw_file_to(
     std::fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(".{}.tmp", asset.archive));
 
-    download_to(&asset.source, &tmp, asset.size_bytes, on_progress)?;
+    download_to(&asset.source, &tmp, asset.size_bytes, on_progress, cancel)?;
+    if cancelled(cancel) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ModelError::Cancelled);
+    }
 
     on_progress(progress(
         DownloadStage::Verifying,
@@ -323,20 +378,29 @@ fn progress(
 }
 
 /// 流式下载到临时文件，带进度回调；失败重试 3 次（退避等待）。
+///
+/// `cancel` 命中时立即返回 [`ModelError::Cancelled`]（不重试），并删除临时文件。
 fn download_to(
     url: &str,
     tmp_archive: &Path,
     manifest_total: u64,
     on_progress: &mut ProgressFn,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), ModelError> {
     let mut last_err: Option<ModelError> = None;
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(400 * (1 << attempt)));
         }
-        match try_download_once(url, tmp_archive, manifest_total, on_progress) {
+        match try_download_once(url, tmp_archive, manifest_total, on_progress, cancel) {
             Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                if matches!(e, ModelError::Cancelled) {
+                    let _ = std::fs::remove_file(tmp_archive);
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
         }
     }
     Err(last_err.map_or_else(
@@ -350,6 +414,7 @@ fn try_download_once(
     tmp_archive: &Path,
     manifest_total: u64,
     on_progress: &mut ProgressFn,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), ModelError> {
     let resp = ureq::get(url)
         .call()
@@ -364,6 +429,10 @@ fn try_download_once(
     let mut buf = [0u8; 64 * 1024];
     let mut done: u64 = 0;
     loop {
+        if cancelled(cancel) {
+            let _ = std::fs::remove_file(tmp_archive);
+            return Err(ModelError::Cancelled);
+        }
         let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
@@ -461,11 +530,11 @@ fn extract_and_place(tmp_archive: &Path, dest_dir: &Path) -> Result<(), ModelErr
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    fn mini_tarbz2(prefix: &str) -> Vec<u8> {
+    pub(crate) fn mini_tarbz2(prefix: &str) -> Vec<u8> {
         use bzip2::Compression;
         use bzip2::write::BzEncoder;
         let mut bz = BzEncoder::new(Vec::new(), Compression::default());
@@ -502,7 +571,7 @@ mod tests {
     }
 
     /// 起一个本地 HTTP 服务，每个连接都返回给定字节，返回请求 URL。
-    fn serve_many(bytes: Vec<u8>) -> String {
+    pub(crate) fn serve_many(bytes: Vec<u8>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let payload = std::sync::Arc::new(bytes);
@@ -539,7 +608,7 @@ mod tests {
         }
     }
 
-    fn sha256_hex(data: &[u8]) -> String {
+    pub(crate) fn sha256_hex(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         hex::encode(Sha256::digest(data))
     }
@@ -748,5 +817,128 @@ mod tests {
             install_asset_to(&asset, &dest, false, &mut |_| {}, &KWS_REQUIRED_FILES).unwrap_err();
         assert!(matches!(err, ModelError::Sha256Mismatch { .. }));
         assert!(!dest.exists());
+    }
+
+    /// 慢速分块下载服务器，便于在下载中途触发取消。
+    fn serve_slow(step_ms: u64, payload: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = std::sync::Arc::new(payload);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { break };
+                let payload = payload.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf);
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    );
+                    let _ = sock.write_all(head.as_bytes());
+                    let mut sent = 0usize;
+                    while sent < payload.len() {
+                        let end = (sent + 8192).min(payload.len());
+                        let _ = sock.write_all(&payload[sent..end]);
+                        sent = end;
+                        std::thread::sleep(std::time::Duration::from_millis(step_ms));
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/slow.tar.bz2")
+    }
+
+    #[test]
+    fn test_install_cancel_cleans_tmp_and_can_redo() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let payload = vec![0u8; 512 * 1024];
+        let url = serve_slow(15, payload);
+        let asset = asset_for(&url, &"0".repeat(64), "slow.tar.bz2");
+        let dest = dir.path().join("test-kws-model");
+        let parent = dest.parent().unwrap();
+        let tmp_path = parent.join(".slow.tar.bz2.tmp");
+
+        // 收到第一个中间进度后立即取消（确定性，避免时序竞态）
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let asset_for_thread = asset.clone();
+        let dest_for_thread = dest.clone();
+        let handle = std::thread::spawn(move || {
+            let mut stages = Vec::new();
+            let result = install_asset_to_cancellable(
+                &asset_for_thread,
+                &dest_for_thread,
+                false,
+                &mut |p| {
+                    if p.percent > 0.0 && p.percent < 100.0 {
+                        let _ = tx.send(p.percent);
+                    }
+                    stages.push(p.percent);
+                },
+                &KWS_REQUIRED_FILES,
+                Some(&cancel_clone),
+            );
+            (result, stages)
+        });
+
+        // 等到确实观察到中间进度后才取消
+        let _first = rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("慢速服务器应产生中间进度");
+        cancel.store(true, Ordering::Relaxed);
+        let (result, stages) = handle.join().unwrap();
+
+        assert!(matches!(result, Err(ModelError::Cancelled)));
+        // 确实观察到了中间进度
+        assert!(stages.iter().any(|&p| p > 0.0 && p < 100.0));
+        // 取消后临时文件与正式目录都被清理
+        assert!(!tmp_path.exists());
+        assert!(!dest.exists());
+
+        // 取消后重新下载（cancel 复位）能正常开始并完成
+        cancel.store(false, Ordering::Relaxed);
+        let bytes = mini_tarbz2("test-kws-model");
+        let url2 = serve_many(bytes.clone());
+        let asset2 = asset_for(&url2, &sha256_hex(&bytes), "mini.tar.bz2");
+        let mut stages2 = Vec::new();
+        install_asset_to_cancellable(
+            &asset2,
+            &dest,
+            false,
+            &mut |p| stages2.push(p.stage),
+            &KWS_REQUIRED_FILES,
+            Some(&cancel),
+        )
+        .unwrap();
+        assert!(is_installed(&dest));
+    }
+
+    /// 多资产总体进度聚合：各 asset 下载字节累计后总体百分比单调不减。
+    #[test]
+    fn test_aggregate_overall_percent_monotonic() {
+        // 与 install 聚合公式一致：overall = (累计已完成 + 当前 asset 字节) / 总字节
+        let total: u64 = 3000;
+        let mut done: u64 = 0;
+        let mut prev: f64 = -1.0;
+        let mut monotonic = true;
+        let mut last_overall: f64 = 0.0;
+        for size in [1000u64, 1000, 1000] {
+            for &step in &[0u64, 500, size] {
+                let cur = done + step;
+                let overall = ((cur as f64 / total as f64) * 100.0).min(100.0);
+                if overall < prev {
+                    monotonic = false;
+                }
+                prev = overall;
+                last_overall = overall;
+            }
+            done += size;
+        }
+        assert!(monotonic, "总体进度不能倒退");
+        assert!((last_overall - 100.0).abs() < 1e-9);
     }
 }

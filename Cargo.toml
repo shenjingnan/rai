@@ -69,7 +69,7 @@ ureq = "2"
 sha2 = "0.10"
 hex = "0.4"
 tar = { version = "0.4", default-features = false }
-bzip2 = "0.4"
+bzip2 = "0.6"
 
 # --- 可选依赖（按需取消注释） ---
 # url = "2"                                              # URL 解析

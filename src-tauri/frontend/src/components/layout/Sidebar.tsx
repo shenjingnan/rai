@@ -1,17 +1,24 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Home, Layers, MessageCircle, Minus, Settings, Square, Users, X } from "lucide-react";
-import { useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
-import { Live2dStage } from "@/components/live2d/Live2dStage";
-import { toAssetUrl } from "@/lib/tauri";
-import { useRuntime } from "@/providers/RuntimeContext";
+import {
+  Home,
+  Layers,
+  MessageCircle,
+  Minus,
+  Package,
+  Settings,
+  Square,
+  Users,
+  X,
+} from "lucide-react";
+import { useState } from "react";
 import { NavItem } from "./NavItem";
 
 const PRIMARY_NAV = [
   { to: "/home", icon: Home, label: "概览", end: true },
   { to: "/chat", icon: MessageCircle, label: "对话" },
   { to: "/companion", icon: Users, label: "伙伴" },
-  { to: "/models", icon: Layers, label: "模型" },
+  { to: "/models", icon: Layers, label: "模型", exclude: ["/models/library"] },
+  { to: "/models/library", icon: Package, label: "模型库", end: true },
   { to: "/settings", icon: Settings, label: "设置", end: true },
 ];
 
@@ -19,23 +26,9 @@ const PRIMARY_NAV = [
 const windowButtonClass =
   "flex h-full w-9 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
-/** 左侧导航：左上角窗口按钮 + 真实 logo + 主导航，底部展示监听状态。 */
+/** 左侧导航：左上角窗口按钮 + 真实 logo + 主导航。 */
 export function Sidebar() {
-  const { live2d } = useRuntime();
-  const location = useLocation();
   const [isMac] = useState(() => navigator.userAgent.includes("Macintosh"));
-
-  const { modelUrl } = live2d.model;
-  const { config } = live2d.config;
-
-  // 优先当前会话加载的模型，其次回退到持久化配置里的模型（与 Live2dCard 保持一致）。
-  const companionUrl = useMemo(() => {
-    if (modelUrl) return modelUrl;
-    if (config?.models_present && config.model_file) {
-      return toAssetUrl(config.model_file);
-    }
-    return null;
-  }, [modelUrl, config]);
 
   return (
     <aside
@@ -83,17 +76,16 @@ export function Sidebar() {
 
       <nav className="mt-5 flex flex-col gap-1.5 px-4">
         {PRIMARY_NAV.map((item) => (
-          <NavItem key={item.to} to={item.to} icon={item.icon} label={item.label} end={item.end} />
+          <NavItem
+            key={item.to}
+            to={item.to}
+            icon={item.icon}
+            label={item.label}
+            end={item.end}
+            exclude={item.exclude}
+          />
         ))}
       </nav>
-
-      <div className="mt-auto flex flex-col gap-3 px-4 pb-6">
-        {/* pixi-live2d-display 全局共享 WebGL context，同一窗口内两个 Live2D 画布会互相覆盖。
-            伙伴页已有 Live2dCard 大预览，故该页隐藏侧边栏小预览，避免两个模型并存。 */}
-        {companionUrl && !location.pathname.startsWith("/companion") && (
-          <Live2dStage modelUrl={companionUrl} width={128} height={160} className="self-center" />
-        )}
-      </div>
     </aside>
   );
 }

@@ -205,6 +205,8 @@ export interface LlmConfigInfo {
   model_path: string;
   models_present: boolean;
   ready: boolean;
+  /** RuntimeActual：当前真正加载的模型路径（None = 未加载） */
+  loaded_model_path: string | null;
   enable_thinking: boolean;
   auto_load: boolean;
   settings_path: string;

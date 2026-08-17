@@ -1,6 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  CatalogPage,
+  CatalogQuery,
+  DownloadArtifactRequest,
+  DownloadTaskView,
+  ModelCompatibility,
+  RemoteModelDetail,
+  RemoteModelFile,
+  UnifiedModelItem,
+} from "@/types/catalog";
+import type {
+  LibraryModel,
+  ModelLibraryProgress,
+  ModelType,
+  SetCurrentResult,
+  SystemResources,
+} from "@/types/modelLibrary";
+import type {
   AppInfo,
   AsrConfigInfo,
   AsrParamsPatch,
@@ -80,6 +97,45 @@ export const api = {
   setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
   setLlmParams: (args: { params: LlmParamsPatch }) => invoke<void>("set_llm_params", args),
   setLlmSystemPrompt: (args: { prompt: string }) => invoke<void>("set_llm_system_prompt", args),
+  // ---- 模型库 ----
+  listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
+  getSystemResources: () => invoke<SystemResources>("get_system_resources"),
+  downloadLibraryModel: (args: { id: string }) => invoke<void>("download_library_model", args),
+  cancelModelDownload: () => invoke<void>("cancel_model_download"),
+  setCurrentModel: (args: { id: string }) => invoke<SetCurrentResult>("set_current_model", args),
+  deleteModel: (args: { id: string }) => invoke<void>("delete_model", args),
+  removeLocalModel: (args: { id: string }) => invoke<void>("remove_local_model", args),
+  addLocalModel: (args: {
+    path: string;
+    modelType?: ModelType | null;
+    registryId?: string | null;
+  }) => invoke<LibraryModel>("add_local_model", args),
+  openModelDirectory: (args: { id: string }) => invoke<void>("open_model_directory", args),
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
+  // ---- 模型目录（Catalog）----
+  catalogSearchModels: (provider: string, query: CatalogQuery) =>
+    invoke<CatalogPage<UnifiedModelItem>>("catalog_search_models", { provider, query }),
+  catalogGetModelDetail: (provider: string, modelId: string, revision?: string | null) =>
+    invoke<RemoteModelDetail>("catalog_get_model_detail", { provider, modelId, revision }),
+  catalogGetModelFiles: (provider: string, modelId: string, revision?: string | null) =>
+    invoke<RemoteModelFile[]>("catalog_get_model_files", { provider, modelId, revision }),
+  catalogGetCompatibility: (provider: string, modelId: string, revision?: string | null) =>
+    invoke<ModelCompatibility>("catalog_get_compatibility", { provider, modelId, revision }),
+  catalogGetModelReadme: (provider: string, modelId: string, revision?: string | null) =>
+    invoke<string | null>("catalog_get_model_readme", { provider, modelId, revision }),
+  // ---- 下载队列 ----
+  downloadEnqueue: (request: DownloadArtifactRequest) =>
+    invoke<DownloadTaskView>("download_enqueue", { request }),
+  downloadCancel: (taskId: string) => invoke<void>("download_cancel", { taskId }),
+  downloadSnapshot: () => invoke<DownloadTaskView[]>("download_snapshot"),
+  // ---- 下载源 / token（设置页）----
+  catalogGetEndpoint: () =>
+    invoke<{ catalogBase: string; downloadSource: string; mirrorUrl: string }>(
+      "catalog_get_endpoint",
+    ),
+  catalogSetEndpoint: (args: { catalogBase: string; downloadSource: string; mirrorUrl: string }) =>
+    invoke<void>("catalog_set_endpoint", args),
+  catalogSetToken: (token: string | null) => invoke<void>("catalog_set_token", { token }),
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
@@ -146,6 +202,19 @@ export function onLive2dModelChanged(
 
 export function onCompanionScaleChanged(handler: (scale: number) => void): Promise<UnlistenFn> {
   return listen<number>("companion-scale-changed", (e) => handler(e.payload));
+}
+
+export function onModelLibraryDownloadProgress(
+  handler: (p: ModelLibraryProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ModelLibraryProgress>("model-library-download-progress", (e) => handler(e.payload));
+}
+
+/** 统一下载队列进度（`download-progress`；独立 taskId）。 */
+export function onCatalogDownloadProgress(
+  handler: (p: DownloadTaskView) => void,
+): Promise<UnlistenFn> {
+  return listen<DownloadTaskView>("download-progress", (e) => handler(e.payload));
 }
 
 export function onLlmToken(handler: (delta: LlmToken) => void): Promise<UnlistenFn> {

@@ -1,0 +1,596 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "kws-zipformer-zh-en-3m",
+      "name": "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+      "display_name": "Zipformer KWS zh-en 3M",
+      "model_type": "kws",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "流式唤醒词检测，中英混合，低延迟、轻量。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "wake-word",
+        "streaming",
+        "lightweight",
+        "high-accuracy"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2025-12-20",
+      "size_bytes": 32885699,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models",
+      "required_assets": [
+        "wake-word"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "wake-word",
+        "extra_roles": [],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-bilingual-zh-en",
+      "name": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+      "display_name": "Streaming Zipformer ASR zh-en",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "流式端到端识别，中英双语；标点模型为可选增强。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "multilingual"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-02-20",
+      "size_bytes": 511274346,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-small-bilingual-zh-en",
+      "name": "sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16",
+      "display_name": "Streaming Zipformer ASR zh-en (small)",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "与默认同源的紧凑版中英流式识别。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "multilingual",
+        "lightweight"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-02-16",
+      "size_bytes": 458187351,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-small-bilingual-zh-en"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-small-bilingual-zh-en",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-zh-14m",
+      "name": "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23",
+      "display_name": "Streaming Zipformer ASR zh 14M",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "纯中文流式识别，轻量、资源占用低。",
+      "languages": [
+        "zh"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "lightweight"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-02-23",
+      "size_bytes": 74004050,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-zh-14m"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-zh-14m",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-en-20m",
+      "name": "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+      "display_name": "Streaming Zipformer ASR en 20M",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "纯英文流式识别（LibriSpeech），轻量、低延迟。",
+      "languages": [
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "lightweight"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-02-17",
+      "size_bytes": 127887156,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-en-20m"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-en-20m",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-en-2023-06-21",
+      "name": "sherpa-onnx-streaming-zipformer-en-2023-06-21",
+      "display_name": "Streaming Zipformer ASR en 2023-06-21",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "纯英文流式识别，训练数据更广（LibriSpeech + GigaSpeech）。",
+      "languages": [
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "high-accuracy"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-06-21",
+      "size_bytes": 506956414,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-en-2023-06-21"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-en-2023-06-21",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-streaming-en-2023-02-21",
+      "name": "sherpa-onnx-streaming-zipformer-en-2023-02-21",
+      "display_name": "Streaming Zipformer ASR en 2023-02-21",
+      "model_type": "asr",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "纯英文流式识别（LibriSpeech），准确率与速度均衡。",
+      "languages": [
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "2023-02-21",
+      "size_bytes": 397939030,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-en-2023-02-21"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-en-2023-02-21",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "tts-zipvoice-distill-int8",
+      "name": "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia",
+      "display_name": "ZipVoice TTS zh-en",
+      "model_type": "tts",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "零样本声音克隆，中英双语；含 Vocos 声码器。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "tts",
+        "voice-clone",
+        "streaming"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "distill-int8",
+      "size_bytes": 163320194,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models",
+      "required_assets": [
+        "tts",
+        "tts-vocoder"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "tts",
+        "extra_roles": [
+          "tts-vocoder"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "qwen3-0.6b-q4-k-m",
+      "name": "Qwen3-0.6B",
+      "display_name": "Qwen3 0.6B Instruct Q4_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "轻量级本地模型，资源占用低，适合入门设备。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "lightweight",
+        "thinking"
+      ],
+      "parameter_count": "0.6B",
+      "quantization": "Q4_K_M",
+      "file_name": "Qwen3-0.6B-Q4_K_M.gguf",
+      "version": "instruct",
+      "size_bytes": 396705472,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF",
+      "required_assets": [
+        "llm-qwen3-0.6b-q4-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-0.6b-q4-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-1.7b-q4-k-m",
+      "name": "Qwen3-1.7B",
+      "display_name": "Qwen3 1.7B Instruct Q4_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "平衡性能与资源占用的本地模型，支持思考模式。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking"
+      ],
+      "parameter_count": "1.7B",
+      "quantization": "Q4_K_M",
+      "file_name": "Qwen3-1.7B-Q4_K_M.gguf",
+      "version": "instruct",
+      "size_bytes": 1107409472,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF",
+      "required_assets": [
+        "llm-qwen3-1.7b-q4-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-1.7b-q4-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-4b-instruct-2507-q4-k-m",
+      "name": "Qwen3-4B-Instruct-2507",
+      "display_name": "Qwen3 4B Instruct 2507 Q4_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "项目默认推荐模型，Q4_K_M 量化，智能与速度均衡。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking",
+        "high-accuracy"
+      ],
+      "parameter_count": "4B",
+      "quantization": "Q4_K_M",
+      "file_name": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "version": "2507",
+      "size_bytes": 2497281120,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "required_assets": [
+        "llm-qwen3-4b-instruct-2507-q4-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-4b-instruct-2507-q4-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-0.6b-q8-0",
+      "name": "Qwen3-0.6B",
+      "display_name": "Qwen3 0.6B Instruct Q8_0",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "入门级高精度量化，比 Q4 更准，资源占用仍低。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "lightweight",
+        "high-accuracy"
+      ],
+      "parameter_count": "0.6B",
+      "quantization": "Q8_0",
+      "file_name": "Qwen3-0.6B-Q8_0.gguf",
+      "version": "instruct",
+      "size_bytes": 639447744,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF",
+      "required_assets": [
+        "llm-qwen3-0.6b-q8-0"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-0.6b-q8-0",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-1.7b-q5-k-m",
+      "name": "Qwen3-1.7B",
+      "display_name": "Qwen3 1.7B Instruct Q5_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "均衡升级：比 Q4 更准，体积适中。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking"
+      ],
+      "parameter_count": "1.7B",
+      "quantization": "Q5_K_M",
+      "file_name": "Qwen3-1.7B-Q5_K_M.gguf",
+      "version": "instruct",
+      "size_bytes": 1257880128,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF",
+      "required_assets": [
+        "llm-qwen3-1.7b-q5-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-1.7b-q5-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-1.7b-q8-0",
+      "name": "Qwen3-1.7B",
+      "display_name": "Qwen3 1.7B Instruct Q8_0",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "1.7B 高精度量化，接近全精度效果。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking",
+        "high-accuracy"
+      ],
+      "parameter_count": "1.7B",
+      "quantization": "Q8_0",
+      "file_name": "Qwen3-1.7B-Q8_0.gguf",
+      "version": "instruct",
+      "size_bytes": 1834426944,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF",
+      "required_assets": [
+        "llm-qwen3-1.7b-q8-0"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-1.7b-q8-0",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-4b-instruct-2507-q5-k-m",
+      "name": "Qwen3-4B-Instruct-2507",
+      "display_name": "Qwen3 4B Instruct 2507 Q5_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "默认 4B 模型的高精度版，智能与速度更均衡。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking",
+        "high-accuracy"
+      ],
+      "parameter_count": "4B",
+      "quantization": "Q5_K_M",
+      "file_name": "Qwen3-4B-Instruct-2507-Q5_K_M.gguf",
+      "version": "2507",
+      "size_bytes": 2889514080,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "required_assets": [
+        "llm-qwen3-4b-instruct-2507-q5-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-4b-instruct-2507-q5-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "qwen3-8b-q4-k-m",
+      "name": "Qwen3-8B",
+      "display_name": "Qwen3 8B Instruct Q4_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "更大的本地模型，能力更强；需要较强硬件（约 5GB）。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "qwen3",
+        "chat",
+        "thinking",
+        "high-accuracy"
+      ],
+      "parameter_count": "8B",
+      "quantization": "Q4_K_M",
+      "file_name": "Qwen3-8B-Q4_K_M.gguf",
+      "version": "instruct",
+      "size_bytes": 5027784512,
+      "homepage": "https://huggingface.co/unsloth/Qwen3-8B-GGUF",
+      "required_assets": [
+        "llm-qwen3-8b-q4-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-qwen3-8b-q4-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    },
+    {
+      "id": "llama-3.2-1b-instruct-q4-k-m",
+      "name": "Llama-3.2-1B-Instruct",
+      "display_name": "Llama 3.2 1B Instruct Q4_K_M",
+      "model_type": "llm",
+      "runtime": "llama.cpp",
+      "format": "GGUF",
+      "description": "非 Qwen 系列英文小模型，轻量、适合英文对话。",
+      "languages": [
+        "en"
+      ],
+      "tags": [
+        "llm",
+        "llama",
+        "chat",
+        "lightweight"
+      ],
+      "parameter_count": "1B",
+      "quantization": "Q4_K_M",
+      "file_name": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "version": "instruct",
+      "size_bytes": 807694368,
+      "homepage": "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF",
+      "required_assets": [
+        "llm-llama-3.2-1b-instruct-q4-k-m"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "llm-llama-3.2-1b-instruct-q4-k-m",
+        "extra_roles": [],
+        "kind": "raw"
+      }
+    }
+  ]
+}

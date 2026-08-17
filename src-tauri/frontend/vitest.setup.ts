@@ -43,3 +43,20 @@ if (
 if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
   Element.prototype.scrollIntoView = () => {};
 }
+
+// 模型列表无限滚动依赖 IntersectionObserver，jsdom 未实现，补空实现（测试不实际滚动）。
+if (typeof window !== "undefined" && typeof window.IntersectionObserver === "undefined") {
+  class IntersectionObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+    root = null;
+    rootMargin = "";
+    thresholds = [];
+  }
+  (window as unknown as { IntersectionObserver: unknown }).IntersectionObserver =
+    IntersectionObserverStub as unknown as typeof IntersectionObserver;
+}

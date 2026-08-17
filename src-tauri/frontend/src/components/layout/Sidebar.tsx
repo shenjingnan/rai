@@ -78,7 +78,7 @@ export function Sidebar() {
       </div>
 
       <div className="flex items-center justify-center px-6 pt-1">
-        <img src="/logo.svg" alt="ZapMomo" className="h-20 w-20" />
+        <img src="/logo.svg" alt="ZapMomo" className="h-24 w-24" />
       </div>
 
       <nav className="mt-5 flex flex-col gap-1.5 px-4">

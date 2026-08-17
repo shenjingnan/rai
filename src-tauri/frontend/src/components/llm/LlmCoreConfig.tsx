@@ -122,7 +122,12 @@ export function LlmCoreConfig({ pick, pickError }: LlmCoreConfigProps) {
           <FolderOpen className="h-4 w-4" />
           选择模型
         </Button>
-        <Button variant="secondary" disabled={testDisabled} onClick={() => setTestOpen(true)}>
+        <Button
+          variant="secondary"
+          className="shadow-none"
+          disabled={testDisabled}
+          onClick={() => setTestOpen(true)}
+        >
           <MessageSquare className="h-4 w-4" />
           测试模型
         </Button>

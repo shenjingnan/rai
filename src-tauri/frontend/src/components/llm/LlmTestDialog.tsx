@@ -132,12 +132,16 @@ export function LlmTestDialog({ open, onClose }: LlmTestDialogProps) {
           />
 
           <div className="flex items-center justify-end gap-2">
-            <Button onClick={handleSend} disabled={!llm.ready || llm.generating || !text.trim()}>
+            <Button
+              className="shadow-none"
+              onClick={handleSend}
+              disabled={!llm.ready || llm.generating || !text.trim()}
+            >
               <Send className="h-4 w-4" />
               发送
             </Button>
             {llm.generating && (
-              <Button variant="destructive" onClick={() => void llm.stop()}>
+              <Button variant="destructive" className="shadow-none" onClick={() => void llm.stop()}>
                 <Square className="h-4 w-4" />
                 停止
               </Button>

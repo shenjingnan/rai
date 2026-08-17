@@ -26,6 +26,7 @@ use zapmomo::config::settings::{
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
 use zapmomo::llm::{LlmEngine, LlmEvent};
+use zapmomo::tts::config::TtsParamsPatch;
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
 // 使其表现为纯桌面摆件（参考 BongoCat 的 `tauri-nspanel` 方案）。
@@ -651,6 +652,12 @@ struct TtsConfigInfo {
     models_present: bool,
     model_downloading: bool,
     settings_path: String,
+    /// 扩散解码步数（质量/速度权衡），可经 `set_tts_params` 修改
+    num_steps: i32,
+    /// 默认语速，可经 `set_tts_params` 修改
+    speed: f32,
+    /// 调试输出，可经 `set_tts_params` 修改
+    debug: bool,
 }
 
 /// 合成结果事件载荷（推给前端播放）。
@@ -687,6 +694,9 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
         settings_path: zapmomo::config::settings::get_settings_path()
             .display()
             .to_string(),
+        num_steps: cfg.num_steps,
+        speed: cfg.speed,
+        debug: cfg.debug,
     })
 }
 
@@ -735,13 +745,45 @@ fn synthesize_inner(
     Ok(())
 }
 
-/// 列出模型包内置的参考音色。
+/// 列出可用参考音色：模型包内置 + 用户自定义音色库。
 #[tauri::command]
 fn list_tts_voices() -> Result<Vec<zapmomo::tts::TtsVoice>, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
-    Ok(zapmomo::tts::voice::list_builtin_voices(&cfg.model_dir))
+    let mut voices = zapmomo::tts::voice::list_builtin_voices(&cfg.model_dir);
+    voices.extend(zapmomo::tts::voice_store::list_custom_voices());
+    Ok(voices)
+}
+
+/// 保存一个自定义音色：把源 wav 拷贝到音色库并登记（命名 + 参考转写文本）。
+#[tauri::command]
+fn save_tts_voice(
+    name: String,
+    source_wav_path: String,
+    reference_text: String,
+) -> Result<zapmomo::tts::TtsVoice, String> {
+    zapmomo::tts::voice_store::save_voice(
+        &name,
+        std::path::Path::new(&source_wav_path),
+        &reference_text,
+    )
+}
+
+/// 删除一个自定义音色（清单 + wav 文件）。
+#[tauri::command]
+fn delete_tts_voice(id: String) -> Result<(), String> {
+    zapmomo::tts::voice_store::delete_voice(&id)
+}
+
+/// 录制 N 秒麦克风并保存为 16k wav，返回 wav 路径（供后续保存为音色）。
+#[tauri::command]
+async fn record_tts_voice(seconds: u32, device: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        zapmomo::audio::record_voice(seconds, device.as_deref()).map(|p| p.display().to_string())
+    })
+    .await
+    .map_err(|e| format!("录音任务异常: {e}"))?
 }
 
 /// 用 ASR 离线转写参考音频，返回带标点的转写文本（供自定义音色自动填充）。
@@ -1152,6 +1194,19 @@ fn set_tts_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 批量持久化 TTS 合成参数（扩散步数/默认语速/线程/调试），写入 `[tts]`。
+///
+/// 载荷为 `{ params: { num_steps, speed, ... } }`（snake_case 直传）；
+/// `None` 字段保持原有配置不变。值先整体校验、再写入，出错时不部分修改。
+/// 引擎在每次合成时新建，因此保存后下一次合成即生效，无需重启。
+#[tauri::command]
+fn set_tts_params(params: TtsParamsPatch) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let tts = settings.tts.get_or_insert_with(TtsSettings::default);
+    params.apply_to(tts)?;
+    settings::save_settings(&settings)
+}
+
 /// 持久化「启用 KWS」开关，写入 `[kws].enabled`（缺省 false）。
 /// 开关只持久化偏好；立即开始/停止监听由前端调用 `start_listen` / `stop_listen`，
 /// 下次启动自动监听由 `.setup()` 判断 `[kws].enabled` 触发。
@@ -1525,6 +1580,9 @@ pub fn run() {
             download_asr_model,
             get_tts_config,
             list_tts_voices,
+            save_tts_voice,
+            delete_tts_voice,
+            record_tts_voice,
             transcribe_reference_audio,
             synthesize_tts,
             stop_tts,
@@ -1542,6 +1600,7 @@ pub fn run() {
             set_llm_params,
             set_llm_system_prompt,
             set_tts_enabled,
+            set_tts_params,
             get_live2d_config,
             set_live2d_model,
             save_companion_position,

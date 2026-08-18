@@ -65,7 +65,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
 # 模型下载安装（HTTP + sha256 校验 + tar.bz2 解压）
-ureq = "2"
+ureq = "3"
 sha2 = "0.10"
 hex = "0.4"
 tar = { version = "0.4", default-features = false }

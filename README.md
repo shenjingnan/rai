@@ -445,4 +445,4 @@ window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 
 ## 许可
 
-[Apache-2.0](LICENSE)
+[GPL-3.0](LICENSE)

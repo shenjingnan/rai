@@ -93,6 +93,9 @@ pub struct AppConfig {
     /// 本地 LLM 配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmSettings>,
+    /// 语音会话（KWS→ASR→LLM→TTS 全链路）配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceSettings>,
     /// 模型库配置（用户通过「添加本地模型」注册的 external 模型等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_library: Option<ModelLibrarySettings>,
@@ -430,6 +433,34 @@ pub struct LlmSettings {
     pub model: Option<String>,
 }
 
+/// 语音会话配置（`voice run` 的会话级参数）。
+///
+/// 全部字段可缺省：未配置的项回退到 `voice::config` 的内置默认值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct VoiceSettings {
+    /// 会话唤醒词（原始字符串，多个用 / 分隔），缺省 None = KWS 模型内置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<String>,
+    /// TTS 音色 id（如 leijun-1 / news-female / 自定义音色 id），缺省 None = 配置默认
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    /// TTS 语速，缺省 1.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
+    /// 最多对话轮数，缺省 None = 无限（Ctrl-C 退出）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// 传给 LLM 的历史消息条数上限，缺省 12
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_max: Option<usize>,
+    /// 播报/思考中唤醒词打断，缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barge_in: Option<bool>,
+    /// 打断用 KWS 触发阈值（高于监听阈值，缓解回声误触发），缺省 0.5
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barge_in_threshold: Option<f32>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -447,6 +478,7 @@ impl Default for AppConfig {
             tts: None,
             live2d: None,
             llm: None,
+            voice: None,
             model_library: None,
         }
     }
@@ -628,6 +660,7 @@ mod tests {
             tts: None,
             live2d: None,
             llm: None,
+            voice: None,
             model_library: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
@@ -870,6 +903,7 @@ mod tests {
                     ..Default::default()
                 }),
                 llm: None,
+                voice: None,
                 model_library: None,
             };
             save_settings(&config).unwrap();

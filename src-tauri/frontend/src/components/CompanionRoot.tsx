@@ -93,7 +93,8 @@ export function CompanionRoot() {
 
   useEffect(() => {
     const unlisten = onLive2dModelChanged((info) => {
-      setModelUrl(toAssetUrl(info.model_file));
+      // 空 model_file = 清屏（active 伙伴被移除等场景）。
+      setModelUrl(info.model_file ? toAssetUrl(info.model_file) : null);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -172,6 +173,7 @@ export function CompanionRoot() {
   return (
     <div
       ref={containerRef}
+      role="application"
       className="h-screen w-screen select-none overflow-hidden bg-transparent"
       onMouseDown={(e) => {
         if (e.button !== 0) return;

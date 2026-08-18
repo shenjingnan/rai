@@ -2,6 +2,7 @@
 pub mod asr;
 pub mod audio;
 pub mod cli;
+pub mod companion;
 pub mod config;
 pub mod datetime;
 pub mod kws;

@@ -1,21 +1,10 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  Home,
-  Layers,
-  MessageCircle,
-  Minus,
-  Package,
-  Settings,
-  Square,
-  Users,
-  X,
-} from "lucide-react";
+import { Home, Layers, Minus, Package, Settings, Square, Users, X } from "lucide-react";
 import { useState } from "react";
 import { NavItem } from "./NavItem";
 
 const PRIMARY_NAV = [
   { to: "/home", icon: Home, label: "概览", end: true },
-  { to: "/chat", icon: MessageCircle, label: "对话" },
   { to: "/companion", icon: Users, label: "伙伴" },
   { to: "/models", icon: Layers, label: "模型", exclude: ["/models/library"] },
   { to: "/models/library", icon: Package, label: "模型库", end: true },

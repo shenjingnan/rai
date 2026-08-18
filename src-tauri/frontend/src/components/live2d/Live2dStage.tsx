@@ -13,6 +13,8 @@ interface Live2dStageProps {
   width: number;
   height: number;
   className?: string;
+  /** 模型在画布内的等比缩放（<1 缩小、>1 放大，默认 1 = 完整 contain 填充）。 */
+  modelScale?: number;
   /** 渲染初始化或模型加载失败时的回调。 */
   onError?: (error: Error) => void;
   /** 模型加载完成、可计算角色真实边界时回调（供上层自适应窗口尺寸）。 */
@@ -60,14 +62,15 @@ function computeModelBounds(model: Live2DModel): ModelBounds {
 
 /**
  * 让角色真实包围盒在画布内 contain 撑满并居中（而非基于画布尺寸）。
+ * `modelScale` 额外乘一个等比系数（<1 缩小），用于概览等场景让模型小一圈。
  * 若包围盒非法（空 drawable 等），跳过布局，保持模型默认状态。
  */
-function layoutModel(model: Live2DModel, width: number, height: number) {
+function layoutModel(model: Live2DModel, width: number, height: number, modelScale = 1) {
   const b = computeModelBounds(model);
   if (!Number.isFinite(b.width) || !Number.isFinite(b.height) || b.width <= 0 || b.height <= 0) {
     return;
   }
-  const scale = Math.min(width / b.width, height / b.height);
+  const scale = Math.min(width / b.width, height / b.height) * modelScale;
   model.scale.set(scale);
   model.anchor.set(0, 0);
   model.position.set(width / 2 - b.cx * scale, height / 2 - b.cy * scale);
@@ -84,6 +87,7 @@ export function Live2dStage({
   width,
   height,
   className,
+  modelScale = 1,
   onError,
   onModelMetrics,
   onModelReady,
@@ -101,6 +105,9 @@ export function Live2dStage({
   onModelReadyRef.current = onModelReady;
   const sizeRef = useRef({ width, height });
   sizeRef.current = { width, height };
+  // 模型加载 effect 用 ref 读缩放，避免 scale 变化触发销毁重载；布局由 resize effect 在 deps 里重算。
+  const modelScaleRef = useRef(modelScale);
+  modelScaleRef.current = modelScale;
 
   // 创建 / 销毁 PIXI 应用（仅随组件挂载/卸载，不随尺寸变化）。
   useEffect(() => {
@@ -142,9 +149,9 @@ export function Live2dStage({
     if (!app) return;
     app.renderer.resize(width, height);
     if (modelRef.current) {
-      layoutModel(modelRef.current, width, height);
+      layoutModel(modelRef.current, width, height, modelScale);
     }
-  }, [width, height]);
+  }, [width, height, modelScale]);
 
   // 加载 / 切换模型（不依赖尺寸，尺寸变化不会重载模型）。
   useEffect(() => {
@@ -171,7 +178,7 @@ export function Live2dStage({
         }
         app.stage.addChild(model);
         modelRef.current = model;
-        layoutModel(model, sizeRef.current.width, sizeRef.current.height);
+        layoutModel(model, sizeRef.current.width, sizeRef.current.height, modelScaleRef.current);
         const bounds = computeModelBounds(model);
         const valid =
           Number.isFinite(bounds.width) &&

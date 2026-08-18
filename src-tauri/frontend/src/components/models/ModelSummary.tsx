@@ -10,6 +10,11 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  deriveListenerStatus,
+  type ListenerKind,
+  type ListenerStatus,
+} from "@/components/models/capabilityStatus";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
@@ -26,6 +31,24 @@ const STATUS_COLOR: Record<StatusTone, string> = {
   loading: "text-blue-600",
   error: "text-red-600",
 };
+
+/** KWS/ASR 语义 kind → 本页文案（主动态「监听中/识别中」由调用方按能力指定）。 */
+const LISTENER_TEXT: Record<ListenerKind, string> = {
+  error: "错误",
+  starting: "启动中",
+  listening: "",
+  ready: "已就绪",
+  disabled: "未启用",
+  not_configured: "未配置模型",
+};
+
+/** 把共享推导结果映射为本页的行状态（listening 用 activeLabel 区分 KWS/ASR）。 */
+function listenerRow(st: ListenerStatus, activeLabel: string): { text: string; tone: StatusTone } {
+  return {
+    text: st.kind === "listening" ? activeLabel : LISTENER_TEXT[st.kind],
+    tone: st.tone,
+  };
+}
 
 interface SummaryRowData {
   accent: string;
@@ -124,6 +147,27 @@ export function ModelSummary() {
   const ttsConfigured = tts.config?.models_present ?? false;
   const ttsEnabled = tts.config?.enabled ?? true;
 
+  // KWS/ASR 行状态：共享推导读取持久化 enabled（启用→已就绪，关闭→未启用）。
+  const kwsSummary = listenerRow(
+    deriveListenerStatus({
+      error: kws.listening.error,
+      isListening: kws.listening.isListening,
+      enabled: kws.config?.config?.enabled,
+      modelsPresent: kwsConfigured,
+    }),
+    "监听中",
+  );
+  const asrSummary = listenerRow(
+    deriveListenerStatus({
+      error: asr.listening.error,
+      pending: asr.listening.pending,
+      isListening: asr.listening.isListening,
+      enabled: asr.config?.config?.enabled,
+      modelsPresent: asrConfigured,
+    }),
+    "识别中",
+  );
+
   const rows: SummaryRowData[] = [
     {
       accent: "bg-violet-100 text-violet-600",
@@ -132,14 +176,8 @@ export function ModelSummary() {
       model: kwsConfigured ? basename(kws.config?.config?.model_dir ?? "") : "未配置模型",
       runtime: "sherpa-onnx",
       path: kwsConfigured ? (kws.config?.config?.model_dir ?? null) : null,
-      statusText: kws.listening.error
-        ? "错误"
-        : kws.listening.isListening
-          ? "监听中"
-          : kwsConfigured
-            ? "未启用"
-            : "未配置模型",
-      statusTone: kws.listening.error ? "error" : kws.listening.isListening ? "good" : "idle",
+      statusText: kwsSummary.text,
+      statusTone: kwsSummary.tone,
       gearHref: "/models/kws",
     },
     {
@@ -149,14 +187,8 @@ export function ModelSummary() {
       model: asrConfigured ? basename(asr.config?.config?.model_dir ?? "") : "未配置模型",
       runtime: "sherpa-onnx",
       path: asrConfigured ? (asr.config?.config?.model_dir ?? null) : null,
-      statusText: asr.listening.error
-        ? "错误"
-        : asr.listening.isListening
-          ? "识别中"
-          : asrConfigured
-            ? "未启用"
-            : "未配置模型",
-      statusTone: asr.listening.error ? "error" : asr.listening.isListening ? "good" : "idle",
+      statusText: asrSummary.text,
+      statusTone: asrSummary.tone,
       gearHref: "/models/asr",
     },
     {

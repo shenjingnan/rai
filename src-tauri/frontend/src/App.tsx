@@ -18,8 +18,9 @@ import { AppRuntimeProvider } from "@/providers/AppRuntimeProvider";
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AppRuntimeProvider>
-        <ToastProvider>
+      {/* ToastProvider 提到 Runtime 外层：useLlm 等 runtime hooks 需要在其内部弹通知。 */}
+      <ToastProvider>
+        <AppRuntimeProvider>
           <Routes>
             <Route element={<AppShell />}>
               <Route index element={<Navigate to="/home" replace />} />
@@ -35,8 +36,8 @@ export default function App() {
               <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Routes>
-        </ToastProvider>
-      </AppRuntimeProvider>
+        </AppRuntimeProvider>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

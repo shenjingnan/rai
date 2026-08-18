@@ -49,6 +49,10 @@ const DEFAULT_CONFIG = {
 let kwsConfig: typeof DEFAULT_CONFIG;
 /** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
 let mic = "";
+/** 可变 LLM 配置：单个用例可置 ready/models_present 以开启能力链路开关。 */
+let llmConfig: typeof LLM_CONFIG;
+/** 模拟后端拒绝卸载 LLM（如语音会话占用），null = 卸载成功。 */
+let llmUnloadReject: string | null = null;
 
 const ASR_CONFIG = {
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer",
@@ -110,6 +114,8 @@ beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
   kwsConfig = { ...DEFAULT_CONFIG };
+  llmConfig = { ...LLM_CONFIG };
+  llmUnloadReject = null;
   mic = "";
 
   invokeMock.mockImplementation(
@@ -152,7 +158,9 @@ beforeEach(() => {
         case "list_tts_voices":
           return Promise.resolve([]);
         case "get_llm_config":
-          return Promise.resolve(LLM_CONFIG);
+          return Promise.resolve(llmConfig);
+        case "unload_llm_model":
+          return llmUnloadReject ? Promise.reject(llmUnloadReject) : Promise.resolve(undefined);
         case "is_asr_listening":
           return Promise.resolve(false);
         case "is_llm_ready":
@@ -215,6 +223,21 @@ describe("App（KWS 控制面板）", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_tts_enabled", { enabled: false });
     });
+  });
+
+  it("LLM 卸载失败：右上角通知展示真实原因（如语音会话占用）", async () => {
+    llmConfig = { ...llmConfig, ready: true, models_present: true };
+    llmUnloadReject = "语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。";
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    // 开启的 LLM 开关（toggled 绑 ready），点击触发 unload
+    await user.click(await screen.findByRole("switch", { name: "AI 大脑开关" }));
+
+    // 真实错误经右上角 Toast 透出（而非仅红色「错误」）
+    expect(
+      await screen.findByText("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。"),
+    ).toBeInTheDocument();
   });
 
   it("渲染 KWS 配置项", async () => {

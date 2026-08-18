@@ -1,4 +1,5 @@
 import { AudioLines, AudioWaveform, Brain, type LucideIcon, Mic, Volume2 } from "lucide-react";
+import { deriveListenerStatus, type ListenerKind } from "@/components/models/capabilityStatus";
 import type { LlmState } from "@/hooks/useLlm";
 import type { TtsState } from "@/hooks/useTts";
 import type { VoiceSessionState } from "@/hooks/useVoiceSession";
@@ -33,28 +34,49 @@ export interface OverviewInput {
   voice: VoiceSessionState;
 }
 
+/** 监听型能力 kind → 概览页文案（listening 态按 KWS/ASR 区分）。 */
+function listenerLabel(kind: ListenerKind, active: "监听中" | "识别中"): string {
+  switch (kind) {
+    case "error":
+      return "异常";
+    case "starting":
+      return "启动中";
+    case "listening":
+      return active;
+    case "ready":
+      return "已就绪";
+    case "disabled":
+      return "未启用";
+    case "not_configured":
+      return "未配置";
+  }
+}
+
 /**
  * KWS 状态：错误 > 监听中 > 已就绪/未启用 > 未配置。
  * `enabled=true` 但未在监听是合法状态（启动自动监听失败会静默降级，
  * 见 lib.rs setup），此时能力已配置并开启，展示「已就绪」而非「未启用」。
  */
 function kwsStatus(kws: RuntimeState["kws"]): { label: string; tone: OverviewTone } {
-  if (kws.listening.error) return { label: "异常", tone: "error" };
-  if (kws.listening.isListening) return { label: "监听中", tone: "good" };
-  const cfg = kws.config.config;
-  if (cfg?.models_present) {
-    return cfg.enabled ? { label: "已就绪", tone: "good" } : { label: "未启用", tone: "idle" };
-  }
-  return { label: "未配置", tone: "idle" };
+  const st = deriveListenerStatus({
+    error: kws.listening.error,
+    isListening: kws.listening.isListening,
+    enabled: kws.config.config?.enabled,
+    modelsPresent: kws.config.config?.models_present,
+  });
+  return { label: listenerLabel(st.kind, "监听中"), tone: st.tone };
 }
 
-/** ASR 状态：错误 > 启动中 > 识别中 > 已就绪 > 未配置（会话型按需启动，无「未启用」态）。 */
+/** ASR 状态：错误 > 启动中 > 识别中 > 已就绪/未启用 > 未配置（与 KWS 一致：读取持久化 enabled）。 */
 function asrStatus(asr: RuntimeState["asr"]): { label: string; tone: OverviewTone } {
-  if (asr.listening.error) return { label: "异常", tone: "error" };
-  if (asr.listening.pending) return { label: "启动中", tone: "loading" };
-  if (asr.listening.isListening) return { label: "识别中", tone: "good" };
-  if (asr.config.config?.models_present) return { label: "已就绪", tone: "good" };
-  return { label: "未配置", tone: "idle" };
+  const st = deriveListenerStatus({
+    error: asr.listening.error,
+    pending: asr.listening.pending,
+    isListening: asr.listening.isListening,
+    enabled: asr.config.config?.enabled,
+    modelsPresent: asr.config.config?.models_present,
+  });
+  return { label: listenerLabel(st.kind, "识别中"), tone: st.tone };
 }
 
 /** LLM 状态：错误 > 生成中 > 加载中 > 运行中 > 未加载 > 未配置（词汇沿用 llmMeta）。 */

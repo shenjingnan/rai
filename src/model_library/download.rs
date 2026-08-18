@@ -468,20 +468,23 @@ impl DownloadManager {
             created_at: crate::datetime::iso_timestamp_now(),
         };
         let task_id = task.task_id.clone();
-        {
+        // 在 push 的同一临界区内构造返回视图：worker 需要拿锁才能推进状态，
+        // 因此返回值的状态确定为 Queued，不会与 worker 竞争。
+        let view = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let idx = inner.tasks.len();
             inner.tasks.push(task);
             inner
                 .cancel
                 .insert(task_id.clone(), Arc::new(AtomicBool::new(false)));
-        }
+            inner.tasks[idx].view(idx, idx + 1)
+        };
         self.emit(&task_id);
         // 启动 worker（若尚无活跃任务）
         if !self.active.swap(true, Ordering::SeqCst) {
             let mgr = self.clone();
             std::thread::spawn(move || mgr.worker_loop());
         }
-        let (view, _) = self.view_of(&task_id);
         Ok(view)
     }
 

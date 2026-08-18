@@ -1248,23 +1248,20 @@ mod tests {
 
     #[test]
     fn test_current_selection_and_set_restore() {
-        run_with_temp_home(|_| {
+        run_with_temp_home(|home| {
             // set/restore LLM selection
-            set_selected_model(ModelType::Llm, Path::new("/tmp/x.gguf")).unwrap();
+            // 用临时 HOME 下的绝对路径（不要硬编码 Unix 风格 /tmp，Windows 上 is_absolute 语义不同）。
+            let x = home.join("x.gguf");
+            set_selected_model(ModelType::Llm, &x).unwrap();
             let s = current_selections();
-            assert!(paths_equal(
-                s.llm.as_ref().unwrap(),
-                Path::new("/tmp/x.gguf")
-            ));
+            assert!(paths_equal(s.llm.as_ref().unwrap(), &x));
             assert!(!s.llm.as_ref().unwrap().is_file(), "不应要求文件存在");
 
             // 绝不写 enabled
-            restore_selected_model(ModelType::Llm, Some("/tmp/y.gguf".into())).unwrap();
+            let y = home.join("y.gguf");
+            restore_selected_model(ModelType::Llm, Some(y.display().to_string())).unwrap();
             let s2 = current_selections();
-            assert!(paths_equal(
-                s2.llm.as_ref().unwrap(),
-                Path::new("/tmp/y.gguf")
-            ));
+            assert!(paths_equal(s2.llm.as_ref().unwrap(), &y));
 
             let cfg = settings::load_settings().unwrap().unwrap();
             // set/restore 不触碰 kws/tts enabled

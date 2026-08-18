@@ -1430,48 +1430,254 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     })
 }
 
-/// 选择模型目录后返回的模型信息。
+/// `live2d-model-changed` 事件载荷（切换到某伙伴 / 清屏）。
+/// 字段为 `Option`：清屏时三字段均为 `None`。
 #[derive(Clone, Serialize)]
 struct Live2dModelInfo {
+    model_dir: Option<String>,
+    model_file: Option<String>,
+    format: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// 伙伴库（Companion Library）命令
+// ---------------------------------------------------------------------------
+
+/// 前端展示用的伙伴信息（snake_case，与 `Live2dConfigInfo` 一致）。
+#[derive(Serialize)]
+struct CompanionView {
+    id: String,
+    name: String,
+    source_path: Option<String>,
     model_dir: String,
     model_file: String,
     format: String,
+    imported_at: String,
+    /// 快速有效判定：托管目录与清单文件是否都还在磁盘上。
+    valid: bool,
+    /// 探测到的封面图绝对路径（best-effort；无封面图为 null，前端用占位图标）。
+    cover_image: Option<String>,
 }
 
-/// 校验并持久化用户选择的 Live2D 模型目录，放行 asset 协议 scope。
-#[tauri::command]
-fn set_live2d_model(app: AppHandle, dir: String) -> Result<Live2dModelInfo, String> {
-    let dir_path = std::path::PathBuf::from(&dir);
-    let (model_file, format) = zapmomo::live2d::config::find_model_file(&dir_path)
-        .ok_or_else(|| "目录中未找到 Live2D 模型清单（*.model3.json 或 model.json）".to_string())?;
+#[derive(Serialize)]
+struct CompanionLibraryView {
+    models: Vec<CompanionView>,
+    active_model_id: Option<String>,
+}
 
-    // 前端渲染使用 pixi-live2d-display/cubism4，仅支持 Cubism 3/4/5（.moc3），
-    // 不支持 Cubism 2（.moc），这里提前拒绝避免前端静默失败。
-    if format == zapmomo::live2d::config::Live2dFormat::Cubism2 {
-        return Err(
-            "暂不支持 Cubism 2 模型（.moc + model.json），请使用 Cubism 3/4/5 模型（.moc3 + .model3.json）"
-                .to_string(),
-        );
+#[derive(Serialize)]
+struct ImportCompanionResult {
+    library: CompanionLibraryView,
+    model_id: String,
+    already_imported: bool,
+}
+
+fn build_view(lib: &zapmomo::companion::CompanionLibrary) -> CompanionLibraryView {
+    CompanionLibraryView {
+        models: lib
+            .models
+            .iter()
+            .map(|m| CompanionView {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                source_path: m.source_path.clone(),
+                model_dir: m.model_dir.clone(),
+                model_file: m.model_file.clone(),
+                format: m.format.clone(),
+                imported_at: m.imported_at.clone(),
+                valid: zapmomo::companion::quick_valid(m),
+                cover_image: zapmomo::live2d::config::find_cover_image(Path::new(&m.model_dir))
+                    .map(|p| p.display().to_string()),
+            })
+            .collect(),
+        active_model_id: lib.active_model_id.clone(),
+    }
+}
+
+/// 把 `settings.toml [live2d].model_dir` 同步成伙伴库 active（**幂等**：值相同则
+/// 不写不 emit，避免每次 `list_companions` 都触发桌宠重载）。
+///
+/// 唯一逻辑 Source of Truth 是 `CompanionLibrary.active_model_id`；settings 里的
+/// `model_dir` 只是兼容 `CompanionRoot` / `get_live2d_config` / `live2d-model-changed`
+/// 的 derived runtime cache，最终一致由本函数负责。
+fn reconcile_active(
+    app: &AppHandle,
+    active: Option<&zapmomo::companion::CompanionModel>,
+) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+
+    let desired: Option<String> = active.map(|m| m.model_dir.clone());
+    if live2d.model_dir == desired {
+        return Ok(());
     }
 
-    app.asset_protocol_scope()
-        .allow_directory(&dir_path, true)
-        .map_err(|e| format!("无法放行模型目录: {e}"))?;
-
-    let mut settings = settings::load_settings()?.unwrap_or_default();
-    // 仅更新 model_dir，保留已有的 window_position 等字段。
-    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
-    live2d.model_dir = Some(dir.clone());
+    live2d.model_dir = desired;
     settings::save_settings(&settings)?;
 
-    let info = Live2dModelInfo {
-        model_dir: dir,
-        model_file: model_file.display().to_string(),
-        format: format.to_str().to_string(),
-    };
-    // 通知常驻角色窗口即时重载新模型（同进程事件，跨窗口同步）。
-    let _ = app.emit("live2d-model-changed", &info);
-    Ok(info)
+    match active {
+        Some(model) => {
+            app.asset_protocol_scope()
+                .allow_directory(Path::new(&model.model_dir), true)
+                .map_err(|e| format!("无法放行模型目录: {e}"))?;
+            let info = Live2dModelInfo {
+                model_dir: Some(model.model_dir.clone()),
+                model_file: Some(model.model_file.clone()),
+                format: Some(model.format.clone()),
+            };
+            // 通知常驻角色窗口即时重载新模型（同进程事件，跨窗口同步）。
+            let _ = app.emit("live2d-model-changed", &info);
+        }
+        None => {
+            // 清屏：桌宠收到空 model_file 后清除当前模型。
+            let info = Live2dModelInfo {
+                model_dir: None,
+                model_file: None,
+                format: None,
+            };
+            let _ = app.emit("live2d-model-changed", &info);
+        }
+    }
+    Ok(())
+}
+
+/// 启动阶段同步 reconcile（毫秒级，不迁移）：让 settings 与伙伴库 active 一致，
+/// 使 `CompanionRoot` 挂载时 `get_live2d_config` 就读到正确的当前伙伴。
+///
+/// **库空时不主动清空 settings**：旧版 `settings.model_dir` 仍由后台迁移继续使用，
+/// 避免「后台迁移完成前桌宠闪空」。只有库中解析出 active 时才应用。
+fn reconcile_active_at_startup(app: &AppHandle) {
+    match zapmomo::companion::load_library_fast() {
+        Ok(lib) => {
+            let active = zapmomo::companion::active_model(&lib);
+            if let Some(model) = active
+                && let Err(e) = reconcile_active(app, Some(model))
+            {
+                tracing::warn!("启动同步伙伴配置失败（将在下次打开伙伴页自愈）: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("读取伙伴库失败（跳过启动同步）: {e}"),
+    }
+}
+
+/// 后台旧版迁移：库为空且旧 `[live2d].model_dir` 存在时，复制进托管目录并设为 active，
+/// 完成后重新 reconcile（桌宠从旧目录无缝切到托管副本）。不阻塞启动。
+fn migrate_legacy_in_background(app: AppHandle) {
+    tauri::async_runtime::spawn_blocking(
+        move || match zapmomo::companion::migrate_legacy_if_empty() {
+            Ok(Some(_id)) => {
+                if let Ok(lib) = zapmomo::companion::load_library_fast() {
+                    let active = zapmomo::companion::active_model(&lib);
+                    if let Err(e) = reconcile_active(&app, active) {
+                        tracing::warn!("迁移后同步伙伴配置失败: {e}");
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("旧版模型后台迁移失败（将在下次打开伙伴页重试）: {e}"),
+        },
+    );
+}
+
+/// 列出伙伴库（含旧版迁移兜底 + sanitize active）。
+#[tauri::command]
+async fn list_companions(app: AppHandle) -> Result<CompanionLibraryView, String> {
+    let lib = tauri::async_runtime::spawn_blocking(zapmomo::companion::load_library)
+        .await
+        .map_err(|e| e.to_string())??;
+    // 放行所有有效托管目录的 asset scope（settings 窗口启动不再全局调 get_live2d_config，
+    // 伙伴页预览依赖此处放行；scope 不跨进程持久，每次都要重新放行）。
+    for model in &lib.models {
+        if zapmomo::companion::quick_valid(model) {
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(Path::new(&model.model_dir), true);
+        }
+    }
+    let active = zapmomo::companion::active_model(&lib);
+    reconcile_active(&app, active)?;
+    Ok(build_view(&lib))
+}
+
+/// 导入 Live2D 模型目录（复制到应用托管目录并登记进伙伴库）。
+///
+/// 成功或已导入都会立即放行新模型的 asset scope，保证右侧预览无需再进页面；
+/// 若本次导入成为 active（首次导入自动 active）则 reconcile 同步桌宠。
+#[tauri::command]
+async fn import_companion(
+    app: AppHandle,
+    source_dir: String,
+) -> Result<ImportCompanionResult, String> {
+    let source = PathBuf::from(source_dir);
+    let (model, already_imported) =
+        tauri::async_runtime::spawn_blocking(move || zapmomo::companion::import_from_dir(&source))
+            .await
+            .map_err(|e| e.to_string())??;
+
+    app.asset_protocol_scope()
+        .allow_directory(Path::new(&model.model_dir), true)
+        .map_err(|e| format!("无法放行模型目录: {e}"))?;
+
+    let lib = zapmomo::companion::load_library_fast()?;
+    let became_active = lib.active_model_id.as_deref() == Some(model.id.as_str());
+    if became_active {
+        let active = zapmomo::companion::active_model(&lib);
+        reconcile_active(&app, active)?;
+    }
+
+    Ok(ImportCompanionResult {
+        library: build_view(&lib),
+        model_id: model.id.clone(),
+        already_imported,
+    })
+}
+
+/// 设置「当前使用」伙伴（Library 先持久化成功，再 reconcile 同步 settings 与桌宠）。
+#[tauri::command]
+async fn set_active_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::set_active(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    let active = zapmomo::companion::active_model(&lib);
+    reconcile_active(&app, active)?;
+    Ok(build_view(&lib))
+}
+
+/// 重命名伙伴（只改展示名；不影响 active / 桌宠，reconcile 为幂等 no-op）。
+#[tauri::command]
+async fn rename_companion(
+    app: AppHandle,
+    id: String,
+    name: String,
+) -> Result<CompanionLibraryView, String> {
+    let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::rename(&id, &name))
+        .await
+        .map_err(|e| e.to_string())??;
+    let active = zapmomo::companion::active_model(&lib);
+    reconcile_active(&app, active)?;
+    Ok(build_view(&lib))
+}
+
+/// 移除伙伴：删除托管目录与库条目；若删的是 active，自动落到第一个有效伙伴或清空，
+/// 并 reconcile 同步桌宠（切换到新 active 或清屏）。
+#[tauri::command]
+async fn remove_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::remove(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    let active = zapmomo::companion::active_model(&lib);
+    reconcile_active(&app, active)?;
+    Ok(build_view(&lib))
+}
+
+/// 保存前端从 Live2D 渲染画布截取的 PNG 封面（写入托管目录 `cover.png`）。
+#[tauri::command]
+async fn save_cover_image(id: String, png: Vec<u8>) -> Result<CompanionLibraryView, String> {
+    tauri::async_runtime::spawn_blocking(move || zapmomo::companion::save_cover(&id, &png))
+        .await
+        .map_err(|e| e.to_string())??;
+    let lib = zapmomo::companion::load_library_fast()?;
+    Ok(build_view(&lib))
 }
 
 /// 持久化角色窗口位置（逻辑像素），供下次启动恢复。
@@ -2574,7 +2780,12 @@ pub fn run() {
             catalog_set_endpoint,
             catalog_set_token,
             get_live2d_config,
-            set_live2d_model,
+            list_companions,
+            import_companion,
+            set_active_companion,
+            rename_companion,
+            remove_companion,
+            save_cover_image,
             save_companion_position,
             set_companion_scale,
             show_companion_menu,
@@ -2646,6 +2857,10 @@ pub fn run() {
             let init_h = 480.0_f64.min(avail_height * 0.6) * scale;
             let init_w = init_h * (3.0 / 4.0);
 
+            // 启动同步 reconcile：让 settings 的 [live2d].model_dir 与伙伴库 active 一致，
+            // 使 CompanionRoot 挂载时 get_live2d_config 直接读到正确的当前伙伴（毫秒级，不迁移）。
+            reconcile_active_at_startup(app.handle());
+
             let mut companion = WebviewWindowBuilder::new(
                 app,
                 "companion",
@@ -2693,6 +2908,10 @@ pub fn run() {
                     );
                 }
             }
+
+            // 后台旧版迁移：库为空且旧 [live2d].model_dir 存在时，把模型复制进托管目录并
+            // 设为 active（完成后 reconcile，桌宠从旧目录无缝切到托管副本）。不阻塞启动。
+            migrate_legacy_in_background(app.handle().clone());
 
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
             let mut settings =

@@ -17,6 +17,8 @@ interface Live2dStageProps {
   onError?: (error: Error) => void;
   /** 模型加载完成、可计算角色真实边界时回调（供上层自适应窗口尺寸）。 */
   onModelMetrics?: (metrics: { aspectRatio: number }) => void;
+  /** 模型加载成功、画布已可用时回调（供上层截取封面等；注意画布可能尚未渲染本帧）。 */
+  onModelReady?: (canvas: HTMLCanvasElement) => void;
 }
 
 /** 角色真实包围盒（模型局部坐标），用于居中 + 等比缩放。 */
@@ -72,7 +74,7 @@ function layoutModel(model: Live2DModel, width: number, height: number) {
 }
 
 /**
- * Live2D 渲染组件：命令式创建 PIXI Application（PIXI 6 同步构造），
+ * Live2D 渲染组件：命令式创建 PIXI Application（PIXI 8 同步构造），
  * 规避 React StrictMode 双挂载时 PIXI 移除 DOM 节点导致引用失效的问题。
  *
  * 尺寸变化只 resize 渲染器并重新布局，不销毁重建、不重载模型。
@@ -84,6 +86,7 @@ export function Live2dStage({
   className,
   onError,
   onModelMetrics,
+  onModelReady,
 }: Live2dStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
@@ -94,6 +97,8 @@ export function Live2dStage({
   onErrorRef.current = onError;
   const onModelMetricsRef = useRef(onModelMetrics);
   onModelMetricsRef.current = onModelMetrics;
+  const onModelReadyRef = useRef(onModelReady);
+  onModelReadyRef.current = onModelReady;
   const sizeRef = useRef({ width, height });
   sizeRef.current = { width, height };
 
@@ -143,7 +148,12 @@ export function Live2dStage({
 
   // 加载 / 切换模型（不依赖尺寸，尺寸变化不会重载模型）。
   useEffect(() => {
-    if (!modelUrl) return;
+    // modelUrl 变为 null（如移除 active 伙伴清屏）：销毁旧模型，避免桌宠残留上一模型。
+    if (!modelUrl) {
+      modelRef.current?.destroy();
+      modelRef.current = null;
+      return;
+    }
     const app = appRef.current;
     if (!app) return;
     let cancelled = false;
@@ -171,6 +181,8 @@ export function Live2dStage({
         if (valid) {
           onModelMetricsRef.current?.({ aspectRatio: bounds.width / bounds.height });
         }
+        // 模型已加载、画布可用：通知上层（注意画布可能尚未渲染本帧，上层截图前需等一帧）。
+        onModelReadyRef.current?.(app.view as HTMLCanvasElement);
       } catch (e) {
         console.error("Live2D 模型加载失败:", e);
         onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));

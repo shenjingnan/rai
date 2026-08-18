@@ -125,6 +125,134 @@ pub fn resolve(settings: Option<&Live2dSettings>) -> Result<ResolvedLive2dConfig
     })
 }
 
+/// 轻量校验目录内的 Live2D 模型是否可基础加载。
+///
+/// 只解析 `*.model3.json` 的 `FileReferences`，硬校验 `Moc` 与全部 `Textures[]` 文件
+/// 存在；**不初始化 PIXI / 不读取纹理字节**。路径相对 model3.json 所在目录解析，
+/// 并拒绝越界（`..`）路径。Motions / Expressions / Physics 等可选资源不强制要求。
+pub fn validate_managed_model(dir: &Path) -> Result<(), String> {
+    let (model_file, format) = find_model_file(dir)
+        .ok_or_else(|| "目录中未找到 Live2D 模型清单（*.model3.json 或 model.json）".to_string())?;
+    if format == Live2dFormat::Cubism2 {
+        return Err(
+            "暂不支持 Cubism 2 模型（.moc + model.json），请使用 Cubism 3/4/5 模型（.moc3 + .model3.json）"
+                .to_string(),
+        );
+    }
+
+    let content =
+        std::fs::read_to_string(&model_file).map_err(|e| format!("读取模型清单失败: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("模型清单 JSON 解析失败: {e}"))?;
+    let base = model_file.parent().unwrap_or_else(|| Path::new("."));
+    let file_refs = json
+        .get("FileReferences")
+        .ok_or_else(|| "模型清单缺少 FileReferences".to_string())?;
+
+    // Moc 文件必须存在。
+    let moc = file_refs
+        .get("Moc")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "模型清单缺少 FileReferences.Moc".to_string())?;
+    let moc_path = resolve_in(base, moc)?;
+    if !moc_path.is_file() {
+        return Err(format!("模型缺失 Moc 文件: {}", moc_path.display()));
+    }
+
+    // Textures 全部必须存在（空数组也算合法清单，但缺失字段则拒绝）。
+    let textures = file_refs
+        .get("Textures")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "模型清单缺少 FileReferences.Textures".to_string())?;
+    for texture in textures {
+        let Some(name) = texture.as_str() else {
+            continue;
+        };
+        let tex_path = resolve_in(base, name)?;
+        if !tex_path.is_file() {
+            return Err(format!("模型缺失纹理文件: {}", tex_path.display()));
+        }
+    }
+
+    Ok(())
+}
+
+/// 在模型根目录探测一张「封面/预览图」（best-effort）。
+///
+/// Live2D 模型本身没有封面概念（`model3.json` 只含 Moc / Textures），但很多模型包会
+/// 附带一张预览图（`preview` / `thumbnail` / `cover` / `icon` …）。这里只扫顶层文件，
+/// 排除明显是贴图 / 清单 / moc 的文件：优先常见封面关键词命名，其次「唯一的根目录图片」。
+pub fn find_cover_image(dir: &Path) -> Option<PathBuf> {
+    const KEYWORDS: &[&str] = &[
+        "thumbnail",
+        "thumb",
+        "preview",
+        "cover",
+        "icon",
+        "sample",
+        "eyecatch",
+        "illust",
+        "sketch",
+        "poster",
+        "card",
+        "stand",
+    ];
+    const EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    let mut keyword_match: Option<PathBuf> = None;
+    let mut generic: Vec<PathBuf> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().map(|s| s.to_string_lossy().to_lowercase()) else {
+            continue;
+        };
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else {
+            continue;
+        };
+        // 排除明显是贴图 / 清单 / moc 的文件。
+        let looks_like_texture = name.contains("texture")
+            || name.contains("tex_")
+            || name.ends_with(".moc3")
+            || name.ends_with(".model3.json")
+            || name == "model.json"
+            || stem.chars().all(|c| c.is_ascii_digit());
+        if looks_like_texture {
+            continue;
+        }
+        let is_image = EXTS.iter().any(|ext| name.ends_with(&format!(".{ext}")));
+        if !is_image {
+            continue;
+        }
+        if keyword_match.is_none() && KEYWORDS.iter().any(|k| name.contains(k)) {
+            keyword_match = Some(path);
+        } else {
+            generic.push(path);
+        }
+    }
+
+    keyword_match.or_else(|| (generic.len() == 1).then(|| generic[0].clone()))
+}
+
+/// 把清单里的相对引用解析到 model3.json 所在目录，拒绝绝对路径与 `..` 越界。
+///
+/// 注意 `Path::starts_with` 是纯词法比较、不规范化 `..`，因此不能依赖它做越界防护；
+/// 这里显式检查路径组件。
+fn resolve_in(base: &Path, rel: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let p = Path::new(rel);
+    if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("模型清单包含越界路径: {rel}"));
+    }
+    Ok(base.join(rel))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +353,134 @@ mod tests {
     fn test_format_to_str() {
         assert_eq!(Live2dFormat::Cubism2.to_str(), "cubism2");
         assert_eq!(Live2dFormat::Cubism3.to_str(), "cubism3");
+    }
+
+    /// 构造一个结构合法的 Cubism3 模型目录（model3.json + moc3 + textures）。
+    fn make_valid_model(dir: &Path) {
+        std::fs::create_dir_all(dir.join("textures")).unwrap();
+        std::fs::write(dir.join("model.moc3"), b"moc").unwrap();
+        std::fs::write(dir.join("textures/texture_00.png"), b"png").unwrap();
+        std::fs::write(
+            dir.join("foo.model3.json"),
+            r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_validate_managed_model_ok() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            make_valid_model(&dir);
+            validate_managed_model(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn test_validate_managed_model_missing_moc() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(dir.join("textures")).unwrap();
+            std::fs::write(dir.join("textures/texture_00.png"), b"png").unwrap();
+            std::fs::write(
+                dir.join("foo.model3.json"),
+                r#"{"FileReferences":{"Moc":"nope.moc3","Textures":["textures/texture_00.png"]}}"#,
+            )
+            .unwrap();
+            let err = validate_managed_model(&dir).unwrap_err();
+            assert!(err.contains("Moc"), "错误应指出缺失 Moc: {err}");
+        });
+    }
+
+    #[test]
+    fn test_validate_managed_model_missing_texture() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("model.moc3"), b"moc").unwrap();
+            std::fs::write(
+                dir.join("foo.model3.json"),
+                r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/missing.png"]}}"#,
+            )
+            .unwrap();
+            let err = validate_managed_model(&dir).unwrap_err();
+            assert!(err.contains("纹理"), "错误应指出缺失纹理: {err}");
+        });
+    }
+
+    #[test]
+    fn test_validate_managed_model_cubism2_rejected() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("model.json"), "{}").unwrap();
+            let err = validate_managed_model(&dir).unwrap_err();
+            assert!(err.contains("Cubism 2"), "应拒绝 Cubism2: {err}");
+        });
+    }
+
+    #[test]
+    fn test_find_cover_image_prefers_keyword() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("texture_00.png"), b"tex").unwrap();
+            std::fs::write(dir.join("preview.png"), b"cover").unwrap();
+            std::fs::write(dir.join("foo.png"), b"other").unwrap();
+            let cover = find_cover_image(&dir).unwrap();
+            assert_eq!(cover.file_name().unwrap().to_string_lossy(), "preview.png");
+        });
+    }
+
+    #[test]
+    fn test_find_cover_image_single_root_image() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("sample_img.png"), b"only").unwrap();
+            let cover = find_cover_image(&dir).unwrap();
+            assert_eq!(
+                cover.file_name().unwrap().to_string_lossy(),
+                "sample_img.png"
+            );
+        });
+    }
+
+    #[test]
+    fn test_find_cover_image_none_when_ambiguous() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("a.png"), b"1").unwrap();
+            std::fs::write(dir.join("b.png"), b"2").unwrap();
+            assert!(find_cover_image(&dir).is_none());
+        });
+    }
+
+    #[test]
+    fn test_find_cover_image_none_when_only_textures() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(dir.join("textures")).unwrap();
+            std::fs::write(dir.join("textures/texture_00.png"), b"tex").unwrap();
+            std::fs::write(dir.join("00.png"), b"numeric tex").unwrap();
+            std::fs::write(dir.join("model.moc3"), b"moc").unwrap();
+            assert!(find_cover_image(&dir).is_none());
+        });
+    }
+
+    #[test]
+    fn test_validate_managed_model_traversal_rejected() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("foo.model3.json"),
+                r#"{"FileReferences":{"Moc":"../outside.moc3","Textures":[]}}"#,
+            )
+            .unwrap();
+            let err = validate_managed_model(&dir).unwrap_err();
+            assert!(err.contains("越界"), "应拒绝越界路径: {err}");
+        });
     }
 }

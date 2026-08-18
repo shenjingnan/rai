@@ -32,8 +32,19 @@ export function LibraryDialog({
     if (open) {
       setMounted(true);
       setClosing(false);
+      return;
     }
-  }, [open]);
+    // 父级已通过 onClose 把 open 置为 false（如底部确认/取消按钮直接调用）：
+    // 播放退出动画并卸载，避免残留「空内容」的挂载弹窗；不再重复调用 onClose。
+    if (mounted) {
+      setClosing(true);
+      const timer = window.setTimeout(() => {
+        setMounted(false);
+        setClosing(false);
+      }, EXIT_MS);
+      return () => window.clearTimeout(timer);
+    }
+  }, [open, mounted]);
 
   const finishClose = useCallback(() => {
     setMounted(false);

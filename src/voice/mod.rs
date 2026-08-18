@@ -7,6 +7,7 @@
 /// 句级流水线近似：LLM 流式 token → `splitter` 切句 → 独立合成线程逐句合成 →
 /// rodio `Sink` 边合成边播放。
 pub mod config;
+pub mod events;
 pub mod listen;
 pub mod player;
 pub mod session;
@@ -15,6 +16,7 @@ pub mod state;
 pub mod synthesizer;
 
 pub use config::{CliOverrides, ResolvedSessionConfig};
+pub use events::{ErrorKind, VoiceEvent, cli_sink};
 pub use listen::{ChunkAccumulator, MicEvent, MicLoop};
 pub use player::{AudioPlayer, MockPlayer, Speaker};
 pub use session::{ReplyAccumulator, VoiceSession};

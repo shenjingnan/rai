@@ -26,6 +26,7 @@ use crate::llm::LlmEvent;
 use crate::llm::types::{ChatMessage, ChatRole, InputItem};
 use crate::tts::TtsEngine;
 use crate::voice::config::ResolvedSessionConfig;
+use crate::voice::events::{ErrorKind, StoppedReason, VoiceEvent};
 use crate::voice::listen::{MicEvent, MicLoop};
 use crate::voice::player::AudioPlayer;
 use crate::voice::splitter::SentenceSplitter;
@@ -35,6 +36,7 @@ use sherpa_onnx::OnlineStream;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 /// 编排循环单次轮询麦克风的最长等待（块间隔远小于此，不影响实时性）。
@@ -49,7 +51,9 @@ pub struct VoiceSession {
     cfg: ResolvedSessionConfig,
     kws: KwsEngine,
     asr: AsrEngine,
-    llm: LlmEngine,
+    llm: Arc<LlmEngine>,
+    /// 会话订阅的 LLM 事件流（与 GUI 的 forward 订阅互不抢事件）
+    llm_rx: Receiver<LlmEvent>,
     speaker: Box<dyn AudioPlayer>,
     synth: SynthHandle,
     mic: MicLoop,
@@ -72,14 +76,51 @@ pub struct VoiceSession {
     first_sentence: bool,
     /// 与合成入队顺序对应的句子文本（播放时弹出打印 `[播放]`，打断时清空）
     pending_speech: VecDeque<String>,
+    /// 事件输出（CLI 用 stdout sink / Tauri 用 app.emit sink）
+    emit: Box<dyn Fn(VoiceEvent) + Send>,
+    /// Listening 阶段连续静音累计（秒），达到 `asr_max_trailing_silence` 判定说完
+    silence_accum: f32,
+    /// WaitingSpeech 阶段连续说话块计数（防瞬时噪音误触发）
+    speech_hits: u32,
+    /// WaitingSpeech 阶段等待时长累计（秒），超时回待唤醒
+    speech_wait_accum: f32,
+    /// 欢迎语是否已播放（合成失败也置位，跳过欢迎不卡流程）
+    welcome_played: bool,
 }
 
 impl VoiceSession {
-    /// 构造会话：校验并创建四引擎 + 打开麦克风与音频输出。任一失败返回带安装提示的错误。
+    /// 构造会话（CLI 默认：stdout sink + 自建 running 标志 + 自建 LLM 引擎）。
     pub fn new(cfg: ResolvedSessionConfig) -> Result<Self, String> {
+        Self::new_with_parts(
+            cfg,
+            Box::new(crate::voice::events::cli_sink),
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+    }
+
+    /// 构造会话（供 Tauri 等宿主注入事件 sink 与外部停止标志）。
+    ///
+    /// 校验并创建各引擎 + 打开麦克风与音频输出，任一失败返回带安装提示的错误。
+    ///
+    /// - `llm`：`Some` 复用宿主（Tauri `LlmState`）共享的引擎（**只加载一份模型**）；
+    ///   `None` 自建（CLI `voice run`）。
+    /// - **说完判定由 session 内 RMS 静音统一控制**，因此这里强制禁用 sherpa endpoint
+    ///   （避免其 rule1/rule2 的 1.2s/2.4s 尾静音在期望的 3s 前提前断句并 reset 流）。
+    pub fn new_with_parts(
+        mut cfg: ResolvedSessionConfig,
+        emit: Box<dyn Fn(VoiceEvent) + Send>,
+        running: Arc<AtomicBool>,
+        llm: Option<Arc<LlmEngine>>,
+    ) -> Result<Self, String> {
+        cfg.asr.enable_endpoint = false;
         let kws = KwsEngine::new(cfg.kws.clone())?;
         let asr = AsrEngine::new(cfg.asr.clone())?;
-        let llm = LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?;
+        let llm = match llm {
+            Some(e) => e,
+            None => Arc::new(LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?),
+        };
+        let llm_rx = llm.subscribe();
         let tts = TtsEngine::new(cfg.tts.clone())?;
         // 参考音色：自定义音色 > 内置音色 id > 配置默认
         let (ref_wav, ref_text) =
@@ -99,13 +140,14 @@ impl VoiceSession {
             kws,
             asr,
             llm,
+            llm_rx,
             speaker,
             synth,
             mic,
             asr_stream,
             kws_stream,
             state: SessionState::Idle,
-            running: Arc::new(AtomicBool::new(true)),
+            running,
             barge_in: Arc::new(AtomicBool::new(false)),
             history: Vec::new(),
             reply: ReplyAccumulator::new(),
@@ -116,6 +158,11 @@ impl VoiceSession {
             turns: 0,
             first_sentence: false,
             pending_speech: VecDeque::new(),
+            emit,
+            silence_accum: 0.0,
+            speech_hits: 0,
+            speech_wait_accum: 0.0,
+            welcome_played: false,
         })
     }
 
@@ -135,8 +182,11 @@ impl VoiceSession {
 
     /// 运行会话主循环（阻塞直到停止）。
     pub fn run(&mut self) -> Result<(), String> {
-        self.llm.load_blocking(LLM_LOAD_TIMEOUT)?;
-        println!("[会话] 开始（Ctrl-C 退出）。喊唤醒词开始对话。");
+        // 共享引擎已加载（Tauri LlmState）则跳过；CLI 自建引擎未加载则阻塞加载
+        if !self.llm.is_ready() {
+            self.llm.load_blocking(LLM_LOAD_TIMEOUT)?;
+        }
+        (self.emit)(VoiceEvent::Started);
         self.set_state(SessionEvent::Start)?;
 
         loop {
@@ -153,12 +203,17 @@ impl VoiceSession {
             match self.state {
                 SessionState::Idle => break,
                 SessionState::Armed => self.step_armed()?,
+                SessionState::Greeting => self.step_greeting()?,
+                SessionState::WaitingSpeech => self.step_waiting_speech()?,
                 SessionState::Listening => self.step_listening()?,
                 SessionState::Thinking => self.step_thinking()?,
                 SessionState::Speaking => self.step_speaking()?,
             }
         }
-        println!("[会话] 结束（共 {} 轮）", self.turns);
+        (self.emit)(VoiceEvent::Stopped {
+            reason: StoppedReason::Manual,
+            turns: self.turns,
+        });
         Ok(())
     }
 
@@ -169,11 +224,11 @@ impl VoiceSession {
         if next == SessionState::Listening {
             self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
         }
-        println!("[会话] 状态 -> {next:?}");
+        (self.emit)(VoiceEvent::State { state: next });
         Ok(())
     }
 
-    /// Armed：待唤醒，喂 KWS 检测唤醒词；命中 → 切到 Listening（ASR）。
+    /// Armed：待唤醒，喂 KWS 检测唤醒词；命中 → 合成欢迎语并切到 Greeting（播欢迎语）。
     fn step_armed(&mut self) -> Result<(), String> {
         let chunk = match self.mic.next(MIC_POLL)? {
             MicEvent::Chunk(c) => c,
@@ -184,13 +239,81 @@ impl VoiceSession {
         let mut reaction = WakeReaction::default();
         let _ = self.kws.detect(&self.kws_stream, &mut reaction);
         if let Some(keyword) = reaction.keyword {
-            println!("\n[唤醒] 检测到: {keyword}，开始聆听");
-            self.set_state(SessionEvent::KeywordDetected)?;
+            (self.emit)(VoiceEvent::Wake { keyword });
+            // 唤醒 → 合成并播放欢迎语（复用 SynthHandle；进入 Greeting 等结果）
+            self.synth.clear_cancel();
+            self.synth
+                .enqueue(self.cfg.welcome_text.clone(), self.current_gen);
+            self.welcome_played = false;
+            self.set_state(SessionEvent::KeywordDetected)?; // → Greeting
         }
         Ok(())
     }
 
-    /// Listening：收麦克风喂 ASR（流式字幕逐步刷新），一句说完（`is_final`）→ 入历史 → 发起 LLM 生成。
+    /// Greeting：播放欢迎语音（复用 SynthHandle 合成，期间不喂麦克风防回声）。
+    fn step_greeting(&mut self) -> Result<(), String> {
+        // 消费麦克风（丢弃，不喂 ASR/KWS），保持采集活跃、避免回声被拾入
+        match self.mic.next(MIC_POLL)? {
+            MicEvent::Chunk(_) | MicEvent::Timeout => {}
+            MicEvent::Disconnected => return Err("麦克风已断开".to_string()),
+        }
+        // 等欢迎语合成结果并播放
+        while let Some(result) = self.synth.try_recv() {
+            match result {
+                SynthResult::Done {
+                    gen_id,
+                    samples,
+                    sample_rate,
+                } => {
+                    if gen_id == self.current_gen {
+                        self.speaker.play(samples, sample_rate);
+                        self.welcome_played = true;
+                    }
+                }
+                SynthResult::Error { message, .. } => {
+                    tracing::warn!("欢迎语合成失败，跳过: {message}");
+                    self.welcome_played = true; // 跳过欢迎，不卡流程
+                }
+            }
+        }
+        // 欢迎语播放完（或合成失败跳过）→ 进 WaitingSpeech
+        if self.welcome_played && self.speaker.drained() {
+            self.mic.skip_for(SKIP_AFTER_BARGE_IN); // 丢回声尾巴
+            self.set_state(SessionEvent::WelcomeDone)?;
+        }
+        Ok(())
+    }
+
+    /// WaitingSpeech：RMS 门控，等用户真正说话（连续超阈值块）才进 ASR。
+    fn step_waiting_speech(&mut self) -> Result<(), String> {
+        let chunk = match self.mic.next(MIC_POLL)? {
+            MicEvent::Chunk(c) => Some(c),
+            MicEvent::Timeout => None,
+            MicEvent::Disconnected => return Err("麦克风已断开".to_string()),
+        };
+        if let Some(chunk) = chunk {
+            if chunk_rms(&chunk) > self.cfg.vad_silence_threshold {
+                self.speech_hits += 1;
+                if self.speech_hits >= 2 {
+                    self.speech_hits = 0;
+                    self.set_state(SessionEvent::SpeechDetected)?; // → Listening
+                }
+            } else {
+                self.speech_hits = 0;
+            }
+        }
+        // 等待超时（无人说话）→ 回待唤醒
+        self.speech_wait_accum += MIC_POLL.as_secs_f32();
+        if self.speech_wait_accum >= self.cfg.welcome_wait_timeout {
+            self.speech_wait_accum = 0.0;
+            self.speech_hits = 0;
+            self.set_state(SessionEvent::WaitTimeout)?;
+        }
+        Ok(())
+    }
+
+    /// Listening：喂 ASR（流式字幕）+ RMS 静音累计；连续静音达 `asr_max_trailing_silence`
+    /// 判定说完（强制 flush 取最终文本）→ 入历史 → 发起 LLM 生成。
     fn step_listening(&mut self) -> Result<(), String> {
         let chunk = match self.mic.next(MIC_POLL)? {
             MicEvent::Chunk(c) => c,
@@ -202,26 +325,74 @@ impl VoiceSession {
         let _ = self.asr.decode_loop(&self.asr_stream, &mut collector);
         // 流式字幕：部分识别结果逐步刷新（覆盖同一行）
         if !collector.partial.is_empty() {
-            print!("\r[识别] {}", collector.partial);
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            (self.emit)(VoiceEvent::Transcript {
+                text: collector.partial.clone(),
+                is_final: false,
+            });
         }
+        // RMS 静音累计：有语音则重置，否则累加当前块时长
+        let chunk_secs = self.cfg.asr.chunk_size as f32 / self.cfg.asr.sample_rate as f32;
+        if chunk_rms(&chunk) > self.cfg.vad_silence_threshold {
+            self.silence_accum = 0.0;
+        } else {
+            self.silence_accum += chunk_secs;
+        }
+        // 结束判定：sherpa is_final（兜底）或连续静音达到 asr_max_trailing_silence
         if let Some(text) = collector.final_text {
-            let text = text.trim().to_string();
-            if !text.is_empty() {
-                println!("\n[用户] {text}");
-                self.turns += 1;
-                self.history
-                    .push(InputItem::Message(ChatMessage::new(ChatRole::User, text)));
-                truncate_history(&mut self.history, self.cfg.history_max);
-                self.start_reply();
-                let input = build_llm_input(&self.cfg.llm.system_prompt, &self.history);
-                self.llm
-                    .generate(input, self.cfg.llm.params.clone())
-                    .map_err(|e| e.to_string())?;
-                self.set_state(SessionEvent::UserUtteranceFinal)?;
-            }
+            self.handle_user_final(text)?;
+        } else if self.silence_accum >= self.cfg.asr_max_trailing_silence {
+            let text = self.force_finalize_asr();
+            self.handle_user_final(text)?;
         }
         Ok(())
+    }
+
+    /// 处理一句最终用户文本：非空 → 入历史并发起 LLM；空（没真说话/识别失败）→ 回待唤醒。
+    fn handle_user_final(&mut self, text: String) -> Result<(), String> {
+        let text = text.trim().to_string();
+        self.silence_accum = 0.0;
+        if text.is_empty() {
+            self.set_state(SessionEvent::WaitTimeout)?;
+            return Ok(());
+        }
+        (self.emit)(VoiceEvent::Transcript {
+            text: text.clone(),
+            is_final: true,
+        });
+        self.turns += 1;
+        self.history
+            .push(InputItem::Message(ChatMessage::new(ChatRole::User, text)));
+        truncate_history(&mut self.history, self.cfg.history_max);
+        self.start_reply();
+        let input = build_llm_input(&self.cfg.llm.system_prompt, &self.history);
+        match self.llm.generate(input, self.cfg.llm.params.clone()) {
+            Ok(()) => {}
+            Err(e) => {
+                // 生成互斥（GUI 正在生成）或 worker 退出 → 转错误事件，回待唤醒（不崩溃）
+                (self.emit)(VoiceEvent::Error {
+                    kind: ErrorKind::Llm,
+                    message: e.to_string(),
+                });
+                self.set_state(SessionEvent::WaitTimeout)?;
+                return Ok(());
+            }
+        }
+        self.set_state(SessionEvent::UserUtteranceFinal)
+    }
+
+    /// 强制结束当前句：补尾部静音 + `input_finished` + drain，取最终识别文本
+    /// （模式同 `asr::transcribe_wav`）。
+    fn force_finalize_asr(&mut self) -> String {
+        let tail = vec![0.0f32; (self.cfg.asr.sample_rate as usize) / 2];
+        self.asr.feed(&self.asr_stream, &tail);
+        self.asr.finish(&self.asr_stream);
+        while self.asr.is_ready(&self.asr_stream) {
+            self.asr.decode(&self.asr_stream);
+        }
+        self.asr
+            .get_result(&self.asr_stream)
+            .map(|r| self.asr.punctuate_text(&r.text))
+            .unwrap_or_default()
     }
 
     /// 进入一轮新生成前的重置（gen 递增、清空上一轮回复状态、复位合成取消）。
@@ -238,7 +409,9 @@ impl VoiceSession {
 
     /// 把一句文本入队合成，并记录其文本（播放时弹出打印）。
     fn enqueue_sentence(&mut self, sentence: String) {
-        println!("  [合成] {sentence}");
+        (self.emit)(VoiceEvent::ReplySentence {
+            sentence: sentence.clone(),
+        });
         self.pending_speech.push_back(sentence.clone());
         self.synth.enqueue(sentence, self.current_gen);
         self.synth_enqueued += 1;
@@ -247,14 +420,19 @@ impl VoiceSession {
     /// Thinking：喂 KWS（打断监听）+ 轮询 LLM 事件（流式打印 token），把切句入队合成。
     fn step_thinking(&mut self) -> Result<(), String> {
         self.listen_barge_in()?;
-        while let Some(ev) = self.llm.try_recv() {
+        // 轮询本会话订阅的 LLM 事件流（广播：与 GUI 的 forward 订阅互不抢事件）
+        loop {
+            let ev = match self.llm_rx.try_recv() {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            };
             match ev {
                 LlmEvent::Token(delta) => {
                     let (visible, sentences) = self.reply.push_token(&delta.text);
-                    // 只流式打印可见文本（思考块被过滤，不上屏）
+                    // 只输出可见文本（思考块被过滤，不上屏）
                     if !visible.is_empty() {
-                        print!("{visible}");
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        (self.emit)(VoiceEvent::Token { delta: visible });
                     }
                     for s in sentences {
                         self.enqueue_sentence(s);
@@ -265,7 +443,6 @@ impl VoiceSession {
                     }
                 }
                 LlmEvent::Finished(reason) => {
-                    println!(); // 结束 token 流的一行
                     self.reply_done = true;
                     if let Some(tail) = self.reply.finish() {
                         self.enqueue_sentence(tail);
@@ -277,11 +454,16 @@ impl VoiceSession {
                         )));
                         truncate_history(&mut self.history, self.cfg.history_max);
                     }
-                    println!("[回复完成] {reason:?}");
+                    (self.emit)(VoiceEvent::ReplyFinished {
+                        reason: format!("{reason:?}"),
+                    });
                 }
                 LlmEvent::Error(e) => {
                     self.reply_done = true;
-                    eprintln!("[LLM 错误] {e}");
+                    (self.emit)(VoiceEvent::Error {
+                        kind: ErrorKind::Llm,
+                        message: e,
+                    });
                 }
                 LlmEvent::Status { .. } => {}
             }
@@ -307,7 +489,9 @@ impl VoiceSession {
                     if gen_id == self.current_gen {
                         // 弹出与入队顺序对应的句子文本（播放状态展示）
                         let text = self.pending_speech.pop_front().unwrap_or_default();
-                        println!("  [播放] {text}");
+                        (self.emit)(VoiceEvent::PlaySentence {
+                            sentence: text.clone(),
+                        });
                         self.speaker.play(samples, sample_rate);
                     }
                     // 过期结果（打断后迟到）直接丢弃
@@ -315,7 +499,10 @@ impl VoiceSession {
                 SynthResult::Error { gen_id, message } => {
                     if gen_id == self.current_gen {
                         self.pending_speech.pop_front();
-                        eprintln!("[合成错误] {message}");
+                        (self.emit)(VoiceEvent::Error {
+                            kind: ErrorKind::Synth,
+                            message,
+                        });
                     }
                 }
             }
@@ -348,7 +535,10 @@ impl VoiceSession {
             && self.turns >= max
         {
             self.running.store(false, Ordering::Relaxed);
-            println!("[会话] 已达最大轮数 {max}，退出");
+            (self.emit)(VoiceEvent::Stopped {
+                reason: StoppedReason::MaxTurns { max },
+                turns: self.turns,
+            });
             return Ok(());
         }
         self.set_state(SessionEvent::ReplyFinished)
@@ -356,7 +546,7 @@ impl VoiceSession {
 
     /// 打断序列：取消 LLM、停播、清合成、作废在途结果、回听并丢回声尾巴。
     fn do_barge_in(&mut self) {
-        println!("\n[打断] 检测到唤醒词，回到待唤醒");
+        (self.emit)(VoiceEvent::BargeIn);
         self.llm.cancel();
         self.current_gen += 1;
         self.speaker.stop();
@@ -369,7 +559,10 @@ impl VoiceSession {
         self.synth_consumed = 0;
         self.barge_in.store(false, Ordering::Relaxed);
         if let Err(e) = self.set_state(SessionEvent::BargeIn) {
-            eprintln!("[打断] {e}");
+            (self.emit)(VoiceEvent::Error {
+                kind: ErrorKind::BargeIn,
+                message: e,
+            });
         }
         self.mic.skip_for(SKIP_AFTER_BARGE_IN);
     }
@@ -526,6 +719,15 @@ fn truncate_history(history: &mut Vec<InputItem>, max: usize) {
         let drop = history.len() - max;
         history.drain(..drop);
     }
+}
+
+/// 计算一段 f32 mono 音频的 RMS（均方根）音量，用于「真正说话」门控与静音累计。
+fn chunk_rms(chunk: &[f32]) -> f32 {
+    if chunk.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = chunk.iter().map(|s| s * s).sum();
+    (sum / chunk.len() as f32).sqrt()
 }
 
 /// ASR 反应：收集部分（流式字幕）与最终识别文本；一句说完（`is_final`）返回 `Stop`。
@@ -720,5 +922,20 @@ mod tests {
         ];
         truncate_history(&mut history, 4);
         assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_chunk_rms_values() {
+        assert_eq!(chunk_rms(&[]), 0.0);
+        assert_eq!(chunk_rms(&[0.0, 0.0, 0.0]), 0.0);
+        // 恒定振幅 → RMS = 该振幅
+        assert!((chunk_rms(&[0.5, 0.5]) - 0.5).abs() < 1e-6);
+        // 峰值 1.0 正弦 → RMS ≈ 0.707
+        let sine: Vec<f32> = (0..3200)
+            .map(|i| ((i as f32 / 3200.0) * std::f32::consts::TAU).sin())
+            .collect();
+        assert!((chunk_rms(&sine) - 0.7071).abs() < 0.01);
+        // 幅度更大 → RMS 更大（用于阈值门控判断）
+        assert!(chunk_rms(&[0.9, 0.9]) > chunk_rms(&[0.1, 0.1]));
     }
 }

@@ -15,14 +15,17 @@ import { useRuntime } from "@/providers/RuntimeContext";
  */
 export function HomePage() {
   const { library, loading, error } = useCompanionLibrary();
-  const { kws, asr, llm, tts } = useRuntime();
+  const { kws, asr, llm, tts, voice } = useRuntime();
 
   const companion = useMemo(
     () => library?.models.find((m) => m.id === library.active_model_id) ?? null,
     [library],
   );
 
-  const statuses = useMemo(() => deriveOverview({ kws, asr, llm, tts }), [kws, asr, llm, tts]);
+  const statuses = useMemo(
+    () => deriveOverview({ kws, asr, llm, tts, voice }),
+    [kws, asr, llm, tts, voice],
+  );
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-hidden">

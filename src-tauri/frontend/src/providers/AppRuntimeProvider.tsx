@@ -11,6 +11,7 @@ import { useLlm } from "@/hooks/useLlm";
 import { useModelDownload } from "@/hooks/useModelDownload";
 import { useResults } from "@/hooks/useResults";
 import { useTts } from "@/hooks/useTts";
+import { useVoiceSession } from "@/hooks/useVoiceSession";
 import { api } from "@/lib/tauri";
 import { RuntimeContext, type RuntimeState } from "./RuntimeContext";
 
@@ -32,6 +33,7 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
   const asrResults = useAsrResults();
   const llm = useLlm();
   const tts = useTts();
+  const voice = useVoiceSession();
   // 麦克风选择：跨页面全局共享（KWS/ASR/概览均消费），持久化到 backend settings.toml（顶层 microphone）。
   // 启动时回读后端；旧版本遗留的 localStorage 记忆做一次性迁移（读后即清，仅在读成功后才清理）。
   const [device, setDeviceState] = useState("");
@@ -97,7 +99,7 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     }
   }, [kwsConfig.config?.custom_keywords]);
 
-  const anyListening = listening.isListening || asrListening.isListening;
+  const anyListening = listening.isListening || asrListening.isListening || voice.running;
 
   const value: RuntimeState = {
     appInfo,
@@ -111,6 +113,7 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     },
     llm,
     tts,
+    voice,
     device,
     setDevice,
     sessionKeywords,

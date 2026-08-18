@@ -13,15 +13,21 @@
 ///   Armed <--ReplyFinished-- Speaking│                                       ▲
 ///   Armed <----BargeIn----- Thinking|Speaking ────────────────────────────────┘
 /// ```
-///
+use serde::Serialize;
+
 /// `Armed`（待唤醒）是 KWS 门控：只有命中唤醒词才进入 `Listening`（ASR），
 /// 否则不消费用户话语——避免「不说话也一直在识别」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionState {
     /// 未运行（初始/停止）
     Idle,
     /// 待唤醒：KWS 监听唤醒词
     Armed,
+    /// 播欢迎语音（不监听麦克风，防回声）
+    Greeting,
+    /// 等用户真正说话（RMS 门控）
+    WaitingSpeech,
     /// 聆听用户（ASR 识别）
     Listening,
     /// 模型思考（LLM 生成中）
@@ -35,8 +41,14 @@ pub enum SessionState {
 pub enum SessionEvent {
     /// 会话开始（Idle → Armed）
     Start,
-    /// 命中唤醒词（Armed → Listening）
+    /// 命中唤醒词（Armed → Greeting）
     KeywordDetected,
+    /// 欢迎语播完（Greeting → WaitingSpeech）
+    WelcomeDone,
+    /// RMS 检测到真说话（WaitingSpeech → Listening）
+    SpeechDetected,
+    /// 等待超时无结果（WaitingSpeech|Listening → Armed）
+    WaitTimeout,
     /// 一句话说完（Listening → Thinking）
     UserUtteranceFinal,
     /// 首个句子已入队合成（Thinking → Speaking）
@@ -55,7 +67,13 @@ pub fn transition(state: SessionState, ev: SessionEvent) -> Result<SessionState,
     use SessionState::*;
     let next = match (state, ev) {
         (Idle, Start) => Armed,
-        (Armed, KeywordDetected) => Listening,
+        // 唤醒 → 先播欢迎语
+        (Armed, KeywordDetected) => Greeting,
+        (Greeting, WelcomeDone) => WaitingSpeech,
+        // 真说话门控通过 → ASR
+        (WaitingSpeech, SpeechDetected) => Listening,
+        // 等待超时（无人说话 / 无有效文本）→ 回待唤醒
+        (WaitingSpeech | Listening, WaitTimeout) => Armed,
         (Listening, UserUtteranceFinal) => Thinking,
         (Thinking, FirstSentenceEnqueued) => Speaking,
         // 播完 / 思考阶段未切出任何句子（空回复）→ 回到待唤醒
@@ -81,7 +99,13 @@ mod tests {
         use SessionEvent::*;
         use SessionState::*;
         assert_eq!(transition(Idle, Start).unwrap(), Armed);
-        assert_eq!(transition(Armed, KeywordDetected).unwrap(), Listening);
+        // 唤醒 → 欢迎语 → 等真说话 → ASR
+        assert_eq!(transition(Armed, KeywordDetected).unwrap(), Greeting);
+        assert_eq!(transition(Greeting, WelcomeDone).unwrap(), WaitingSpeech);
+        assert_eq!(
+            transition(WaitingSpeech, SpeechDetected).unwrap(),
+            Listening
+        );
         assert_eq!(transition(Listening, UserUtteranceFinal).unwrap(), Thinking);
         assert_eq!(
             transition(Thinking, FirstSentenceEnqueued).unwrap(),
@@ -96,10 +120,27 @@ mod tests {
     }
 
     #[test]
+    fn test_wait_timeout_goes_armed() {
+        use SessionEvent::*;
+        use SessionState::*;
+        // 等说话超时 / ASR 无文本超时 → 回待唤醒
+        assert_eq!(transition(WaitingSpeech, WaitTimeout).unwrap(), Armed);
+        assert_eq!(transition(Listening, WaitTimeout).unwrap(), Armed);
+    }
+
+    #[test]
     fn test_stop_from_any_state_goes_idle() {
         use SessionEvent::*;
         use SessionState::*;
-        for s in [Idle, Armed, Listening, Thinking, Speaking] {
+        for s in [
+            Idle,
+            Armed,
+            Greeting,
+            WaitingSpeech,
+            Listening,
+            Thinking,
+            Speaking,
+        ] {
             assert_eq!(transition(s, Stop).unwrap(), Idle);
         }
     }
@@ -110,26 +151,52 @@ mod tests {
         use SessionState::*;
         let invalid: &[(SessionState, SessionEvent)] = &[
             (Idle, KeywordDetected),
+            (Idle, WelcomeDone),
+            (Idle, SpeechDetected),
+            (Idle, WaitTimeout),
             (Idle, UserUtteranceFinal),
             (Idle, FirstSentenceEnqueued),
             (Idle, ReplyFinished),
             (Idle, BargeIn),
             (Armed, Start),
+            (Armed, WelcomeDone),
+            (Armed, SpeechDetected),
+            (Armed, WaitTimeout),
             (Armed, UserUtteranceFinal),
             (Armed, FirstSentenceEnqueued),
             (Armed, ReplyFinished),
             (Armed, BargeIn),
+            (Greeting, KeywordDetected),
+            (Greeting, SpeechDetected),
+            (Greeting, WaitTimeout),
+            (Greeting, UserUtteranceFinal),
+            (Greeting, FirstSentenceEnqueued),
+            (Greeting, ReplyFinished),
+            (Greeting, BargeIn),
+            (WaitingSpeech, KeywordDetected),
+            (WaitingSpeech, WelcomeDone),
+            (WaitingSpeech, UserUtteranceFinal),
+            (WaitingSpeech, FirstSentenceEnqueued),
+            (WaitingSpeech, ReplyFinished),
+            (WaitingSpeech, BargeIn),
             (Listening, Start),
             (Listening, KeywordDetected),
+            (Listening, WelcomeDone),
+            (Listening, SpeechDetected),
             (Listening, FirstSentenceEnqueued),
             (Listening, ReplyFinished),
             (Listening, BargeIn),
             (Thinking, Start),
             (Thinking, KeywordDetected),
+            (Thinking, WelcomeDone),
+            (Thinking, SpeechDetected),
+            (Thinking, WaitTimeout),
             (Thinking, UserUtteranceFinal),
-            (Thinking, Start),
             (Speaking, Start),
             (Speaking, KeywordDetected),
+            (Speaking, WelcomeDone),
+            (Speaking, SpeechDetected),
+            (Speaking, WaitTimeout),
             (Speaking, UserUtteranceFinal),
             (Speaking, FirstSentenceEnqueued),
         ];
@@ -143,10 +210,14 @@ mod tests {
     fn test_transition_roundtrip() {
         use SessionEvent::*;
         use SessionState::*;
-        // 一次完整对话轮次的状态序列
+        // 一次完整对话轮次的状态序列（含欢迎语 + 门控）
         let mut s = transition(Idle, Start).unwrap();
         assert_eq!(s, Armed);
         s = transition(s, KeywordDetected).unwrap();
+        assert_eq!(s, Greeting);
+        s = transition(s, WelcomeDone).unwrap();
+        assert_eq!(s, WaitingSpeech);
+        s = transition(s, SpeechDetected).unwrap();
         assert_eq!(s, Listening);
         s = transition(s, UserUtteranceFinal).unwrap();
         assert_eq!(s, Thinking);

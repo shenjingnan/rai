@@ -10,6 +10,7 @@ import type { LlmState } from "@/hooks/useLlm";
 import type { ModelDownloadState } from "@/hooks/useModelDownload";
 import type { DetectionEntry } from "@/hooks/useResults";
 import type { TtsState } from "@/hooks/useTts";
+import type { VoiceSessionState } from "@/hooks/useVoiceSession";
 import type { AppInfo } from "@/types/tauri";
 
 /** 全局运行态：由 `AppRuntimeProvider` 集中提供，页面/卡片通过 `useRuntime()` 读取。 */
@@ -30,6 +31,7 @@ export interface RuntimeState {
   };
   llm: LlmState;
   tts: TtsState;
+  voice: VoiceSessionState;
   /** 全局选中的麦克风设备（KWS 与 ASR 共用） */
   device: string;
   setDevice: (device: string) => void;

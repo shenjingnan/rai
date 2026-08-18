@@ -10,6 +10,14 @@ use std::path::PathBuf;
 pub const DEFAULT_HISTORY_MAX: usize = 12;
 /// 默认打断 KWS 触发阈值（高于监听阈值 0.25，缓解回声误触发）。
 pub const DEFAULT_BARGE_IN_THRESHOLD: f32 = 0.5;
+/// 默认唤醒欢迎语（TTS 用当前音色合成播放）。
+pub const DEFAULT_WELCOME_TEXT: &str = "你好，我在。";
+/// 默认「真正说话」RMS 音量阈值。
+pub const DEFAULT_VAD_SILENCE_THRESHOLD: f32 = 0.02;
+/// 默认 ASR 说完的连续静音秒数。
+pub const DEFAULT_ASR_MAX_TRAILING_SILENCE: f32 = 3.0;
+/// 默认欢迎语后等用户说话的超时（秒），超时回待唤醒。
+pub const DEFAULT_WELCOME_WAIT_TIMEOUT: f32 = 8.0;
 
 /// CLI 覆盖参数（来自 `voice run` 命令行，缺省字段不覆盖 settings）。
 #[derive(Debug, Clone, Default)]
@@ -24,6 +32,10 @@ pub struct CliOverrides {
     /// true = CLI 显式 `--no-bargein` 强制关闭打断（缺省 false 不强制，交给 settings）
     pub no_bargein: bool,
     pub barge_in_threshold: Option<f32>,
+    pub welcome_text: Option<String>,
+    pub vad_silence_threshold: Option<f32>,
+    pub asr_max_trailing_silence: Option<f32>,
+    pub welcome_wait_timeout: Option<f32>,
     pub kws_model_dir: Option<PathBuf>,
     pub asr_model_dir: Option<PathBuf>,
     pub tts_model_dir: Option<PathBuf>,
@@ -53,6 +65,14 @@ pub struct ResolvedSessionConfig {
     pub barge_in: bool,
     /// 打断用 KWS 触发阈值
     pub barge_in_threshold: f32,
+    /// 唤醒欢迎语文本
+    pub welcome_text: String,
+    /// 「真正说话」RMS 音量阈值
+    pub vad_silence_threshold: f32,
+    /// ASR 说完的连续静音秒数
+    pub asr_max_trailing_silence: f32,
+    /// 欢迎语后等用户说话的超时（秒）
+    pub welcome_wait_timeout: f32,
 }
 
 /// 合并 settings 与 CLI 覆盖得到最终会话配置。
@@ -96,10 +116,16 @@ pub fn resolve(
             .speed
             .or_else(|| voice.and_then(|v| v.speed))
             .unwrap_or(1.0),
+        // 唤醒词：CLI > [voice].keywords > [kws].custom_keywords（复用用户已配的唤醒词）
         keywords: cli
             .keywords
             .clone()
-            .or_else(|| voice.and_then(|v| v.keywords.clone())),
+            .or_else(|| voice.and_then(|v| v.keywords.clone()))
+            .or_else(|| {
+                settings
+                    .and_then(|s| s.kws.as_ref())
+                    .and_then(|k| k.custom_keywords.clone())
+            }),
         max_turns: cli.max_turns.or_else(|| voice.and_then(|v| v.max_turns)),
         history_max: cli
             .history_max
@@ -111,6 +137,23 @@ pub fn resolve(
             .barge_in_threshold
             .or_else(|| voice.and_then(|v| v.barge_in_threshold))
             .unwrap_or(DEFAULT_BARGE_IN_THRESHOLD),
+        welcome_text: cli
+            .welcome_text
+            .clone()
+            .or_else(|| voice.and_then(|v| v.welcome_text.clone()))
+            .unwrap_or_else(|| DEFAULT_WELCOME_TEXT.to_string()),
+        vad_silence_threshold: cli
+            .vad_silence_threshold
+            .or_else(|| voice.and_then(|v| v.vad_silence_threshold))
+            .unwrap_or(DEFAULT_VAD_SILENCE_THRESHOLD),
+        asr_max_trailing_silence: cli
+            .asr_max_trailing_silence
+            .or_else(|| voice.and_then(|v| v.asr_max_trailing_silence))
+            .unwrap_or(DEFAULT_ASR_MAX_TRAILING_SILENCE),
+        welcome_wait_timeout: cli
+            .welcome_wait_timeout
+            .or_else(|| voice.and_then(|v| v.welcome_wait_timeout))
+            .unwrap_or(DEFAULT_WELCOME_WAIT_TIMEOUT),
     })
 }
 
@@ -134,9 +177,32 @@ mod tests {
             assert_eq!(cfg.history_max, DEFAULT_HISTORY_MAX);
             assert!(cfg.barge_in);
             assert_eq!(cfg.barge_in_threshold, DEFAULT_BARGE_IN_THRESHOLD);
+            assert_eq!(cfg.welcome_text, DEFAULT_WELCOME_TEXT);
+            assert_eq!(cfg.vad_silence_threshold, DEFAULT_VAD_SILENCE_THRESHOLD);
+            assert_eq!(
+                cfg.asr_max_trailing_silence,
+                DEFAULT_ASR_MAX_TRAILING_SILENCE
+            );
+            assert_eq!(cfg.welcome_wait_timeout, DEFAULT_WELCOME_WAIT_TIMEOUT);
             assert_eq!(cfg.voice_id, None);
             assert_eq!(cfg.keywords, None);
             assert_eq!(cfg.max_turns, None);
+        });
+    }
+
+    #[test]
+    fn test_keywords_falls_back_to_kws_custom() {
+        run_with_temp_home(|_| {
+            // 未配置 [voice].keywords 时，回退到 [kws].custom_keywords
+            let app = AppConfig {
+                kws: Some(crate::config::settings::KwsSettings {
+                    custom_keywords: Some("你好小智/大月下".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let cfg = resolve(Some(&app), &CliOverrides::default()).unwrap();
+            assert_eq!(cfg.keywords.as_deref(), Some("你好小智/大月下"));
         });
     }
 
@@ -151,6 +217,11 @@ mod tests {
                 history_max: Some(20),
                 barge_in: Some(false),
                 barge_in_threshold: Some(0.7),
+                welcome_text: Some("我在呢".to_string()),
+                vad_silence_threshold: Some(0.03),
+                asr_max_trailing_silence: Some(2.5),
+                welcome_wait_timeout: Some(6.0),
+                ..Default::default()
             };
             let cfg = resolve(Some(&settings_with_voice(voice)), &CliOverrides::default()).unwrap();
             assert_eq!(cfg.keywords.as_deref(), Some("你好小智"));
@@ -160,6 +231,10 @@ mod tests {
             assert_eq!(cfg.history_max, 20);
             assert!(!cfg.barge_in);
             assert_eq!(cfg.barge_in_threshold, 0.7);
+            assert_eq!(cfg.welcome_text, "我在呢");
+            assert_eq!(cfg.vad_silence_threshold, 0.03);
+            assert_eq!(cfg.asr_max_trailing_silence, 2.5);
+            assert_eq!(cfg.welcome_wait_timeout, 6.0);
         });
     }
 
@@ -215,6 +290,7 @@ mod tests {
     fn test_voice_settings_serde_roundtrip() {
         run_with_temp_home(|_| {
             let voice = VoiceSettings {
+                enabled: Some(true),
                 keywords: Some("你好小智".to_string()),
                 voice: Some("leijun-1".to_string()),
                 speed: Some(1.1),
@@ -222,6 +298,10 @@ mod tests {
                 history_max: Some(16),
                 barge_in: Some(true),
                 barge_in_threshold: Some(0.6),
+                welcome_text: Some("你好".to_string()),
+                vad_silence_threshold: Some(0.02),
+                asr_max_trailing_silence: Some(3.0),
+                welcome_wait_timeout: Some(8.0),
             };
             let app = settings_with_voice(voice);
             let toml_str = toml::to_string(&app).unwrap();

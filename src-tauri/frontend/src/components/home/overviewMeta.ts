@@ -1,6 +1,7 @@
-import { AudioWaveform, Brain, type LucideIcon, Mic, Volume2 } from "lucide-react";
+import { AudioLines, AudioWaveform, Brain, type LucideIcon, Mic, Volume2 } from "lucide-react";
 import type { LlmState } from "@/hooks/useLlm";
 import type { TtsState } from "@/hooks/useTts";
+import type { VoiceSessionState } from "@/hooks/useVoiceSession";
 import type { RuntimeState } from "@/providers/RuntimeContext";
 
 /** 状态语义色（与模型页 ModelSummary / 各能力 meta 的语义完全一致）。 */
@@ -15,7 +16,7 @@ export const OVERVIEW_STATUS_COLOR: Record<OverviewTone, string> = {
 
 /** AI 能力小卡数据（纯展示：Icon + 名称 + 缩写 + 状态）。 */
 export interface CapabilityStatus {
-  key: "kws" | "asr" | "llm" | "tts";
+  key: "kws" | "asr" | "llm" | "tts" | "voice";
   name: string;
   code: string;
   icon: LucideIcon;
@@ -29,6 +30,7 @@ export interface OverviewInput {
   asr: RuntimeState["asr"];
   llm: LlmState;
   tts: TtsState;
+  voice: VoiceSessionState;
 }
 
 /**
@@ -76,16 +78,38 @@ function ttsStatus(tts: TtsState): { label: string; tone: OverviewTone } {
   return { label: "已就绪", tone: "good" };
 }
 
+/** 语音会话状态：错误 > 启动中 > 欢迎中/待唤醒/聆听中/思考中/播报中 > 未启动。 */
+function voiceStatus(voice: VoiceSessionState): { label: string; tone: OverviewTone } {
+  if (voice.error) return { label: "异常", tone: "error" };
+  if (voice.running && voice.phase === "idle") return { label: "启动中", tone: "loading" };
+  switch (voice.phase) {
+    case "armed":
+      return { label: "待唤醒", tone: "good" };
+    case "greeting":
+      return { label: "欢迎中", tone: "loading" };
+    case "waiting_speech":
+    case "listening":
+      return { label: "聆听中", tone: "good" };
+    case "thinking":
+      return { label: "思考中", tone: "loading" };
+    case "speaking":
+      return { label: "播报中", tone: "loading" };
+    default:
+      return { label: "未启动", tone: "idle" };
+  }
+}
+
 /**
  * 概览页 AI 能力状态推导（纯函数）：基于真实 runtime 字段推导，
  * 不维护第二套状态源。顺序固定为 KWS / ASR / LLM / TTS（与模型摘要一致）。
  */
 export function deriveOverview(input: OverviewInput): CapabilityStatus[] {
-  const { kws, asr, llm, tts } = input;
+  const { kws, asr, llm, tts, voice } = input;
   const kwsState = kwsStatus(kws);
   const asrState = asrStatus(asr);
   const llmState = llmStatus(llm);
   const ttsState = ttsStatus(tts);
+  const voiceState = voiceStatus(voice);
 
   return [
     {
@@ -119,6 +143,14 @@ export function deriveOverview(input: OverviewInput): CapabilityStatus[] {
       icon: Volume2,
       accent: "bg-amber-100 text-amber-600",
       ...ttsState,
+    },
+    {
+      key: "voice",
+      name: "语音会话",
+      code: "VOICE",
+      icon: AudioLines,
+      accent: "bg-pink-100 text-pink-600",
+      ...voiceState,
     },
   ];
 }

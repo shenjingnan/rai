@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/toast";
 import type { RuntimeState } from "@/providers/RuntimeContext";
-import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
+import type { CompanionLibraryView, CompanionModelInfo, VoiceSessionPhase } from "@/types/tauri";
 import { HomePage } from "./HomePage";
 
 const { invokeMock, state } = vi.hoisted(() => ({
@@ -107,12 +107,21 @@ function makeTts(o?: {
   };
 }
 
+function makeVoice(o?: { running?: boolean; phase?: VoiceSessionPhase; error?: string | null }) {
+  return {
+    running: o?.running ?? false,
+    phase: o?.phase ?? "idle",
+    error: o?.error ?? null,
+  };
+}
+
 function makeRuntime(
   overrides?: Partial<{
     kws: ReturnType<typeof makeKws>;
     asr: ReturnType<typeof makeAsr>;
     llm: ReturnType<typeof makeLlm>;
     tts: ReturnType<typeof makeTts>;
+    voice: ReturnType<typeof makeVoice>;
   }>,
 ): RuntimeState {
   return {
@@ -120,6 +129,7 @@ function makeRuntime(
     asr: overrides?.asr ?? makeAsr(),
     llm: overrides?.llm ?? makeLlm(),
     tts: overrides?.tts ?? makeTts(),
+    voice: overrides?.voice ?? makeVoice(),
   } as unknown as RuntimeState;
 }
 

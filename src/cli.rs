@@ -594,6 +594,11 @@ async fn cmd_voice(cmd: VoiceCmd) -> Result<(), String> {
         history_max,
         no_bargein,
         barge_in_threshold: bargein_threshold,
+        // 欢迎语/门控参数暂不暴露 CLI flag，从 settings.toml 配置
+        welcome_text: None,
+        vad_silence_threshold: None,
+        asr_max_trailing_silence: None,
+        welcome_wait_timeout: None,
         kws_model_dir,
         asr_model_dir,
         tts_model_dir,

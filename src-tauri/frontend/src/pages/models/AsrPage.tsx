@@ -6,12 +6,16 @@ import { AsrBasicConfig } from "@/components/asr/AsrBasicConfig";
 import { AsrRunControl } from "@/components/asr/AsrRunControl";
 import { AsrTechnicalInfo } from "@/components/asr/AsrTechnicalInfo";
 import { AsrTestDialog } from "@/components/asr/AsrTestDialog";
+import { Switch } from "@/components/ui/switch";
+import { useRuntime } from "@/providers/RuntimeContext";
 
 /**
- * 语音识别（ASR）配置页：标题行含识别开关与状态 + 基础配置 + 模型信息 + 测试识别对话框。
+ * 语音识别（ASR）配置页：标题行含识别开关与状态 + 启用偏好 + 基础配置 + 模型信息 + 测试识别对话框。
  */
 export function AsrPage() {
   const [testOpen, setTestOpen] = useState(false);
+  const { asr } = useRuntime();
+  const asrEnabled = asr.config.config?.enabled ?? false;
 
   return (
     <div className="space-y-4">
@@ -29,6 +33,21 @@ export function AsrPage() {
         </h1>
         <AsrRunControl />
       </header>
+
+      <section className="flex items-center justify-between gap-3 rounded-[16px] border border-panel-border bg-panel-background px-5 py-4">
+        <div>
+          <p className="text-sm font-medium text-text-primary">启用语音识别</p>
+          <p className="mt-0.5 text-xs text-text-muted">
+            语音会话「能识别」的前提；关闭后语音对话不可用
+          </p>
+        </div>
+        <Switch
+          checked={asrEnabled}
+          onCheckedChange={(v) => void asr.config.setEnabled(v)}
+          aria-label="启用语音识别"
+          trackClass="bg-emerald-500"
+        />
+      </section>
 
       <AsrBasicConfig onTestOpen={() => setTestOpen(true)} />
 

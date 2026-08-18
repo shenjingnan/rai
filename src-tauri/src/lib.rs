@@ -38,6 +38,10 @@ use zapmomo::model_library::{
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
 };
 use zapmomo::tts::config::TtsParamsPatch;
+use zapmomo::voice::VoiceSession;
+use zapmomo::voice::config::CliOverrides as VoiceCliOverrides;
+use zapmomo::voice::events::VoiceEvent;
+use zapmomo::voice::state::SessionState as VoicePhase;
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
 // 使其表现为纯桌面摆件（参考 BongoCat 的 `tauri-nspanel` 方案）。
@@ -98,6 +102,74 @@ impl Drop for ActiveModelGuard {
     fn drop(&mut self) {
         *self.target.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
+}
+
+/// 语音会话线程状态：共享停止标志 + 线程句柄（仿 `ListenState`）。
+struct VoiceSessionState {
+    running: Arc<AtomicBool>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl VoiceSessionState {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: Mutex::new(None),
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
+// ---- 语音会话事件载荷（emit 给前端）----
+
+#[derive(Clone, Serialize)]
+struct VoiceSessionStatePayload {
+    running: bool,
+    state: VoicePhase,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceWakePayload {
+    keyword: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceTranscriptPayload {
+    text: String,
+    is_final: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceTokenPayload {
+    delta: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceReplyPayload {
+    sentence: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoicePlayPayload {
+    sentence: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceReplyFinishedPayload {
+    reason: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceErrorPayload {
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceStoppedPayload {
+    error: Option<String>,
 }
 
 /// 模型下载状态：防重入标志。
@@ -257,6 +329,13 @@ fn get_kws_config(state: State<'_, DownloadState>) -> Result<KwsConfigInfo, Stri
     let models_present = files.iter().all(|p| p.is_file());
     let keywords =
         zapmomo::kws::config::parse_keywords_file(&cfg.keywords_file).unwrap_or_default();
+    tracing::info!(
+        "get_kws_config: settings.kws.enabled={:?} resolve.enabled={} models_present={} settings_path={}",
+        kws_settings.as_ref().and_then(|k| k.enabled),
+        cfg.enabled,
+        models_present,
+        zapmomo::config::settings::get_settings_path().display()
+    );
 
     Ok(KwsConfigInfo {
         enabled: cfg.enabled,
@@ -481,6 +560,7 @@ impl AsrReaction for TauriAsrReaction {
 /// GUI 展示用的 ASR 配置信息（含可经 `set_asr_params` 调整的引擎参数）。
 #[derive(Serialize)]
 struct AsrConfigInfo {
+    enabled: bool,
     model_dir: String,
     provider: String,
     num_threads: i32,
@@ -511,8 +591,15 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
     let files = [&cfg.encoder, &cfg.decoder, &cfg.joiner, &cfg.tokens];
     let models_present = files.iter().all(|p| p.is_file());
     let punctuation_present = cfg.punctuation_model.is_file();
+    tracing::info!(
+        "get_asr_config: settings.asr.enabled={:?} resolve.enabled={} models_present={}",
+        asr_settings.as_ref().and_then(|a| a.enabled),
+        cfg.enabled,
+        models_present
+    );
 
     Ok(AsrConfigInfo {
+        enabled: cfg.enabled,
         model_dir: cfg.model_dir.display().to_string(),
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
@@ -1106,26 +1193,31 @@ fn llm_resolved_config() -> Result<zapmomo::llm::config::ResolvedLlmConfig, Stri
 
 /// 把 LLM 引擎事件转发为 Tauri 事件，直到 `Finished`/`Error`（`stop_on_status` 时 `Status` 也终止）。
 fn forward_llm_events(app: AppHandle, engine: Arc<LlmEngine>, stop_on_status: bool) {
+    // 订阅自己的事件流（广播：与 voice 会话等其它订阅者互不抢事件）
+    let rx = engine.subscribe();
     loop {
-        match engine.try_recv() {
-            Some(LlmEvent::Token(delta)) => {
+        match rx.recv_timeout(std::time::Duration::from_millis(10)) {
+            Ok(LlmEvent::Token(delta)) => {
                 let _ = app.emit("llm-token", delta);
             }
-            Some(LlmEvent::Finished(reason)) => {
+            Ok(LlmEvent::Finished(reason)) => {
                 let _ = app.emit("llm-finished", reason);
                 break;
             }
-            Some(LlmEvent::Error(e)) => {
+            Ok(LlmEvent::Error(e)) => {
                 let _ = app.emit("llm-error", e);
                 break;
             }
-            Some(LlmEvent::Status { ready }) => {
+            Ok(LlmEvent::Status { ready }) => {
                 let _ = app.emit("llm-status", LlmStatusPayload { ready });
                 if stop_on_status {
                     break;
                 }
             }
-            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // recv_timeout 本身已等待，无需额外 sleep
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -1177,19 +1269,24 @@ fn load_llm_impl(app: AppHandle, state: &LlmState) -> Result<(), String> {
     let engine = Arc::new(zapmomo::llm::LlmEngine::new(cfg).map_err(|e| e.to_string())?);
     engine.load().map_err(|e| e.to_string())?;
     *state.engine.lock().expect("llm lock poisoned") = Some(engine.clone());
-    std::thread::spawn(move || forward_llm_events(app, engine, true));
+    // 持续转发事件（voice 会话与 chat_llm 共用同一引擎，都由这一个 forward 转发，避免多线程重复 emit）
+    std::thread::spawn(move || forward_llm_events(app, engine, false));
     Ok(())
 }
 
 /// 加载 LLM 模型（异步：结果经 `llm-status`/`llm-error` 事件返回）。
 #[tauri::command]
 fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
+    // 统一引擎：voice 会话与 GUI 共用 LlmState 的 engine，load 幂等（已 ready 则无操作），无需拦截
     load_llm_impl(app, state.inner())
 }
 
-/// 卸载 LLM 模型并释放内存。
+/// 卸载 LLM 模型并释放内存。语音会话运行时拒绝（共享引擎，voice 在用）。
 #[tauri::command]
-fn unload_llm_model(state: State<'_, LlmState>) -> Result<(), String> {
+fn unload_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
+    if app.state::<VoiceSessionState>().is_running() {
+        return Err("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。".to_string());
+    }
     let engine = state.engine.lock().expect("llm lock poisoned").take();
     if let Some(engine) = engine {
         engine.unload().map_err(|e| e.to_string())?;
@@ -1198,8 +1295,10 @@ fn unload_llm_model(state: State<'_, LlmState>) -> Result<(), String> {
 }
 
 /// 发起一次流式对话（token 经 `llm-token`，结束经 `llm-finished`）。
+///
+/// 事件由统一的持续 forward（引擎就绪时 spawn）转发，此处不再额外 spawn。
 #[tauri::command]
-fn chat_llm(app: AppHandle, state: State<'_, LlmState>, text: String) -> Result<(), String> {
+fn chat_llm(state: State<'_, LlmState>, text: String) -> Result<(), String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("文本不能为空".to_string());
@@ -1218,7 +1317,6 @@ fn chat_llm(app: AppHandle, state: State<'_, LlmState>, text: String) -> Result<
     engine
         .generate(input, cfg.params)
         .map_err(|e| e.to_string())?;
-    std::thread::spawn(move || forward_llm_events(app, engine, false));
     Ok(())
 }
 
@@ -1240,6 +1338,203 @@ fn is_llm_ready(state: State<'_, LlmState>) -> bool {
         .ok()
         .and_then(|e| e.as_ref().map(|e| e.is_ready()))
         .unwrap_or(false)
+}
+
+// ---- 语音会话（KWS→ASR→LLM→TTS 全链路）----
+
+/// 把 `VoiceEvent` 转发为 Tauri 事件（`Started/BargeIn/Stopped` 是 CLI 噪音，忽略；
+/// 终态由会话线程包装统一发 `voice-session-stopped`）。
+fn make_voice_emit(app: AppHandle) -> Box<dyn Fn(VoiceEvent) + Send> {
+    Box::new(move |ev| match ev {
+        VoiceEvent::Started | VoiceEvent::BargeIn | VoiceEvent::Stopped { .. } => {}
+        VoiceEvent::State { state } => {
+            let _ = app.emit(
+                "voice-session-state",
+                VoiceSessionStatePayload {
+                    running: state != VoicePhase::Idle,
+                    state,
+                },
+            );
+        }
+        VoiceEvent::Wake { keyword } => {
+            let _ = app.emit("voice-session-wake", VoiceWakePayload { keyword });
+        }
+        VoiceEvent::Transcript { text, is_final } => {
+            let _ = app.emit(
+                "voice-session-transcript",
+                VoiceTranscriptPayload { text, is_final },
+            );
+        }
+        VoiceEvent::Token { delta } => {
+            let _ = app.emit("voice-session-token", VoiceTokenPayload { delta });
+        }
+        VoiceEvent::ReplySentence { sentence } => {
+            let _ = app.emit("voice-session-reply", VoiceReplyPayload { sentence });
+        }
+        VoiceEvent::PlaySentence { sentence } => {
+            let _ = app.emit("voice-session-play", VoicePlayPayload { sentence });
+        }
+        VoiceEvent::ReplyFinished { reason } => {
+            let _ = app.emit(
+                "voice-session-reply-finished",
+                VoiceReplyFinishedPayload { reason },
+            );
+        }
+        VoiceEvent::Error { message, .. } => {
+            let _ = app.emit("voice-session-error", VoiceErrorPayload { message });
+        }
+    })
+}
+
+/// 启动语音会话：解析配置 → 确保 LlmState 唯一引擎存在 → spawn 会话线程
+/// （线程内构造 `VoiceSession`，规避非 Send；注入共享 `Arc<LlmEngine>`，只加载一份模型）。
+///
+/// 会话构造/加载失败经 `voice-session-stopped{error}` 异步通知前端（启动静默降级）。
+fn start_voice_session_impl(app: AppHandle, state: &VoiceSessionState) -> Result<(), String> {
+    if state.is_running() {
+        return Err("语音会话已在运行中".to_string());
+    }
+    let settings = zapmomo::config::settings::load_settings()?;
+    let cfg = zapmomo::voice::config::resolve(settings.as_ref(), &VoiceCliOverrides::default())?;
+    // 语音互动需 KWS 与 ASR 同时启用（持久化开关）：未启用则拒绝（自动/手动一致拦截）。
+    let kws_enabled =
+        zapmomo::kws::config::resolve(settings.as_ref().and_then(|s| s.kws.as_ref()), None)
+            .map(|c| c.enabled)
+            .unwrap_or(false);
+    let asr_enabled =
+        zapmomo::asr::config::resolve(settings.as_ref().and_then(|s| s.asr.as_ref()), None)
+            .map(|c| c.enabled)
+            .unwrap_or(false);
+    if !(kws_enabled && asr_enabled) {
+        return Err(
+            "语音互动需要同时启用「唤醒词」(KWS) 与「语音识别」(ASR)。请在模型与能力页开启后重试。"
+                .to_string(),
+        );
+    }
+    // 同步预检模型文件：缺模型及时返回错误（也让 setup 的「voice 启动成功 → 跳过
+    // LLM auto_load」判定可靠——voice 实际具备运行条件才返回 Ok）。
+    preflight_voice_models(&cfg)?;
+
+    // 统一 LLM 引擎：确保 `LlmState` 持有引擎（voice 与 GUI 共享，只加载一份）。
+    // 未创建则创建并存入；加载延迟到 voice `run()` 内的 `load_blocking`。
+    let llm_state = app.state::<LlmState>();
+    let llm = {
+        let mut guard = llm_state.engine.lock().expect("llm lock poisoned");
+        match guard.as_ref() {
+            Some(e) => e.clone(),
+            None => {
+                let e = Arc::new(
+                    zapmomo::llm::LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?,
+                );
+                *guard = Some(e.clone());
+                // 新引擎就绪后 spawn 持续 forward（GUI LLM 状态反映共享引擎）
+                let app = app.clone();
+                let e_for_fwd = e.clone();
+                std::thread::spawn(move || forward_llm_events(app, e_for_fwd, false));
+                e
+            }
+        }
+    };
+
+    let running = state.running.clone();
+    running.store(true, Ordering::Relaxed);
+    let emit = make_voice_emit(app.clone());
+    let handle = std::thread::spawn(move || {
+        let mut session = match VoiceSession::new_with_parts(cfg, emit, running.clone(), Some(llm))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("语音会话创建失败: {e}");
+                running.store(false, Ordering::Relaxed);
+                let _ = app.emit(
+                    "voice-session-stopped",
+                    VoiceStoppedPayload { error: Some(e) },
+                );
+                return;
+            }
+        };
+        let result = session.run();
+        running.store(false, Ordering::Relaxed);
+        match &result {
+            Ok(()) => tracing::info!("语音会话结束"),
+            Err(e) => tracing::error!("语音会话异常: {e}"),
+        }
+        let _ = app.emit(
+            "voice-session-stopped",
+            VoiceStoppedPayload {
+                error: result.err(),
+            },
+        );
+    });
+    *state.handle.lock().expect("voice handle lock poisoned") = Some(handle);
+    Ok(())
+}
+
+/// 预检语音会话所需模型文件（KWS / ASR / TTS / LLM）。缺任一返回带安装提示的错误。
+fn preflight_voice_models(
+    cfg: &zapmomo::voice::config::ResolvedSessionConfig,
+) -> Result<(), String> {
+    let files = [
+        ("KWS encoder", &cfg.kws.encoder),
+        ("KWS decoder", &cfg.kws.decoder),
+        ("KWS joiner", &cfg.kws.joiner),
+        ("KWS tokens", &cfg.kws.tokens),
+        ("KWS keywords", &cfg.kws.keywords_file),
+        ("ASR encoder", &cfg.asr.encoder),
+        ("ASR decoder", &cfg.asr.decoder),
+        ("ASR joiner", &cfg.asr.joiner),
+        ("ASR tokens", &cfg.asr.tokens),
+        ("TTS encoder", &cfg.tts.encoder),
+        ("TTS decoder", &cfg.tts.decoder),
+        ("TTS vocoder", &cfg.tts.vocoder),
+        ("TTS tokens", &cfg.tts.tokens),
+        ("TTS lexicon", &cfg.tts.lexicon),
+    ];
+    for (name, path) in files {
+        if !path.is_file() {
+            return Err(format!("缺少模型文件 {name}: {}", path.display()));
+        }
+    }
+    if !cfg.tts.data_dir.is_dir() {
+        return Err(format!("缺少 TTS 数据目录: {}", cfg.tts.data_dir.display()));
+    }
+    if !cfg.llm.model_path.is_file() {
+        return Err(format!(
+            "LLM 模型文件不存在: {}",
+            cfg.llm.model_path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 启动语音会话（进入待唤醒 Armed）。
+#[tauri::command]
+fn start_voice_session(app: AppHandle, state: State<'_, VoiceSessionState>) -> Result<(), String> {
+    start_voice_session_impl(app, state.inner())
+}
+
+/// 停止语音会话（置停止标志并等待会话线程退出）。
+#[tauri::command]
+fn stop_voice_session(state: State<'_, VoiceSessionState>) -> Result<(), String> {
+    if !state.is_running() {
+        return Err("语音会话未在运行中".to_string());
+    }
+    state.running.store(false, Ordering::Relaxed);
+    if let Some(handle) = state
+        .handle
+        .lock()
+        .expect("voice handle lock poisoned")
+        .take()
+    {
+        let _ = handle.join();
+    }
+    Ok(())
+}
+
+/// 语音会话是否在运行中。
+#[tauri::command]
+fn is_voice_session_running(state: State<'_, VoiceSessionState>) -> bool {
+    state.is_running()
 }
 
 /// 持久化用户选择的 LLM 模型路径（GGUF 文件），写入 `[llm].model_path`。
@@ -1332,10 +1627,30 @@ fn set_tts_params(params: TtsParamsPatch) -> Result<(), String> {
 /// 下次启动自动监听由 `.setup()` 判断 `[kws].enabled` 触发。
 #[tauri::command]
 fn set_kws_enabled(enabled: bool) -> Result<(), String> {
+    tracing::info!("set_kws_enabled 命令被调用: enabled={enabled}");
     let mut settings = settings::load_settings()?.unwrap_or_default();
     let kws = settings.kws.get_or_insert_with(KwsSettings::default);
     kws.enabled = Some(enabled);
     settings::save_settings(&settings)?;
+    tracing::info!(
+        "set_kws_enabled 已保存，[kws].enabled={:?}",
+        settings.kws.as_ref().and_then(|k| k.enabled)
+    );
+    Ok(())
+}
+
+/// 持久化 ASR 启用状态，写入 `[asr].enabled`（语音会话「能识别」的前提）。
+#[tauri::command]
+fn set_asr_enabled(enabled: bool) -> Result<(), String> {
+    tracing::info!("set_asr_enabled 命令被调用: enabled={enabled}");
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let asr = settings.asr.get_or_insert_with(AsrSettings::default);
+    asr.enabled = Some(enabled);
+    settings::save_settings(&settings)?;
+    tracing::info!(
+        "set_asr_enabled 已保存，[asr].enabled={:?}",
+        settings.asr.as_ref().and_then(|a| a.enabled)
+    );
     Ok(())
 }
 
@@ -1940,6 +2255,7 @@ fn list_model_library(
     let mut models = model_library::list_models();
     let kws_actual = kws.active_model_dir();
     let asr_actual = asr.active_model_dir();
+    // 统一 LLM 引擎：voice 与 GUI 共用 LlmState 的 engine，状态直接反映其加载路径
     let llm_actual = llm.loaded_model_path();
     let llm_target = llm.switch_target();
     let llm_error_path = llm
@@ -2119,6 +2435,10 @@ async fn set_current_model(
     if !zapmomo::llm::local::llama::is_gguf_file(&path) {
         return Err("不是有效的 GGUF 模型文件".to_string());
     }
+    // 统一引擎：voice 会话正共享该引擎，切换会让 voice 持旧 Arc 造成双模型 → 运行时拒绝
+    if app.state::<VoiceSessionState>().is_running() {
+        return Err("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再切换模型。".to_string());
+    }
     let _guard = LlmSwitchGuard::begin(llm.inner(), path.clone())?;
 
     let old_path =
@@ -2165,7 +2485,7 @@ async fn set_current_model(
 
     match load_result {
         Ok(()) => {
-            std::thread::spawn(move || forward_llm_events(app, new_engine, true));
+            std::thread::spawn(move || forward_llm_events(app, new_engine, false));
             Ok(SetCurrentResult {
                 model_type: mt,
                 model_id: model.id,
@@ -2195,7 +2515,7 @@ async fn set_current_model(
             .map_err(|e| format!("恢复加载任务异常：{e}"))?;
             match old_result {
                 Ok(()) => {
-                    std::thread::spawn(move || forward_llm_events(app, old_engine, true));
+                    std::thread::spawn(move || forward_llm_events(app, old_engine, false));
                     Ok(SetCurrentResult {
                         model_type: mt,
                         model_id: model.id,
@@ -2713,6 +3033,7 @@ pub fn run() {
         .manage(TtsSynthesizeState::new())
         .manage(TtsDownloadState::default())
         .manage(LlmState::new())
+        .manage(VoiceSessionState::new())
         .manage(ModelLibraryState::default())
         .manage(CatalogState::from_settings())
         .manage(Arc::new(DownloadManager::new(current_downloader())))
@@ -2730,6 +3051,7 @@ pub fn run() {
             get_microphone,
             set_microphone,
             get_asr_config,
+            set_asr_enabled,
             set_asr_params,
             start_asr_listen,
             stop_asr_listen,
@@ -2758,6 +3080,9 @@ pub fn run() {
             set_llm_system_prompt,
             set_tts_enabled,
             set_tts_params,
+            start_voice_session,
+            stop_voice_session,
+            is_voice_session_running,
             list_model_library,
             get_system_resources,
             download_library_model,
@@ -2811,8 +3136,32 @@ pub fn run() {
                 })?;
             }
 
-            // 启动自动加载 LLM 模型（若用户开启 auto_load）：后台异步加载，失败静默降级为手动加载。
-            if llm_resolved_config().map(|c| c.auto_load).unwrap_or(false) {
+            // 启动自动启动语音会话（若用户启用 voice）：进入待唤醒（Armed），失败静默降级。
+            // voice 会话内部自带 KWS 与 LLM（自持引擎），因此自动启动成功时**跳过**
+            // 下方独立的 LLM auto_load 与 KWS 自动监听——避免同一模型文件/麦克风设备
+            // 被两份并发占用（llama.cpp 双 engine 并发加载会崩，cpal 同设备双路采集冲突）。
+            let voice_auto_started = if loaded
+                .as_ref()
+                .and_then(|s| s.voice.as_ref())
+                .and_then(|v| v.enabled)
+                .unwrap_or(true)
+            {
+                let handle = app.handle().clone();
+                let state = app.state::<VoiceSessionState>();
+                match start_voice_session_impl(handle, state.inner()) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!("自动启动语音会话失败: {e}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
+            // 启动自动加载 LLM 模型（voice 未接管时，若用户开启 auto_load）：后台异步加载，
+            // 失败静默降级为手动加载。
+            if !voice_auto_started && llm_resolved_config().map(|c| c.auto_load).unwrap_or(false) {
                 let handle = app.handle().clone();
                 let state = app.state::<LlmState>();
                 if let Err(e) = load_llm_impl(handle, state.inner()) {
@@ -2820,11 +3169,12 @@ pub fn run() {
                 }
             }
 
-            // 启动自动监听 KWS（若用户启用 KWS）：后台线程监听，失败静默降级为手动启动。
+            // 启动自动监听 KWS（若用户启用 KWS 且未由语音会话代管）：后台线程监听，失败静默降级。
             // 使用持久化的麦克风（顶层 microphone）与自定义唤醒词（[kws].custom_keywords，空则模型内置）。
-            if zapmomo::kws::config::resolve(loaded.as_ref().and_then(|s| s.kws.as_ref()), None)
-                .map(|c| c.enabled)
-                .unwrap_or(false)
+            if !voice_auto_started
+                && zapmomo::kws::config::resolve(loaded.as_ref().and_then(|s| s.kws.as_ref()), None)
+                    .map(|c| c.enabled)
+                    .unwrap_or(false)
             {
                 let handle = app.handle().clone();
                 let state = app.state::<ListenState>();

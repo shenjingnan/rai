@@ -65,6 +65,7 @@ export interface DownloadProgress {
 
 /** `get_asr_config` 返回（含可经 `set_asr_params` 调整的引擎参数） */
 export interface AsrConfigInfo {
+  enabled: boolean;
   model_dir: string;
   provider: string;
   num_threads: number;
@@ -259,4 +260,63 @@ export type LlmFinishReason = "eos" | "max_tokens" | "cancelled" | "error";
 /** `llm-status` 事件载荷（对应后端 LlmStatusPayload） */
 export interface LlmStatus {
   ready: boolean;
+}
+
+// ---- 语音会话（KWS→ASR→LLM→TTS 全链路）----
+
+/** `voice-session-state` 事件的会话阶段 */
+export type VoiceSessionPhase =
+  | "idle"
+  | "armed"
+  | "greeting"
+  | "waiting_speech"
+  | "listening"
+  | "thinking"
+  | "speaking";
+
+/** `voice-session-state` 事件载荷 */
+export interface VoiceSessionStatePayload {
+  running: boolean;
+  state: VoiceSessionPhase;
+}
+
+/** `voice-session-wake` 事件载荷 */
+export interface VoiceWake {
+  keyword: string;
+}
+
+/** `voice-session-transcript` 事件载荷（ASR 实时字幕） */
+export interface VoiceTranscript {
+  text: string;
+  is_final: boolean;
+}
+
+/** `voice-session-token` 事件载荷（LLM 流式增量） */
+export interface VoiceToken {
+  delta: string;
+}
+
+/** `voice-session-reply` 事件载荷（切句入队合成） */
+export interface VoiceReplySentence {
+  sentence: string;
+}
+
+/** `voice-session-play` 事件载荷（正在播报的句子） */
+export interface VoicePlaySentence {
+  sentence: string;
+}
+
+/** `voice-session-reply-finished` 事件载荷 */
+export interface VoiceReplyFinished {
+  reason: string;
+}
+
+/** `voice-session-error` 事件载荷 */
+export interface VoiceError {
+  message: string;
+}
+
+/** `voice-session-stopped` 事件载荷 */
+export interface VoiceStopped {
+  error: string | null;
 }

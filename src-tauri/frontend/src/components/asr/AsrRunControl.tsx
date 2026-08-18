@@ -6,7 +6,7 @@ import { ASR_STATUS_COLOR, asrStatus } from "./asrMeta";
 /**
  * 标题行右侧的运行控制：状态点 + 识别开关。
  * 开关真实绑定 `asr.listening.isListening`：ON→start_asr_listen(device)，OFF→stop_asr_listen。
- * ASR 无持久化 enabled，Switch 直接反映运行时识别状态。
+ * ASR 的「启用」偏好是持久化的（配置区另有开关），这里只管运行时识别。
  * 在途状态唯一使用共享的 `asr.listening.pending`（与 TestDialog 同一份），不另设本地 toggling。
  */
 export function AsrRunControl() {

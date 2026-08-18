@@ -6,6 +6,8 @@ export interface AsrConfigState {
   config: AsrConfigInfo | null;
   error: string | null;
   refresh: () => Promise<void>;
+  /** 持久化「启用 ASR」偏好（[asr].enabled），写成功后回读配置。 */
+  setEnabled: (enabled: boolean) => Promise<void>;
   /** 持久化 ASR 引擎/运行参数（[asr] 批写入），写成功后回读配置。 */
   setParams: (patch: AsrParamsPatch) => Promise<void>;
 }
@@ -24,6 +26,18 @@ export function useAsrConfig(): AsrConfigState {
     }
   }, []);
 
+  const setEnabled = useCallback(
+    async (enabled: boolean) => {
+      try {
+        await api.setAsrEnabled({ enabled });
+        await refresh();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refresh],
+  );
+
   const setParams = useCallback(
     async (patch: AsrParamsPatch) => {
       // 保存失败向上抛出，由调用方（高级参数表单）展示内联错误
@@ -37,5 +51,5 @@ export function useAsrConfig(): AsrConfigState {
     void refresh();
   }, [refresh]);
 
-  return { config, error, refresh, setParams };
+  return { config, error, refresh, setEnabled, setParams };
 }

@@ -468,13 +468,17 @@ impl DownloadManager {
             created_at: crate::datetime::iso_timestamp_now(),
         };
         let task_id = task.task_id.clone();
-        {
+        // 在锁内直接构造入队时刻的 view：若放到 spawn worker 之后重读共享状态，
+        // worker 可能已把 Queued 推进到 Downloading，返回值将依赖线程调度。
+        let view = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let idx = inner.tasks.len();
             inner.tasks.push(task);
             inner
                 .cancel
                 .insert(task_id.clone(), Arc::new(AtomicBool::new(false)));
-        }
+            inner.tasks[idx].view(idx, inner.tasks.len())
+        };
         self.emit(&task_id);
         // 先构建回执再启动 worker：保证 enqueue 返回的状态一定是 queued，
         // 否则 worker 可能抢先将其改为 downloading（CI 高负载下曾复现）。

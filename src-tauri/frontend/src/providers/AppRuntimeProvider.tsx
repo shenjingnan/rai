@@ -7,8 +7,6 @@ import { useAsrResults } from "@/hooks/useAsrResults";
 import { useDevices } from "@/hooks/useDevices";
 import { useKwsConfig } from "@/hooks/useKwsConfig";
 import { useListening } from "@/hooks/useListening";
-import { useLive2dConfig } from "@/hooks/useLive2dConfig";
-import { useLive2dModel } from "@/hooks/useLive2dModel";
 import { useLlm } from "@/hooks/useLlm";
 import { useModelDownload } from "@/hooks/useModelDownload";
 import { useResults } from "@/hooks/useResults";
@@ -34,8 +32,6 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
   const asrResults = useAsrResults();
   const llm = useLlm();
   const tts = useTts();
-  const live2dConfig = useLive2dConfig();
-  const live2dModel = useLive2dModel(live2dConfig.refresh);
   // 麦克风选择：跨页面全局共享（KWS/ASR/概览均消费），持久化到 backend settings.toml（顶层 microphone）。
   // 启动时回读后端；旧版本遗留的 localStorage 记忆做一次性迁移（读后即清，仅在读成功后才清理）。
   const [device, setDeviceState] = useState("");
@@ -115,7 +111,6 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     },
     llm,
     tts,
-    live2d: { config: live2dConfig, model: live2dModel },
     device,
     setDevice,
     sessionKeywords,

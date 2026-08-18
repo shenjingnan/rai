@@ -163,9 +163,7 @@ export function ModelDetailPane({ detail, lib, downloads }: ModelDetailPaneProps
               ↓ {fmt(item.remote.downloads)} · ♥ {fmt(item.remote.likes)}
               {item.remote.libraryName ? ` · ${item.remote.libraryName}` : ""}
             </>
-          ) : (
-            <></>
-          )}
+          ) : null}
         </p>
       </div>
 

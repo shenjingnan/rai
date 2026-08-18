@@ -6,8 +6,6 @@ import type { AsrResultsState } from "@/hooks/useAsrResults";
 import type { DevicesState } from "@/hooks/useDevices";
 import type { KwsConfigState } from "@/hooks/useKwsConfig";
 import type { ListeningState } from "@/hooks/useListening";
-import type { Live2dConfigState } from "@/hooks/useLive2dConfig";
-import type { Live2dModelState } from "@/hooks/useLive2dModel";
 import type { LlmState } from "@/hooks/useLlm";
 import type { ModelDownloadState } from "@/hooks/useModelDownload";
 import type { DetectionEntry } from "@/hooks/useResults";
@@ -32,10 +30,6 @@ export interface RuntimeState {
   };
   llm: LlmState;
   tts: TtsState;
-  live2d: {
-    config: Live2dConfigState;
-    model: Live2dModelState;
-  };
   /** 全局选中的麦克风设备（KWS 与 ASR 共用） */
   device: string;
   setDevice: (device: string) => void;

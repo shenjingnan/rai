@@ -132,7 +132,7 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
   return (
     <section
       aria-label="当前伙伴"
-      className="flex min-w-0 flex-col rounded-[16px] border border-panel-border bg-panel-background"
+      className="flex min-w-0 min-h-0 flex-col rounded-[16px] border border-panel-border bg-panel-background"
     >
       <div className="px-5 pt-4">
         <h2 className="text-base font-semibold text-text-primary">当前伙伴</h2>
@@ -169,7 +169,7 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
       {/* 预览区：Live2D 实时渲染，居中留白呼吸 */}
       <div
         ref={previewRef}
-        className="flex min-h-[280px] flex-1 items-center justify-center overflow-hidden px-5 pb-5 pt-3"
+        className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-5 pb-5 pt-3"
       >
         {preview}
       </div>

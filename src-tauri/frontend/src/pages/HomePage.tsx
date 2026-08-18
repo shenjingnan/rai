@@ -25,7 +25,7 @@ export function HomePage() {
   const statuses = useMemo(() => deriveOverview({ kws, asr, llm, tts }), [kws, asr, llm, tts]);
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex h-full flex-col gap-4 overflow-hidden">
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-text-primary">概览</h1>
         <p className="mt-0.5 text-sm text-muted-foreground">查看你的桌面伙伴与 AI 能力状态</p>

@@ -22,7 +22,9 @@ import type {
   AsrConfigInfo,
   AsrParamsPatch,
   AsrResult,
+  CompanionLibraryView,
   DownloadProgress,
+  ImportCompanionResult,
   KwsConfigInfo,
   KwsParamsPatch,
   KwsResult,
@@ -65,7 +67,17 @@ export const api = {
   isAsrListening: () => invoke<boolean>("is_asr_listening"),
   downloadAsrModel: () => invoke<void>("download_asr_model"),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
-  setLive2dModel: (args: { dir: string }) => invoke<Live2dModelInfo>("set_live2d_model", args),
+  listCompanions: () => invoke<CompanionLibraryView>("list_companions"),
+  // Tauri v2 命令参数默认 camelCase（`sourceDir` 映射 Rust 的 `source_dir`）。
+  importCompanion: (args: { sourceDir: string }) =>
+    invoke<ImportCompanionResult>("import_companion", args),
+  setActiveCompanion: (args: { id: string }) =>
+    invoke<CompanionLibraryView>("set_active_companion", args),
+  renameCompanion: (args: { id: string; name: string }) =>
+    invoke<CompanionLibraryView>("rename_companion", args),
+  removeCompanion: (args: { id: string }) => invoke<CompanionLibraryView>("remove_companion", args),
+  saveCoverImage: (args: { id: string; png: number[] }) =>
+    invoke<CompanionLibraryView>("save_cover_image", args),
   getTtsConfig: () => invoke<TtsConfigInfo>("get_tts_config"),
   listTtsVoices: () => invoke<TtsVoice[]>("list_tts_voices"),
   saveTtsVoice: (args: SaveTtsVoiceRequest) => invoke<TtsVoice>("save_tts_voice", args),

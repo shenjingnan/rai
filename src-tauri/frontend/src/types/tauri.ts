@@ -118,11 +118,42 @@ export interface Live2dConfigInfo {
   settings_path: string;
 }
 
-/** `set_live2d_model` 返回 */
+/** `live2d-model-changed` 事件载荷（切换伙伴 / 清屏；清屏时三字段均为 null） */
 export interface Live2dModelInfo {
+  model_dir: string | null;
+  model_file: string | null;
+  format: string | null;
+}
+
+/** `list_companions` / `set_active_companion` 里的单个伙伴 */
+export interface CompanionModelInfo {
+  id: string;
+  name: string;
+  /** 原始导入目录（仅记录来源；运行时不依赖，源删除后伙伴仍有效） */
+  source_path: string | null;
+  /** 应用托管目录 `~/.zapmomo/companions/{id}` */
   model_dir: string;
+  /** 托管目录内的 .model3.json 绝对路径 */
   model_file: string;
   format: string;
+  imported_at: string;
+  /** 快速有效判定：托管目录与清单文件是否都还在磁盘上 */
+  valid: boolean;
+  /** 探测到的封面图绝对路径（无封面图为 null，列表用占位图标） */
+  cover_image: string | null;
+}
+
+/** `list_companions` / `set_active_companion` 返回的伙伴库视图 */
+export interface CompanionLibraryView {
+  models: CompanionModelInfo[];
+  active_model_id: string | null;
+}
+
+/** `import_companion` 返回 */
+export interface ImportCompanionResult {
+  library: CompanionLibraryView;
+  model_id: string;
+  already_imported: boolean;
 }
 
 /** `get_tts_config` 返回 */

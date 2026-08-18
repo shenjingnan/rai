@@ -49,11 +49,15 @@ pub struct UreqTransport {
 
 impl UreqTransport {
     pub fn new() -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(15))
-            .timeout_read(Duration::from_secs(60))
-            .timeout_write(Duration::from_secs(60))
-            .build();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_send_body(Some(Duration::from_secs(60)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(Duration::from_secs(60)))
+            // 4xx/5xx 不转 Err：保持 ureq 2.x 行为，状态码统一由 map_status 映射
+            .http_status_as_error(false)
+            .build()
+            .into();
         Self { agent }
     }
 }
@@ -68,29 +72,24 @@ impl HfTransport for UreqTransport {
     fn get(&self, url: &str, token: Option<&str>) -> Result<HfResponse, CatalogError> {
         let mut req = self.agent.get(url);
         if let Some(t) = token {
-            req = req.set("Authorization", &format!("Bearer {t}"));
+            req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        match req.call() {
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.into_string().unwrap_or_default();
-                Ok(HfResponse {
-                    status,
-                    body,
-                    error_message: None,
-                })
-            }
-            Err(ureq::Error::Status(code, resp)) => {
-                let error_message = resp.header("X-Error-Message").map(str::to_string);
-                let body = resp.into_string().unwrap_or_default();
-                Ok(HfResponse {
-                    status: code,
-                    body,
-                    error_message,
-                })
-            }
-            Err(ureq::Error::Transport(t)) => Err(CatalogError::Network(t.to_string())),
-        }
+        // http_status_as_error(false)：任何状态码都返回 Ok，错误仅来自传输层
+        let mut resp = req
+            .call()
+            .map_err(|e| CatalogError::Network(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let error_message = resp
+            .headers()
+            .get("X-Error-Message")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        Ok(HfResponse {
+            status,
+            body,
+            error_message,
+        })
     }
 }
 

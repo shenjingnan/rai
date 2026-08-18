@@ -476,12 +476,14 @@ impl DownloadManager {
                 .insert(task_id.clone(), Arc::new(AtomicBool::new(false)));
         }
         self.emit(&task_id);
+        // 先构建回执再启动 worker：保证 enqueue 返回的状态一定是 queued，
+        // 否则 worker 可能抢先将其改为 downloading（CI 高负载下曾复现）。
+        let (view, _) = self.view_of(&task_id);
         // 启动 worker（若尚无活跃任务）
         if !self.active.swap(true, Ordering::SeqCst) {
             let mgr = self.clone();
             std::thread::spawn(move || mgr.worker_loop());
         }
-        let (view, _) = self.view_of(&task_id);
         Ok(view)
     }
 

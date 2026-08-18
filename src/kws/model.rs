@@ -468,15 +468,17 @@ fn try_download_once_core(
 ) -> Result<(), ModelError> {
     let mut req = ureq::get(url);
     if let Some(t) = token {
-        req = req.set("Authorization", &format!("Bearer {t}"));
+        req = req.header("Authorization", &format!("Bearer {t}"));
     }
     let resp = req.call().map_err(|e| ModelError::Http(e.to_string()))?;
     let total = resp
-        .header("Content-Length")
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(manifest_total);
 
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     let mut file = std::fs::File::create(tmp_archive)?;
     let mut buf = [0u8; 64 * 1024];
     let mut done: u64 = 0;

@@ -2323,8 +2323,7 @@ fn build_metric_submenus(
         true,
         &[&s25, &s50, &s70, &s100, &s150, &s200],
     )?;
-    let opacity_menu =
-        Submenu::with_items(app, "透明度", true, &[&o100, &o80, &o60, &o40, &o20])?;
+    let opacity_menu = Submenu::with_items(app, "透明度", true, &[&o100, &o80, &o60, &o40, &o20])?;
     Ok((scale_menu, opacity_menu))
 }
 

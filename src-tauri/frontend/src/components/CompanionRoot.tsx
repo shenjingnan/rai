@@ -4,7 +4,13 @@ import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { VoiceStatusDot } from "@/components/voice/VoiceStatusDot";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
-import { api, onCompanionScaleChanged, onLive2dModelChanged, toAssetUrl } from "@/lib/tauri";
+import {
+  api,
+  onCompanionOpacityChanged,
+  onCompanionScaleChanged,
+  onLive2dModelChanged,
+  toAssetUrl,
+} from "@/lib/tauri";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
 const BASE_HEIGHT = 480;
@@ -23,8 +29,10 @@ const WHEEL_SCALE_STEP = 1.1;
 /**
  * 常驻角色窗口：静态展示 Live2D 模型（仅呼吸/眨眼等自动动画，不跟随鼠标）。
  *
- * - 启动时读 `get_live2d_config` 恢复持久化的模型与缩放比例；
- * - 订阅 `live2d-model-changed` / `companion-scale-changed`，设置窗口切换模型或缩放时即时同步；
+ * - 启动时读 `get_live2d_config` 恢复持久化的模型、缩放比例与透明度；
+ * - 订阅 `live2d-model-changed` / `companion-scale-changed` / `companion-opacity-changed`，
+ *   设置窗口切换模型、缩放或调透明度时即时同步（透明度由包裹模型的 wrapper div 的
+ *   `style.opacity` 应用，语音状态点不受影响）；
  * - 窗口尺寸由「基准高度 × scale」派生（宽度按模型宽高比），缩放入口为设置面板、cmd/ctrl+滚轮
  *   与原生右键菜单（后端弹原生菜单，不受小窗口裁剪）；
  * - 按住左键拖动移动窗口；右键弹出原生上下文菜单。
@@ -37,6 +45,7 @@ export function CompanionRoot() {
   const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [scale, setScale] = useState(1.0);
+  const [opacity, setOpacity] = useState(1.0);
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
@@ -87,11 +96,12 @@ export function CompanionRoot() {
     }
   }, [config]);
 
-  // 恢复持久化的缩放比例，并据此 resize 一次（确保前端 state 与后端建窗尺寸一致）。
+  // 恢复持久化的缩放比例与透明度，并据此 resize 一次（确保前端 state 与后端建窗尺寸一致）。
   useEffect(() => {
     if (!config) return;
     const s = config.window_scale ?? 1.0;
     setScale(s);
+    setOpacity(config.window_opacity ?? 1.0);
     void resizeTo(aspectRatioRef.current, s);
   }, [config, resizeTo]);
 
@@ -115,6 +125,16 @@ export function CompanionRoot() {
       void unlisten.then((fn) => fn());
     };
   }, [resizeTo]);
+
+  // 设置面板/菜单改透明度时同步（纯视觉：只更新渲染层 opacity，不涉及窗口尺寸）。
+  useEffect(() => {
+    const unlisten = onCompanionOpacityChanged((v) => {
+      setOpacity(v);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
 
   // 模型加载后更新真实宽高比，并用当前 scale 重算尺寸（不持久化 scale）。
   const handleModelMetrics = useCallback(
@@ -188,12 +208,15 @@ export function CompanionRoot() {
         void api.showCompanionMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      <Live2dStage
-        modelUrl={modelUrl}
-        width={size.width}
-        height={size.height}
-        onModelMetrics={handleModelMetrics}
-      />
+      {/* 透明度只作用于模型本身，语音状态点保持不透明 */}
+      <div style={{ opacity }}>
+        <Live2dStage
+          modelUrl={modelUrl}
+          width={size.width}
+          height={size.height}
+          onModelMetrics={handleModelMetrics}
+        />
+      </div>
       <span className="absolute right-2 top-2">
         <VoiceStatusDot phase={voice.phase} running={voice.running} />
       </span>

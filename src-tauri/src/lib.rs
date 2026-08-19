@@ -1840,6 +1840,7 @@ struct Live2dConfigInfo {
     format: Option<String>,
     models_present: bool,
     window_scale: Option<f64>,
+    window_opacity: Option<f64>,
     settings_path: String,
 }
 
@@ -1860,12 +1861,16 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
             .allow_directory(&cfg.model_dir, true);
     }
 
+    let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
+    let window_opacity = live2d_settings.as_ref().and_then(|l| l.window_opacity);
+
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
         model_file: cfg.model_file.map(|p| p.display().to_string()),
         format: cfg.format.map(|f| f.to_str().to_string()),
         models_present,
-        window_scale: live2d_settings.and_then(|l| l.window_scale),
+        window_scale,
+        window_opacity,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2142,6 +2147,17 @@ fn apply_companion_scale(app: &AppHandle, scale: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// 保存角色窗口透明度并通知角色窗口（内部实现，供 command 与原生菜单事件共用）。
+fn apply_companion_opacity(app: &AppHandle, opacity: f64) -> Result<(), String> {
+    let opacity = clamp_opacity(opacity);
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.window_opacity = Some(opacity);
+    settings::save_settings(&settings)?;
+    let _ = app.emit("companion-opacity-changed", opacity);
+    Ok(())
+}
+
 /// 把原生菜单项 id 解析为缩放比例。
 fn scale_from_id(id: &str) -> Option<f64> {
     match id {
@@ -2184,6 +2200,15 @@ fn opacity_from_id(id: &str) -> Option<f64> {
 #[tauri::command]
 fn set_companion_scale(app: AppHandle, scale: f64) -> Result<(), String> {
     apply_companion_scale(&app, scale)
+}
+
+/// 设置并持久化角色窗口透明度（1.0 = 不透明，范围 0.2~1.0）。
+///
+/// 由设置面板调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].window_opacity`，
+/// 并通过 `companion-opacity-changed` 事件通知角色窗口更新渲染层 opacity。
+#[tauri::command]
+fn set_companion_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
+    apply_companion_opacity(&app, opacity)
 }
 
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
@@ -3274,6 +3299,7 @@ pub fn run() {
             save_cover_image,
             save_companion_position,
             set_companion_scale,
+            set_companion_opacity,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,

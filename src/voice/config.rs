@@ -31,6 +31,8 @@ pub struct CliOverrides {
     pub history_max: Option<usize>,
     /// true = CLI 显式 `--no-bargein` 强制关闭打断（缺省 false 不强制，交给 settings）
     pub no_bargein: bool,
+    /// true = CLI 显式 `--no-follow-up` 强制关闭跟听窗口（缺省 false 不强制，交给 settings）
+    pub no_follow_up: bool,
     pub barge_in_threshold: Option<f32>,
     pub welcome_text: Option<String>,
     pub vad_silence_threshold: Option<f32>,
@@ -63,6 +65,8 @@ pub struct ResolvedSessionConfig {
     pub history_max: usize,
     /// 播报/思考中唤醒词打断
     pub barge_in: bool,
+    /// 回复播完后自动进入 ASR 聆听（跟听免唤醒；空识别保持聆听，不回待唤醒）
+    pub follow_up: bool,
     /// 打断用 KWS 触发阈值
     pub barge_in_threshold: f32,
     /// 唤醒欢迎语文本
@@ -133,6 +137,8 @@ pub fn resolve(
             .unwrap_or(DEFAULT_HISTORY_MAX),
         // CLI `--no-bargein` 强制关；未指定时尊重 settings（缺省开）
         barge_in: !cli.no_bargein && voice.and_then(|v| v.barge_in).unwrap_or(true),
+        // CLI `--no-follow-up` 强制关；未指定时尊重 settings（缺省开）
+        follow_up: !cli.no_follow_up && voice.and_then(|v| v.follow_up).unwrap_or(true),
         barge_in_threshold: cli
             .barge_in_threshold
             .or_else(|| voice.and_then(|v| v.barge_in_threshold))
@@ -176,6 +182,7 @@ mod tests {
             assert_eq!(cfg.speed, 1.0);
             assert_eq!(cfg.history_max, DEFAULT_HISTORY_MAX);
             assert!(cfg.barge_in);
+            assert!(cfg.follow_up);
             assert_eq!(cfg.barge_in_threshold, DEFAULT_BARGE_IN_THRESHOLD);
             assert_eq!(cfg.welcome_text, DEFAULT_WELCOME_TEXT);
             assert_eq!(cfg.vad_silence_threshold, DEFAULT_VAD_SILENCE_THRESHOLD);
@@ -216,6 +223,7 @@ mod tests {
                 max_turns: Some(5),
                 history_max: Some(20),
                 barge_in: Some(false),
+                follow_up: Some(false),
                 barge_in_threshold: Some(0.7),
                 welcome_text: Some("我在呢".to_string()),
                 vad_silence_threshold: Some(0.03),
@@ -230,6 +238,7 @@ mod tests {
             assert_eq!(cfg.max_turns, Some(5));
             assert_eq!(cfg.history_max, 20);
             assert!(!cfg.barge_in);
+            assert!(!cfg.follow_up);
             assert_eq!(cfg.barge_in_threshold, 0.7);
             assert_eq!(cfg.welcome_text, "我在呢");
             assert_eq!(cfg.vad_silence_threshold, 0.03);
@@ -287,6 +296,32 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_no_follow_up_forces_off() {
+        run_with_temp_home(|_| {
+            // settings 缺省开，CLI --no-follow-up 强制关
+            let cli = CliOverrides {
+                no_follow_up: true,
+                ..Default::default()
+            };
+            let cfg = resolve(None, &cli).unwrap();
+            assert!(!cfg.follow_up);
+        });
+    }
+
+    #[test]
+    fn test_follow_up_respects_settings_when_cli_unset() {
+        run_with_temp_home(|_| {
+            // CLI 缺省（follow_up=true）时，settings follow_up=false 生效
+            let voice = VoiceSettings {
+                follow_up: Some(false),
+                ..Default::default()
+            };
+            let cfg = resolve(Some(&settings_with_voice(voice)), &CliOverrides::default()).unwrap();
+            assert!(!cfg.follow_up);
+        });
+    }
+
+    #[test]
     fn test_voice_settings_serde_roundtrip() {
         run_with_temp_home(|_| {
             let voice = VoiceSettings {
@@ -297,6 +332,7 @@ mod tests {
                 max_turns: Some(10),
                 history_max: Some(16),
                 barge_in: Some(true),
+                follow_up: Some(false),
                 barge_in_threshold: Some(0.6),
                 welcome_text: Some("你好".to_string()),
                 vad_silence_threshold: Some(0.02),

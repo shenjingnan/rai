@@ -462,6 +462,9 @@ pub struct VoiceSettings {
     /// 播报/思考中唤醒词打断，缺省 true
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barge_in: Option<bool>,
+    /// 回复播完后自动进入 ASR 聆听（免唤醒续聊；空识别保持聆听不回待唤醒），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<bool>,
     /// 打断用 KWS 触发阈值（高于监听阈值，缓解回声误触发），缺省 0.5
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barge_in_threshold: Option<f32>,

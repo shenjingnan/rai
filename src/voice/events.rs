@@ -27,6 +27,8 @@ pub enum VoiceEvent {
     PlaySentence { sentence: String },
     /// 一轮回复生成结束（`[回复完成] {reason}`）
     ReplyFinished { reason: String },
+    /// 回复播完，进入跟听聆听（`[跟听] 继续说...`；前端不消费）
+    FollowUp,
     /// 错误（LLM / 合成 / 打断）
     Error { kind: ErrorKind, message: String },
     /// 唤醒词打断（`[打断] 检测到唤醒词...`）
@@ -52,9 +54,53 @@ pub enum StoppedReason {
     Manual,
 }
 
+/// 把语音会话事件镜像写入 tracing 日志（文件层 `~/.zapmomo/logs/app.log`，info+ 可见）。
+///
+/// CLI sink 与 Tauri sink 在转发事件时都调用本函数，保证两种模式下语音会话的
+/// **状态切换 / ASR 识别 / TTS 合成**内容都能离线回溯，便于排查状态机问题。
+/// 分级：关键信息（状态/唤醒/ASR 最终文本/TTS 合成/错误/停止）用 `info`（进文件），
+/// 高频中间态（ASR 流式字幕 / LLM token / 播放时序）用 `debug`（不进文件防刷屏）。
+pub fn log_voice_event(ev: &VoiceEvent) {
+    match ev {
+        VoiceEvent::Started => tracing::info!("[voice] 会话开始"),
+        VoiceEvent::State { state } => tracing::info!("[voice] 状态切换 -> {state:?}"),
+        VoiceEvent::Wake { keyword } => tracing::info!("[voice] 唤醒词命中: {keyword}"),
+        VoiceEvent::Transcript { text, is_final } => {
+            if *is_final {
+                tracing::info!("[voice] ASR 最终识别: {text}");
+            } else if !text.is_empty() {
+                tracing::debug!("[voice] ASR 流式字幕: {text}");
+            }
+        }
+        VoiceEvent::Token { delta } => {
+            if !delta.is_empty() {
+                tracing::debug!("[voice] LLM token: {delta}");
+            }
+        }
+        VoiceEvent::ReplySentence { sentence } => {
+            tracing::info!("[voice] TTS 合成入队: {sentence}")
+        }
+        VoiceEvent::PlaySentence { sentence } => {
+            tracing::debug!("[voice] TTS 开始播放: {sentence}")
+        }
+        VoiceEvent::ReplyFinished { reason } => {
+            tracing::info!("[voice] 回复生成结束: {reason}")
+        }
+        VoiceEvent::FollowUp => tracing::info!("[voice] 进入跟听聆听"),
+        VoiceEvent::Error { kind, message } => {
+            tracing::warn!("[voice] 错误 kind={kind:?} message={message}")
+        }
+        VoiceEvent::BargeIn => tracing::info!("[voice] 唤醒词打断"),
+        VoiceEvent::Stopped { reason, turns } => {
+            tracing::info!("[voice] 会话停止 reason={reason:?} turns={turns}")
+        }
+    }
+}
+
 /// 默认 CLI sink：`zapmomo voice run` 的输出格式逐字节复刻原 `println!`。
 pub fn cli_sink(ev: VoiceEvent) {
     use std::io::Write;
+    log_voice_event(&ev);
     match ev {
         VoiceEvent::Started => println!("[会话] 开始（Ctrl-C 退出）。喊唤醒词开始对话。"),
         VoiceEvent::State { state } => println!("[会话] 状态 -> {state:?}"),
@@ -77,6 +123,7 @@ pub fn cli_sink(ev: VoiceEvent) {
             println!(); // 结束 token 流的一行
             println!("[回复完成] {reason}");
         }
+        VoiceEvent::FollowUp => println!("\n[跟听] 继续说。"),
         VoiceEvent::Error { kind, message } => match kind {
             ErrorKind::Llm => eprintln!("[LLM 错误] {message}"),
             ErrorKind::Synth => eprintln!("[合成错误] {message}"),
@@ -93,7 +140,106 @@ pub fn cli_sink(ev: VoiceEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logging::make_file_writer;
+    use crate::test_util::run_with_temp_home;
     use crate::voice::state::SessionState;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, Registry, fmt};
+
+    #[test]
+    fn test_log_voice_event_all_variants_no_panic() {
+        // 遍历所有变体调用 log_voice_event（无 subscriber 时 tracing 为 no-op），
+        // 确保任何事件都不会在日志镜像层 panic
+        let events = vec![
+            VoiceEvent::Started,
+            VoiceEvent::State {
+                state: SessionState::WaitingSpeech,
+            },
+            VoiceEvent::Wake {
+                keyword: "你好小智".to_string(),
+            },
+            VoiceEvent::Transcript {
+                text: "识别中".to_string(),
+                is_final: false,
+            },
+            VoiceEvent::Transcript {
+                text: "你好".to_string(),
+                is_final: true,
+            },
+            VoiceEvent::Token {
+                delta: "今天".to_string(),
+            },
+            VoiceEvent::ReplySentence {
+                sentence: "今天天气不错。".to_string(),
+            },
+            VoiceEvent::PlaySentence {
+                sentence: "今天天气不错。".to_string(),
+            },
+            VoiceEvent::ReplyFinished {
+                reason: "Eos".to_string(),
+            },
+            VoiceEvent::FollowUp,
+            VoiceEvent::Error {
+                kind: ErrorKind::Llm,
+                message: "x".to_string(),
+            },
+            VoiceEvent::BargeIn,
+            VoiceEvent::Stopped {
+                reason: StoppedReason::Manual,
+                turns: 2,
+            },
+        ];
+        for ev in &events {
+            log_voice_event(ev);
+        }
+    }
+
+    #[test]
+    fn test_log_voice_event_info_levels_written_to_file() {
+        // 验证 info 级别的语音事件（状态切换/ASR 最终/TTS 合成）真的写入日志文件，
+        // 而 debug 级别的中间态（流式字幕）被文件层的 info 过滤器丢弃。
+        run_with_temp_home(|home| {
+            let log_path = home.join(".zapmomo/logs/app.log");
+            std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+            let subscriber = Registry::default().with(
+                fmt::layer()
+                    .with_writer(make_file_writer(log_path.clone()))
+                    .with_ansi(false)
+                    .with_filter(EnvFilter::new("info")),
+            );
+            tracing::subscriber::with_default(subscriber, || {
+                log_voice_event(&VoiceEvent::State {
+                    state: SessionState::Speaking,
+                });
+                log_voice_event(&VoiceEvent::Transcript {
+                    text: "今天天气不错".to_string(),
+                    is_final: true,
+                });
+                log_voice_event(&VoiceEvent::ReplySentence {
+                    sentence: "确实不错。".to_string(),
+                });
+                // debug 级别中间态：不应出现在 info 过滤后的文件里
+                log_voice_event(&VoiceEvent::Transcript {
+                    text: "中间识别".to_string(),
+                    is_final: false,
+                });
+            });
+            let content = std::fs::read_to_string(&log_path).unwrap();
+            assert!(
+                content.contains("状态切换 -> Speaking"),
+                "状态切换应写入文件"
+            );
+            assert!(
+                content.contains("ASR 最终识别: 今天天气不错"),
+                "ASR 最终文本应写入文件"
+            );
+            assert!(
+                content.contains("TTS 合成入队: 确实不错。"),
+                "TTS 输入应写入文件"
+            );
+            assert!(!content.contains("中间识别"), "debug 流式字幕不应写入文件");
+        });
+    }
 
     #[test]
     fn test_voice_event_serialize_shape() {
@@ -124,6 +270,7 @@ mod tests {
                 },
                 r#"{"type":"error","kind":"llm","message":"加载失败"}"#,
             ),
+            (VoiceEvent::FollowUp, r#"{"type":"follow_up"}"#),
             (
                 VoiceEvent::Stopped {
                     reason: StoppedReason::MaxTurns { max: 5 },
@@ -168,6 +315,7 @@ mod tests {
             VoiceEvent::ReplyFinished {
                 reason: "Eos".to_string(),
             },
+            VoiceEvent::FollowUp,
             VoiceEvent::Error {
                 kind: ErrorKind::Llm,
                 message: "x".to_string(),

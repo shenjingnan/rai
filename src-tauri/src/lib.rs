@@ -1377,43 +1377,50 @@ fn is_llm_ready(state: State<'_, LlmState>) -> bool {
 /// 把 `VoiceEvent` 转发为 Tauri 事件（`Started/BargeIn/Stopped` 是 CLI 噪音，忽略；
 /// 终态由会话线程包装统一发 `voice-session-stopped`）。
 fn make_voice_emit(app: AppHandle) -> Box<dyn Fn(VoiceEvent) + Send> {
-    Box::new(move |ev| match ev {
-        VoiceEvent::Started | VoiceEvent::BargeIn | VoiceEvent::Stopped { .. } => {}
-        VoiceEvent::State { state } => {
-            let _ = app.emit(
-                "voice-session-state",
-                VoiceSessionStatePayload {
-                    running: state != VoicePhase::Idle,
-                    state,
-                },
-            );
-        }
-        VoiceEvent::Wake { keyword } => {
-            let _ = app.emit("voice-session-wake", VoiceWakePayload { keyword });
-        }
-        VoiceEvent::Transcript { text, is_final } => {
-            let _ = app.emit(
-                "voice-session-transcript",
-                VoiceTranscriptPayload { text, is_final },
-            );
-        }
-        VoiceEvent::Token { delta } => {
-            let _ = app.emit("voice-session-token", VoiceTokenPayload { delta });
-        }
-        VoiceEvent::ReplySentence { sentence } => {
-            let _ = app.emit("voice-session-reply", VoiceReplyPayload { sentence });
-        }
-        VoiceEvent::PlaySentence { sentence } => {
-            let _ = app.emit("voice-session-play", VoicePlayPayload { sentence });
-        }
-        VoiceEvent::ReplyFinished { reason } => {
-            let _ = app.emit(
-                "voice-session-reply-finished",
-                VoiceReplyFinishedPayload { reason },
-            );
-        }
-        VoiceEvent::Error { message, .. } => {
-            let _ = app.emit("voice-session-error", VoiceErrorPayload { message });
+    Box::new(move |ev| {
+        // 镜像写入 tracing 日志（~/.zapmomo/logs/app.log），Tauri 模式下也能离线回溯语音会话
+        zapmomo::voice::events::log_voice_event(&ev);
+        match ev {
+            VoiceEvent::Started
+            | VoiceEvent::BargeIn
+            | VoiceEvent::Stopped { .. }
+            | VoiceEvent::FollowUp => {}
+            VoiceEvent::State { state } => {
+                let _ = app.emit(
+                    "voice-session-state",
+                    VoiceSessionStatePayload {
+                        running: state != VoicePhase::Idle,
+                        state,
+                    },
+                );
+            }
+            VoiceEvent::Wake { keyword } => {
+                let _ = app.emit("voice-session-wake", VoiceWakePayload { keyword });
+            }
+            VoiceEvent::Transcript { text, is_final } => {
+                let _ = app.emit(
+                    "voice-session-transcript",
+                    VoiceTranscriptPayload { text, is_final },
+                );
+            }
+            VoiceEvent::Token { delta } => {
+                let _ = app.emit("voice-session-token", VoiceTokenPayload { delta });
+            }
+            VoiceEvent::ReplySentence { sentence } => {
+                let _ = app.emit("voice-session-reply", VoiceReplyPayload { sentence });
+            }
+            VoiceEvent::PlaySentence { sentence } => {
+                let _ = app.emit("voice-session-play", VoicePlayPayload { sentence });
+            }
+            VoiceEvent::ReplyFinished { reason } => {
+                let _ = app.emit(
+                    "voice-session-reply-finished",
+                    VoiceReplyFinishedPayload { reason },
+                );
+            }
+            VoiceEvent::Error { message, .. } => {
+                let _ = app.emit("voice-session-error", VoiceErrorPayload { message });
+            }
         }
     })
 }

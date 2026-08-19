@@ -238,6 +238,9 @@ pub enum VoiceCmd {
         /// 关闭播报/思考中的唤醒词打断
         #[arg(long)]
         no_bargein: bool,
+        /// 关闭回复播完后的自动跟听聆听（播完回待唤醒，需再喊唤醒词）
+        #[arg(long)]
+        no_follow_up: bool,
         /// 打断用 KWS 触发阈值，缺省 0.5
         #[arg(long)]
         bargein_threshold: Option<f32>,
@@ -579,6 +582,7 @@ async fn cmd_voice(cmd: VoiceCmd) -> Result<(), String> {
         max_turns,
         history_max,
         no_bargein,
+        no_follow_up,
         bargein_threshold,
         kws_model_dir,
         asr_model_dir,
@@ -593,6 +597,7 @@ async fn cmd_voice(cmd: VoiceCmd) -> Result<(), String> {
         max_turns,
         history_max,
         no_bargein,
+        no_follow_up,
         barge_in_threshold: bargein_threshold,
         // 欢迎语/门控参数暂不暴露 CLI flag，从 settings.toml 配置
         welcome_text: None,
@@ -987,6 +992,7 @@ mod tests {
             "--history-max",
             "16",
             "--no-bargein",
+            "--no-follow-up",
             "--bargein-threshold",
             "0.7",
             "--kws-model-dir",
@@ -1009,6 +1015,7 @@ mod tests {
                     max_turns,
                     history_max,
                     no_bargein,
+                    no_follow_up,
                     bargein_threshold,
                     kws_model_dir,
                     asr_model_dir,
@@ -1022,6 +1029,7 @@ mod tests {
                     assert_eq!(max_turns, Some(5));
                     assert_eq!(history_max, Some(16));
                     assert!(no_bargein);
+                    assert!(no_follow_up);
                     assert_eq!(bargein_threshold, Some(0.7));
                     assert_eq!(
                         kws_model_dir.as_deref(),

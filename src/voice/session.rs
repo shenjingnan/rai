@@ -1,16 +1,22 @@
 /// 语音会话编排核心（`VoiceSession`）。
 ///
-/// 把 KWS → ASR → LLM → TTS 串成一条**唤醒门控 + 句级流式 + 唤醒词打断**的对话链路：
+/// 把 KWS → ASR → LLM → TTS 串成一条**唤醒门控 + 句级流式 + 唤醒词打断 + 跟听续聊**的对话链路：
 ///
 /// ```text
-/// Idle --Start--> Armed --唤醒词--> Listening --ASR is_final--> Thinking --首句入队--> Speaking
-///   ▲                                             │                                 │
-///   │                     ReplyFinished（播完回听）│                                 │
-///   └──────────────────── Armed ◄───BargeIn────────┴─────────────Thinking | Speaking──┘
+/// Idle --Start--> Armed --唤醒词--> Greeting --欢迎播完--> WaitingSpeech --真说话--> Listening
+///   ▲                            （下次唤醒）  │            │ 超时→Armed         │
+///   │                                           └─────────────────────┐         │
+///   │           Armed ◄──BargeIn─── Thinking|Speaking ◄──FirstSentenceEnqueued──┘
+///   │              ▲            │（回复播完）                          │
+///   └──────────────┘◄─WaitTimeout│  FollowUp → 直接进 Listening（跟听免唤醒）  │
+///                              └──────────────────────────────────────────────┘
 /// ```
 ///
 /// `Armed`（待唤醒）是 KWS 门控：命中唤醒词才进入 `Listening`（ASR 识别），
-/// 否则不消费用户话语。
+/// 否则不消费用户话语。第一轮欢迎语后仍走 `WaitingSpeech` RMS 门控（无人说话超时回
+/// 待唤醒）。**回复播完默认直接进 `Listening` 跟听**（`follow_up` 开启，免唤醒），
+/// 识别到内容即进入下一轮；ASR 空识别时**保持聆听不退出**（重建流继续听），直到
+/// 达 `max_turns` 或手动停止——形成无需再喊唤醒词的持续对话循环。
 ///
 /// 线程模型：编排循环在**调用线程**运行，持有全部 sherpa 引擎/流与 rodio 播放器
 /// （`Sink`/`Player` 不跨线程）。唯一后台线程是 [`SynthHandle`] 的 TTS 合成线程。
@@ -43,6 +49,8 @@ use std::time::Duration;
 const MIC_POLL: Duration = Duration::from_millis(100);
 /// 打断后回听前跳过的音频时长（丢弃回声尾巴，避免把上一条回答喂给 ASR）。
 const SKIP_AFTER_BARGE_IN: Duration = Duration::from_millis(300);
+/// 回复播完进入跟听窗口前跳过的音频时长（丢弃 TTS 回声尾巴，避免误判为用户说话）。
+const SKIP_AFTER_REPLY: Duration = Duration::from_millis(300);
 /// LLM 模型加载超时（首次加载大模型较慢）。
 const LLM_LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -217,12 +225,24 @@ impl VoiceSession {
         Ok(())
     }
 
-    /// 状态迁移 + 进入 Listening 时重建 ASR 流（丢弃上轮累积的识别状态）。
+    /// 状态迁移 + 进入特定状态时复位对应累计器（ASR 流重建 / 等待计时清零）。
+    ///
+    /// - 进 `Listening`：重建 ASR 流（丢弃上轮累积的识别状态）+ 清零静音累计。
+    /// - 进 `WaitingSpeech`：清零等待计时与说话命中计数，保证**每轮跟听/欢迎都从完整
+    ///   超时窗口起算**（否则多轮跟听时 `speech_wait_accum` 残留会逐轮缩短窗口）。
     fn set_state(&mut self, ev: SessionEvent) -> Result<(), String> {
         let next = crate::voice::state::transition(self.state, ev)?;
         self.state = next;
-        if next == SessionState::Listening {
-            self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
+        match next {
+            SessionState::Listening => {
+                self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
+                self.silence_accum = 0.0;
+            }
+            SessionState::WaitingSpeech => {
+                self.speech_wait_accum = 0.0;
+                self.speech_hits = 0;
+            }
+            _ => {}
         }
         (self.emit)(VoiceEvent::State { state: next });
         Ok(())
@@ -347,12 +367,15 @@ impl VoiceSession {
         Ok(())
     }
 
-    /// 处理一句最终用户文本：非空 → 入历史并发起 LLM；空（没真说话/识别失败）→ 回待唤醒。
+    /// 处理一句最终用户文本：非空 → 入历史并发起 LLM；空（没真说话/识别失败）→
+    /// **保持聆听不退出**（重建 ASR 流，状态留在 Listening；跟听循环免唤醒持续监听）。
     fn handle_user_final(&mut self, text: String) -> Result<(), String> {
         let text = text.trim().to_string();
         self.silence_accum = 0.0;
         if text.is_empty() {
-            self.set_state(SessionEvent::WaitTimeout)?;
+            // force_finalize 已终结旧 ASR 流，重建后继续聆听（不回待唤醒）
+            tracing::debug!("[voice] ASR 空识别，保持聆听");
+            self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
             return Ok(());
         }
         (self.emit)(VoiceEvent::Transcript {
@@ -417,10 +440,14 @@ impl VoiceSession {
         self.synth_enqueued += 1;
     }
 
-    /// Thinking：喂 KWS（打断监听）+ 轮询 LLM 事件（流式打印 token），把切句入队合成。
-    fn step_thinking(&mut self) -> Result<(), String> {
-        self.listen_barge_in()?;
-        // 轮询本会话订阅的 LLM 事件流（广播：与 GUI 的 forward 订阅互不抢事件）
+    /// 消费 LLM 事件流：Token 切句入队合成 / `Finished` 置位 / 错误转发。
+    ///
+    /// `step_thinking` 与 `step_speaking` 都调用：句级流式下 LLM 在 Speaking 阶段仍在
+    /// 产出，`Finished` 可能晚于首句入队才到达（worker 在最后一个 token 后还要采样 EOG
+    /// 才广播 `Finished`），若 Speaking 不消费则会永久丢失 → `reply_done` 恒为 false →
+    /// 播完卡在 Speaking。`first_sentence` 标志保证 Speaking 阶段收到新句子不会重复
+    /// 触发 `FirstSentenceEnqueued` 迁移。
+    fn poll_llm_events(&mut self) -> Result<(), String> {
         loop {
             let ev = match self.llm_rx.try_recv() {
                 Ok(ev) => ev,
@@ -468,6 +495,13 @@ impl VoiceSession {
                 LlmEvent::Status { .. } => {}
             }
         }
+        Ok(())
+    }
+
+    /// Thinking：喂 KWS（打断监听）+ 消费 LLM 事件（流式打印 token），把切句入队合成。
+    fn step_thinking(&mut self) -> Result<(), String> {
+        self.listen_barge_in()?;
+        self.poll_llm_events()?;
         // 未切出任何句子（空回复/立即出错）→ 直接回听
         if self.reply_done && self.synth_enqueued == 0 {
             self.finish_reply()?;
@@ -475,9 +509,10 @@ impl VoiceSession {
         Ok(())
     }
 
-    /// Speaking：喂 KWS（打断监听）+ 把合成结果按序交给播放器，播完回听。
+    /// Speaking：喂 KWS（打断监听）+ 消费 LLM 事件（晚到的 token/Finished）+ 按序播放，播完回听。
     fn step_speaking(&mut self) -> Result<(), String> {
         self.listen_barge_in()?;
+        self.poll_llm_events()?;
         while let Some(result) = self.synth.try_recv() {
             self.synth_consumed += 1;
             match result {
@@ -529,19 +564,24 @@ impl VoiceSession {
         Ok(())
     }
 
-    /// 回复播完（或无内容可播）→ 回 Armed（待唤醒）；已达 max_turns 则结束会话。
+    /// 回复播完（或无内容可播）→ 依 `decide_finish` 分流：停止 / 进跟听窗口 / 回待唤醒。
     fn finish_reply(&mut self) -> Result<(), String> {
-        if let Some(max) = self.cfg.max_turns
-            && self.turns >= max
-        {
-            self.running.store(false, Ordering::Relaxed);
-            (self.emit)(VoiceEvent::Stopped {
-                reason: StoppedReason::MaxTurns { max },
-                turns: self.turns,
-            });
-            return Ok(());
+        match decide_finish(self.cfg.follow_up, self.cfg.max_turns, self.turns) {
+            FinishAction::Stop { max } => {
+                self.running.store(false, Ordering::Relaxed);
+                (self.emit)(VoiceEvent::Stopped {
+                    reason: StoppedReason::MaxTurns { max },
+                    turns: self.turns,
+                });
+            }
+            FinishAction::FollowUp => {
+                // 丢 TTS 回声尾巴，避免被 ASR 识别成用户内容
+                self.mic.skip_for(SKIP_AFTER_REPLY);
+                self.set_state(SessionEvent::FollowUp)?; // → Listening 直接聆听
+            }
+            FinishAction::ToArmed => self.set_state(SessionEvent::ReplyFinished)?,
         }
-        self.set_state(SessionEvent::ReplyFinished)
+        Ok(())
     }
 
     /// 打断序列：取消 LLM、停播、清合成、作废在途结果、回听并丢回声尾巴。
@@ -718,6 +758,30 @@ fn truncate_history(history: &mut Vec<InputItem>, max: usize) {
     if history.len() > max {
         let drop = history.len() - max;
         history.drain(..drop);
+    }
+}
+
+/// 回复播完后的去向。
+enum FinishAction {
+    /// 达 `max_turns` 上限，结束会话。
+    Stop { max: u32 },
+    /// 进入跟听窗口（WaitingSpeech，复用 RMS 门控）。
+    FollowUp,
+    /// 回待唤醒（原行为，需再喊唤醒词）。
+    ToArmed,
+}
+
+/// 回复播完后去哪：`max_turns` 优先级最高（达上限直接停，不开跟听窗口），
+/// 其次按 `follow_up` 开关决定进跟听窗口或回待唤醒。
+fn decide_finish(follow_up: bool, max_turns: Option<u32>, turns: u32) -> FinishAction {
+    if let Some(max) = max_turns
+        && turns >= max
+    {
+        FinishAction::Stop { max }
+    } else if follow_up {
+        FinishAction::FollowUp
+    } else {
+        FinishAction::ToArmed
     }
 }
 
@@ -922,6 +986,45 @@ mod tests {
         ];
         truncate_history(&mut history, 4);
         assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_decide_finish_max_turns_wins_over_follow_up() {
+        // 达轮上限直接停，不开跟听窗口
+        assert!(matches!(
+            decide_finish(true, Some(3), 3),
+            FinishAction::Stop { max: 3 }
+        ));
+        assert!(matches!(
+            decide_finish(false, Some(2), 5),
+            FinishAction::Stop { max: 2 }
+        ));
+    }
+
+    #[test]
+    fn test_decide_finish_follow_up_when_enabled() {
+        // 开启跟听且未达上限 → 进跟听窗口
+        assert!(matches!(
+            decide_finish(true, None, 3),
+            FinishAction::FollowUp
+        ));
+        assert!(matches!(
+            decide_finish(true, Some(5), 3),
+            FinishAction::FollowUp
+        ));
+    }
+
+    #[test]
+    fn test_decide_finish_to_armed_when_disabled() {
+        // 关闭跟听 → 回待唤醒（原行为）
+        assert!(matches!(
+            decide_finish(false, None, 3),
+            FinishAction::ToArmed
+        ));
+        assert!(matches!(
+            decide_finish(false, Some(5), 3),
+            FinishAction::ToArmed
+        ));
     }
 
     #[test]

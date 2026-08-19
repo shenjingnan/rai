@@ -5,13 +5,19 @@
 /// one place，便于单测。
 ///
 /// ```text
-/// Idle --Start--> Armed --KeywordDetected--> Listening --UserUtteranceFinal--> Thinking
-///  ▲              │                                                             │
-///  │ Stop          └──ReplyFinished──┐                    FirstSentenceEnqueued │
-///  │                                │                                           ▼
-///  └──────────────Stop───────────────┼─────────────────────────────► Speaking ──┘
-///   Armed <--ReplyFinished-- Speaking│                                       ▲
-///   Armed <----BargeIn----- Thinking|Speaking ────────────────────────────────┘
+/// Idle --Start--> Armed --KeywordDetected--> Greeting --WelcomeDone--> WaitingSpeech
+///   ▲              │                              │  ▲   (WaitingSpeech 检测真说话)
+///   │ Stop          │                              │  │        │
+///   │               └──(WaitingSpeech)──SpeechDetected──► Listening
+///   │              ┌───────────────────────────────────► Listening
+///   │              │ (FollowUp: 回复播完直接进 ASR 聆听，跟听免唤醒)
+///   │              │                                     │
+///   └──────────────┼───────────────────────────► Thinking ◄─ UserUtteranceFinal
+///                   │                              │        │ FirstSentenceEnqueued
+///                   └──────────────────────────────┴──► Speaking ──┘
+///   Armed <--WaitTimeout-- WaitingSpeech（第一轮无人说话回待唤醒）
+///   Armed <--BargeIn------- Thinking|Speaking（打断）
+///   Listening 空识别 → 保持聆听不退出（session 内重建 ASR 流，不回 Armed）
 /// ```
 use serde::Serialize;
 
@@ -55,6 +61,8 @@ pub enum SessionEvent {
     FirstSentenceEnqueued,
     /// 回复播完 / 无内容可播（Thinking|Speaking → Armed）
     ReplyFinished,
+    /// 回复播完，进跟听聆听（Thinking|Speaking → Listening，区别于回待唤醒）
+    FollowUp,
     /// 打断（Thinking|Speaking → Armed）
     BargeIn,
     /// 停止（任意 → Idle）
@@ -79,6 +87,8 @@ pub fn transition(state: SessionState, ev: SessionEvent) -> Result<SessionState,
         // 播完 / 思考阶段未切出任何句子（空回复）→ 回到待唤醒
         (Speaking, ReplyFinished) => Armed,
         (Thinking, ReplyFinished) => Armed,
+        // 播完 → 直接进 ASR 聆听（跟听，免唤醒；空识别时 session 保持 Listening 不退出）
+        (Thinking | Speaking, FollowUp) => Listening,
         // 打断 → 回到待唤醒
         (Thinking | Speaking, BargeIn) => Armed,
         // Stop 从任意状态（含 Idle）回到 Idle
@@ -114,9 +124,33 @@ mod tests {
         assert_eq!(transition(Speaking, ReplyFinished).unwrap(), Armed);
         // 思考中未切出句子（空回复）→ 回到待唤醒
         assert_eq!(transition(Thinking, ReplyFinished).unwrap(), Armed);
+        // 播完 → 直接进 ASR 聆听（跟听，免唤醒）
+        assert_eq!(transition(Speaking, FollowUp).unwrap(), Listening);
+        assert_eq!(transition(Thinking, FollowUp).unwrap(), Listening);
         // 思考中/播报中打断 → 回到待唤醒
         assert_eq!(transition(Thinking, BargeIn).unwrap(), Armed);
         assert_eq!(transition(Speaking, BargeIn).unwrap(), Armed);
+    }
+
+    #[test]
+    fn test_follow_up_roundtrip() {
+        use SessionEvent::*;
+        use SessionState::*;
+        // 回复播完 → 直接进 ASR 聆听（跟听，免唤醒）→ 识别 → 第二轮
+        let mut s = transition(Speaking, FollowUp).unwrap();
+        assert_eq!(s, Listening);
+        s = transition(s, UserUtteranceFinal).unwrap();
+        assert_eq!(s, Thinking);
+        s = transition(s, FirstSentenceEnqueued).unwrap();
+        assert_eq!(s, Speaking);
+        // 第二轮播完 → 再次进聆听（持续对话循环）
+        assert_eq!(transition(Speaking, FollowUp).unwrap(), Listening);
+        // 第一轮欢迎语后仍走 WaitingSpeech 门控；无人说话 → 回待唤醒
+        assert_eq!(
+            transition(WaitingSpeech, SpeechDetected).unwrap(),
+            Listening
+        );
+        assert_eq!(transition(WaitingSpeech, WaitTimeout).unwrap(), Armed);
     }
 
     #[test]
@@ -158,6 +192,7 @@ mod tests {
             (Idle, FirstSentenceEnqueued),
             (Idle, ReplyFinished),
             (Idle, BargeIn),
+            (Idle, FollowUp),
             (Armed, Start),
             (Armed, WelcomeDone),
             (Armed, SpeechDetected),
@@ -166,6 +201,7 @@ mod tests {
             (Armed, FirstSentenceEnqueued),
             (Armed, ReplyFinished),
             (Armed, BargeIn),
+            (Armed, FollowUp),
             (Greeting, KeywordDetected),
             (Greeting, SpeechDetected),
             (Greeting, WaitTimeout),
@@ -173,12 +209,14 @@ mod tests {
             (Greeting, FirstSentenceEnqueued),
             (Greeting, ReplyFinished),
             (Greeting, BargeIn),
+            (Greeting, FollowUp),
             (WaitingSpeech, KeywordDetected),
             (WaitingSpeech, WelcomeDone),
             (WaitingSpeech, UserUtteranceFinal),
             (WaitingSpeech, FirstSentenceEnqueued),
             (WaitingSpeech, ReplyFinished),
             (WaitingSpeech, BargeIn),
+            (WaitingSpeech, FollowUp),
             (Listening, Start),
             (Listening, KeywordDetected),
             (Listening, WelcomeDone),
@@ -186,6 +224,7 @@ mod tests {
             (Listening, FirstSentenceEnqueued),
             (Listening, ReplyFinished),
             (Listening, BargeIn),
+            (Listening, FollowUp),
             (Thinking, Start),
             (Thinking, KeywordDetected),
             (Thinking, WelcomeDone),

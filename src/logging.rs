@@ -37,8 +37,8 @@ pub fn init_logging() {
         .try_init();
 }
 
-/// 创建文件日志 writer（可测试）
-fn make_file_writer(log_path: PathBuf) -> impl Fn() -> Box<dyn io::Write> {
+/// 创建文件日志 writer（可测试；`pub(crate)` 供 voice 事件日志镜像测试复用）
+pub(crate) fn make_file_writer(log_path: PathBuf) -> impl Fn() -> Box<dyn io::Write> {
     move || -> Box<dyn io::Write> {
         // 确保目录存在（可能被外部删除）
         if let Some(parent) = log_path.parent() {

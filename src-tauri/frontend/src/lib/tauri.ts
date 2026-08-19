@@ -57,6 +57,7 @@ import type {
 export const api = {
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   listDevices: () => invoke<string[]>("list_devices"),
+  requestMicPermission: () => invoke<boolean>("request_mic_permission"),
   getKwsConfig: () => invoke<KwsConfigInfo>("get_kws_config"),
   setKwsEnabled: (args: { enabled: boolean }) => invoke<void>("set_kws_enabled", args),
   setKwsCustomKeywords: (args: { keywords: string }) =>
@@ -182,6 +183,10 @@ export function onListenStopped(handler: (payload: ListenStopped) => void): Prom
   return listen<ListenStopped>("kws-stopped", (e) => handler(e.payload));
 }
 
+export function onListenStarted(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("kws-started", (e) => handler(e.payload));
+}
+
 export function onDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
@@ -194,6 +199,10 @@ export function onAsrResult(handler: (result: AsrResult) => void): Promise<Unlis
 
 export function onAsrStopped(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
   return listen<ListenStopped>("asr-stopped", (e) => handler(e.payload));
+}
+
+export function onAsrStarted(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("asr-started", (e) => handler(e.payload));
 }
 
 export function onAsrDownloadProgress(
@@ -299,9 +308,7 @@ export function onVoiceSessionReplyFinished(
   return listen<VoiceReplyFinished>("voice-session-reply-finished", (e) => handler(e.payload));
 }
 
-export function onVoiceSessionError(
-  handler: (payload: VoiceError) => void,
-): Promise<UnlistenFn> {
+export function onVoiceSessionError(handler: (payload: VoiceError) => void): Promise<UnlistenFn> {
   return listen<VoiceError>("voice-session-error", (e) => handler(e.payload));
 }
 

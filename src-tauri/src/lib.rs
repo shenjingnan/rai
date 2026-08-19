@@ -240,6 +240,15 @@ fn list_devices() -> Vec<String> {
     zapmomo::audio::list_input_devices()
 }
 
+/// 请求 macOS 麦克风授权（触发系统授权弹窗）。返回是否已授权。
+///
+/// macOS 未授权时输入设备被系统隐藏、枚举为空，需先经此授权恢复；
+/// 调试模式下每次重新编译授权会失效，前端在设备列表为空时引导用户点击。
+#[tauri::command]
+fn request_mic_permission() -> Result<bool, String> {
+    zapmomo::audio::request_mic_permission()
+}
+
 /// GUI 展示用的 KWS 配置信息。
 #[derive(Serialize)]
 struct KwsConfigInfo {
@@ -426,6 +435,8 @@ fn start_listen_impl(
         let _ = reaction.app.emit("kws-stopped", payload);
     });
     *state.handle.lock().expect("listen handle lock poisoned") = Some(handle);
+    // 通知前端监听已启动（含切换设备后的自动重启；启动瞬间前端未订阅时静默丢弃）
+    let _ = app.emit("kws-started", ListenStopped { error: None });
     Ok(())
 }
 
@@ -440,10 +451,8 @@ fn start_listen(
     start_listen_impl(app, state.inner(), device, keywords)
 }
 
-/// 停止实时监听：置停止标志并等待线程退出。
-#[tauri::command]
-fn stop_listen(state: State<'_, ListenState>) -> Result<(), String> {
-    tracing::warn!("stop_listen called (is_listening={})", state.is_listening());
+/// 停止实时监听的内部实现（`stop_listen` command 与「切换设备重启」共用）。
+fn stop_listen_inner(state: &ListenState) -> Result<(), String> {
     if !state.is_listening() {
         return Err("当前没有在监听".to_string());
     }
@@ -462,6 +471,13 @@ fn stop_listen(state: State<'_, ListenState>) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
+}
+
+/// 停止实时监听：置停止标志并等待线程退出。
+#[tauri::command]
+fn stop_listen(state: State<'_, ListenState>) -> Result<(), String> {
+    tracing::warn!("stop_listen called (is_listening={})", state.is_listening());
+    stop_listen_inner(state.inner())
 }
 
 /// 当前是否正在监听。
@@ -623,14 +639,13 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
     })
 }
 
-/// 开始实时语音识别。
+/// 开始实时语音识别的内部实现（`start_asr_listen` command 与「切换设备重启」共用）。
 ///
 /// 校验模型文件后启动独立线程跑 `run_realtime_with`，识别结果经
-/// `asr-result` 事件发给前端；线程结束发 `asr-stopped`。
-#[tauri::command]
-fn start_asr_listen(
+/// `asr-result` 事件发给前端；线程结束发 `asr-stopped`，启动成功发 `asr-started`。
+fn start_asr_listen_impl(
     app: AppHandle,
-    state: State<'_, AsrListenState>,
+    state: &AsrListenState,
     device: Option<String>,
 ) -> Result<(), String> {
     if state.is_listening() {
@@ -680,12 +695,23 @@ fn start_asr_listen(
         .handle
         .lock()
         .expect("asr listen handle lock poisoned") = Some(handle);
+    // 通知前端识别已启动（含切换设备后的自动重启；启动瞬间前端未订阅时静默丢弃）
+    let _ = app.emit("asr-started", ListenStopped { error: None });
     Ok(())
 }
 
-/// 停止实时语音识别：置停止标志并等待线程退出。
+/// 开始实时语音识别。 —— Tauri command 外壳，签名与前端契约不变。
 #[tauri::command]
-fn stop_asr_listen(state: State<'_, AsrListenState>) -> Result<(), String> {
+fn start_asr_listen(
+    app: AppHandle,
+    state: State<'_, AsrListenState>,
+    device: Option<String>,
+) -> Result<(), String> {
+    start_asr_listen_impl(app, state.inner(), device)
+}
+
+/// 停止实时语音识别的内部实现（command 与「切换设备重启」共用）。
+fn stop_asr_listen_inner(state: &AsrListenState) -> Result<(), String> {
     if !state.is_listening() {
         return Err("当前没有在识别".to_string());
     }
@@ -703,6 +729,12 @@ fn stop_asr_listen(state: State<'_, AsrListenState>) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
+}
+
+/// 停止实时语音识别：置停止标志并等待线程退出。
+#[tauri::command]
+fn stop_asr_listen(state: State<'_, AsrListenState>) -> Result<(), String> {
+    stop_asr_listen_inner(state.inner())
 }
 
 /// 当前是否正在识别。
@@ -1513,9 +1545,8 @@ fn start_voice_session(app: AppHandle, state: State<'_, VoiceSessionState>) -> R
     start_voice_session_impl(app, state.inner())
 }
 
-/// 停止语音会话（置停止标志并等待会话线程退出）。
-#[tauri::command]
-fn stop_voice_session(state: State<'_, VoiceSessionState>) -> Result<(), String> {
+/// 停止语音会话的内部实现（command 与「切换设备重启」共用）。
+fn stop_voice_session_inner(state: &VoiceSessionState) -> Result<(), String> {
     if !state.is_running() {
         return Err("语音会话未在运行中".to_string());
     }
@@ -1529,6 +1560,12 @@ fn stop_voice_session(state: State<'_, VoiceSessionState>) -> Result<(), String>
         let _ = handle.join();
     }
     Ok(())
+}
+
+/// 停止语音会话（置停止标志并等待会话线程退出）。
+#[tauri::command]
+fn stop_voice_session(state: State<'_, VoiceSessionState>) -> Result<(), String> {
+    stop_voice_session_inner(state.inner())
 }
 
 /// 语音会话是否在运行中。
@@ -1696,15 +1733,47 @@ fn get_microphone() -> Result<String, String> {
 }
 
 /// 设置并持久化全局默认麦克风（空串 → None = 系统默认）。
+///
+/// 若 KWS / ASR / 语音会话正在监听，用新设备自动重启对应监听，使切换立即生效；
+/// 重启失败（如新设备不可用）返回错误，已停止的监听保持停止。
 #[tauri::command]
-fn set_microphone(mic: String) -> Result<(), String> {
+fn set_microphone(
+    app: AppHandle,
+    listen: State<'_, ListenState>,
+    asr_listen: State<'_, AsrListenState>,
+    voice: State<'_, VoiceSessionState>,
+    mic: String,
+) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();
     settings.microphone = if mic.trim().is_empty() {
         None
     } else {
         Some(mic.trim().to_string())
     };
-    settings::save_settings(&settings)
+    settings::save_settings(&settings)?;
+
+    let new_mic = settings.microphone.clone();
+
+    // KWS 监听运行中 → 用新设备重启（custom_keywords 从持久化配置读取）。
+    if listen.is_listening() {
+        stop_listen_inner(listen.inner())?;
+        let kw = settings
+            .kws
+            .as_ref()
+            .and_then(|k| k.custom_keywords.clone());
+        start_listen_impl(app.clone(), listen.inner(), new_mic.clone(), kw)?;
+    }
+    // ASR 监听运行中 → 用新设备重启。
+    if asr_listen.is_listening() {
+        stop_asr_listen_inner(asr_listen.inner())?;
+        start_asr_listen_impl(app.clone(), asr_listen.inner(), new_mic.clone())?;
+    }
+    // 语音会话运行中 → 用新设备重启（会话内部 KWS/ASR 自持，重新加载新麦克风）。
+    if voice.is_running() {
+        stop_voice_session_inner(voice.inner())?;
+        start_voice_session_impl(app.clone(), voice.inner())?;
+    }
+    Ok(())
 }
 
 /// GUI 展示用的 Live2D 配置信息。
@@ -3040,6 +3109,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
+            request_mic_permission,
             get_kws_config,
             set_kws_enabled,
             set_kws_custom_keywords,

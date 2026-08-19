@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, onListenStopped } from "@/lib/tauri";
+import { api, onListenStarted, onListenStopped } from "@/lib/tauri";
 
 export interface ListeningState {
   isListening: boolean;
@@ -29,9 +29,14 @@ export function useListening(): ListeningState {
       setIsListening(false);
       if (payload.error) setError(payload.error);
     });
+    const unlistenStarted = onListenStarted(() => {
+      setIsListening(true);
+      setError(null);
+    });
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenStarted.then((fn) => fn());
     };
   }, []);
 

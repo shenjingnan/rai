@@ -49,6 +49,10 @@ const DEFAULT_CONFIG = {
 let kwsConfig: typeof DEFAULT_CONFIG;
 /** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
 let mic = "";
+/** 模拟后端可枚举的输入设备（置空以测试 macOS 未授权场景）。 */
+let devices: string[];
+/** 模拟 KWS 监听运行状态（置 true 以验证监听中仍可切换设备）。 */
+let kwsListening = false;
 /** 可变 LLM 配置：单个用例可置 ready/models_present 以开启能力链路开关。 */
 let llmConfig: typeof LLM_CONFIG;
 /** 模拟后端拒绝卸载 LLM（如语音会话占用），null = 卸载成功。 */
@@ -117,6 +121,8 @@ beforeEach(() => {
   llmConfig = { ...LLM_CONFIG };
   llmUnloadReject = null;
   mic = "";
+  devices = ["内置麦克风", "USB 麦克风"];
+  kwsListening = false;
 
   invokeMock.mockImplementation(
     (
@@ -132,7 +138,9 @@ beforeEach(() => {
         case "get_app_info":
           return Promise.resolve({ version: "0.1.4", product_name: "ZapMomo" });
         case "list_devices":
-          return Promise.resolve(["内置麦克风", "USB 麦克风"]);
+          return Promise.resolve(devices);
+        case "request_mic_permission":
+          return Promise.resolve(true);
         case "get_kws_config":
           return Promise.resolve({ ...kwsConfig });
         case "set_kws_enabled":
@@ -150,7 +158,7 @@ beforeEach(() => {
           mic = args?.mic ?? "";
           return Promise.resolve(undefined);
         case "is_listening":
-          return Promise.resolve(false);
+          return Promise.resolve(kwsListening);
         case "get_asr_config":
           return Promise.resolve(ASR_CONFIG);
         case "get_tts_config":
@@ -385,6 +393,53 @@ describe("App（KWS 控制面板）", () => {
     await waitFor(() => {
       const calls = invokeMock.mock.calls.filter((c) => c[0] === "list_devices");
       expect(calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("设置页无设备时（macOS 未授权）显示授权按钮并触发权限请求", async () => {
+    const user = userEvent.setup();
+    devices = [];
+    // 模拟 macOS WebView 的 userAgent（授权按钮仅 macOS 显示）
+    const uaDesc = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+    Object.defineProperty(navigator, "userAgent", {
+      value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      configurable: true,
+    });
+    try {
+      renderApp("/settings");
+
+      const grantBtn = await screen.findByRole("button", { name: "授权麦克风" });
+      expect(screen.getByRole("combobox", { name: "麦克风来源" })).toBeDisabled();
+
+      await user.click(grantBtn);
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("request_mic_permission");
+      });
+      // 授权后重新拉取设备列表
+      await waitFor(() => {
+        const calls = invokeMock.mock.calls.filter((c) => c[0] === "list_devices");
+        expect(calls.length).toBeGreaterThanOrEqual(2);
+      });
+    } finally {
+      if (uaDesc) Object.defineProperty(navigator, "userAgent", uaDesc);
+    }
+  });
+
+  it("KWS 监听中仍可切换麦克风来源（后端自动重启监听）", async () => {
+    const user = userEvent.setup();
+    kwsListening = true;
+    renderApp("/settings");
+
+    // 监听运行中下拉不再被禁用（切换后由后端用新设备重启监听）
+    const combobox = await screen.findByRole("combobox", { name: "麦克风来源" });
+    expect(combobox).not.toBeDisabled();
+
+    await user.click(combobox);
+    await user.click(await screen.findByRole("option", { name: "USB 麦克风" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_microphone", { mic: "USB 麦克风" });
     });
   });
 });

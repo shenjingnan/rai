@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useToast } from "@/components/ui/toast";
 import { useAppInfo } from "@/hooks/useAppInfo";
 import { useAsrConfig } from "@/hooks/useAsrConfig";
 import { useAsrListening } from "@/hooks/useAsrListening";
@@ -21,6 +22,7 @@ import { RuntimeContext, type RuntimeState } from "./RuntimeContext";
  * Router 只负责「当前显示哪个 UI」，不决定 runtime 生命周期。
  */
 export function AppRuntimeProvider({ children }: { children: ReactNode }) {
+  const toast = useToast();
   const appInfo = useAppInfo();
   const devices = useDevices();
   const kwsConfig = useKwsConfig();
@@ -63,10 +65,14 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const setDevice = useCallback((d: string) => {
-    setDeviceState(d);
-    void api.setMicrophone({ mic: d }).catch(() => {});
-  }, []);
+  const setDevice = useCallback(
+    (d: string) => {
+      setDeviceState(d);
+      // 监听中切换会触发后端用新设备重启监听；失败（如新设备不可用）时提示原因。
+      void api.setMicrophone({ mic: d }).catch((e) => toast.error(String(e)));
+    },
+    [toast],
+  );
 
   // 设备列表就绪后校验记忆的设备是否仍存在（如外设拔出），否则清空避免 start 时按不存在设备报错
   useEffect(() => {

@@ -83,6 +83,13 @@ bzip2 = "0.6"
 # url = "2"                                              # URL 解析
 # futures-util = "0.3"                                   # 异步流处理
 
+# macOS 麦克风权限请求（AVCaptureDevice requestAccess，弹系统授权窗）。
+# 仅 macOS target 编译：cpal 枚举输入设备在未授权时为空，需显式请求权限后恢复。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+
 [dev-dependencies]
 tempfile = "3"
 

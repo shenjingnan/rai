@@ -172,6 +172,7 @@ beforeEach(() => {
           format: null,
           models_present: false,
           window_scale: 1.0,
+          window_opacity: 1.0,
           settings_path: "/zap/.zapmomo/settings.toml",
         });
       default:
@@ -181,15 +182,15 @@ beforeEach(() => {
 });
 
 describe("HomePage 概览", () => {
-  it("渲染当前伙伴：顶部名称、使用中徽标与桌宠尺寸滑块", async () => {
+  it("渲染当前伙伴：顶部名称、使用中徽标与尺寸/透明度滑块", async () => {
     library = { models: [MODEL_A], active_model_id: MODEL_A.id };
     renderHome();
 
     expect(await screen.findByText("使用中")).toBeInTheDocument();
     expect(screen.getByText(MODEL_A.name)).toBeInTheDocument();
-    // 初始从 get_live2d_config 读到 window_scale=1.0 → 100%。
-    expect(await screen.findByText("100%")).toBeInTheDocument();
-    expect(screen.getByRole("slider")).toBeInTheDocument();
+    // 初始从 get_live2d_config 读到 window_scale=1.0 / window_opacity=1.0 → 都是 100%。
+    expect(await screen.findAllByText("100%")).toHaveLength(2);
+    expect(screen.getAllByRole("slider")).toHaveLength(2);
     // /chat 仍是占位页：概览不提供「开始对话」入口。
     expect(screen.queryByRole("button", { name: "开始对话" })).not.toBeInTheDocument();
   });
@@ -200,13 +201,30 @@ describe("HomePage 概览", () => {
     renderHome();
 
     await screen.findByText("使用中");
-    const slider = screen.getByRole("slider");
+    const slider = screen.getByRole("slider", { name: "尺寸" });
     slider.focus();
     await user.keyboard("{ArrowRight}");
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_companion_scale", {
         scale: expect.any(Number),
+      });
+    });
+  });
+
+  it("拖动透明度滑块调用 set_companion_opacity", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderHome();
+
+    await screen.findByText("使用中");
+    const slider = screen.getByRole("slider", { name: "透明度" });
+    slider.focus();
+    await user.keyboard("{ArrowLeft}"); // 100 → 95
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_opacity", {
+        opacity: expect.any(Number),
       });
     });
   });

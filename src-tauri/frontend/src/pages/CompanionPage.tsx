@@ -261,13 +261,15 @@ export function CompanionPage() {
     setStageError(e.message);
   }, []);
 
-  // 桌宠尺寸（缩放百分比，25%~200%）：写入 settings 并通知桌宠窗口即时 resize。
+  // 桌宠尺寸（缩放百分比，25%~200%）与透明度（20%~100%）：写入 settings 并通知桌宠窗口即时生效。
   const [percent, setPercent] = useState(100);
+  const [opacityPercent, setOpacityPercent] = useState(100);
   useEffect(() => {
     void api
       .getLive2dConfig()
       .then((cfg) => {
         if (cfg.window_scale != null) setPercent(Math.round(cfg.window_scale * 100));
+        if (cfg.window_opacity != null) setOpacityPercent(Math.round(cfg.window_opacity * 100));
       })
       .catch(() => {});
   }, []);
@@ -275,6 +277,11 @@ export function CompanionPage() {
     const clamped = Math.max(25, Math.min(200, Math.round(value)));
     setPercent(clamped);
     void api.setCompanionScale({ scale: clamped / 100 });
+  }, []);
+  const handleOpacityChange = useCallback((value: number) => {
+    const clamped = Math.max(20, Math.min(100, Math.round(value)));
+    setOpacityPercent(clamped);
+    void api.setCompanionOpacity({ opacity: clamped / 100 });
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -380,19 +387,35 @@ export function CompanionPage() {
             <CardTitle className="text-base font-semibold">
               {selected ? selected.name : "暂无伙伴"}
             </CardTitle>
-            {/* 桌宠尺寸：调整窗口缩放比例，同步到桌宠窗口（25%~200%） */}
+            {/* 桌宠尺寸/透明度：调整窗口缩放与模型透明度，同步到桌宠窗口 */}
             {selected && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <span className="shrink-0">桌宠尺寸</span>
-                <Slider
-                  value={[percent]}
-                  min={25}
-                  max={200}
-                  step={5}
-                  onValueChange={([v]) => handleScaleChange(v)}
-                  className="w-28"
-                />
-                <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
+              <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0">桌宠尺寸</span>
+                  <Slider
+                    aria-label="桌宠尺寸"
+                    value={[percent]}
+                    min={25}
+                    max={200}
+                    step={5}
+                    onValueChange={([v]) => handleScaleChange(v)}
+                    className="w-28"
+                  />
+                  <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0">透明度</span>
+                  <Slider
+                    aria-label="透明度"
+                    value={[opacityPercent]}
+                    min={20}
+                    max={100}
+                    step={5}
+                    onValueChange={([v]) => handleOpacityChange(v)}
+                    className="w-28"
+                  />
+                  <span className="w-10 shrink-0 text-right tabular-nums">{opacityPercent}%</span>
+                </div>
               </div>
             )}
           </CardHeader>

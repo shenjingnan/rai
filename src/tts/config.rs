@@ -49,6 +49,8 @@ pub struct ResolvedTtsConfig {
     pub data_dir: PathBuf,
     pub reference_wav: PathBuf,
     pub reference_text: String,
+    /// 默认音色 id（如 `leijun-1` / 自定义音色 id；None = 用 reference_wav 即 leijun）。
+    pub voice: Option<String>,
     /// 扩散解码步数（质量/速度权衡）
     pub num_steps: i32,
     /// 语速
@@ -73,6 +75,7 @@ impl Default for ResolvedTtsConfig {
             reference_wav: join(DEFAULT_REFERENCE_WAV),
             model_dir,
             reference_text: DEFAULT_REFERENCE_TEXT.to_string(),
+            voice: None,
             num_steps: 4,
             speed: 1.0,
             provider: "cpu".to_string(),
@@ -190,6 +193,7 @@ pub fn resolve(
     cfg.reference_text = s
         .and_then(|s| s.reference_text.clone())
         .unwrap_or_else(|| DEFAULT_REFERENCE_TEXT.to_string());
+    cfg.voice = s.and_then(|s| s.voice.clone());
     cfg.num_steps = s.and_then(|s| s.num_steps).unwrap_or(4);
     cfg.speed = s.and_then(|s| s.speed).unwrap_or(1.0);
     cfg.provider = s
@@ -375,6 +379,20 @@ mod tests {
             let cfg = resolve(Some(&settings), None).unwrap();
             assert_eq!(cfg.model_dir, home.join(".zapmomo/models/my-tts"));
         });
+    }
+
+    #[test]
+    fn test_resolve_voice_default_none_and_override() {
+        // 未配置默认音色 → None（用 reference_wav 即 leijun）
+        let cfg = resolve(None, None).unwrap();
+        assert_eq!(cfg.voice, None);
+        // settings 配置音色 id → 解析生效
+        let settings = TtsSettings {
+            voice: Some("custom-123".to_string()),
+            ..TtsSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.voice.as_deref(), Some("custom-123"));
     }
 
     #[test]

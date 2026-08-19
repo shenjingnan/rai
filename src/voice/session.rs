@@ -474,7 +474,9 @@ impl VoiceSession {
                     if let Some(tail) = self.reply.finish() {
                         self.enqueue_sentence(tail);
                     }
-                    if let Some(reply) = self.reply.take_text() {
+                    // 完整可见回复：入历史（LLM 上下文）+ 随 ReplyFinished 下发（宿主持久化记录）
+                    let reply_text = self.reply.take_text();
+                    if let Some(reply) = reply_text.clone() {
                         self.history.push(InputItem::Message(ChatMessage::new(
                             ChatRole::Assistant,
                             reply,
@@ -483,6 +485,7 @@ impl VoiceSession {
                     }
                     (self.emit)(VoiceEvent::ReplyFinished {
                         reason: format!("{reason:?}"),
+                        text: reply_text,
                     });
                 }
                 LlmEvent::Error(e) => {

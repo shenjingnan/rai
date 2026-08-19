@@ -23,6 +23,7 @@ import type {
   AsrParamsPatch,
   AsrResult,
   CompanionLibraryView,
+  ConversationRecord,
   DownloadProgress,
   ImportCompanionResult,
   KwsConfigInfo,
@@ -109,6 +110,7 @@ export const api = {
   downloadTtsModel: () => invoke<void>("download_tts_model"),
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
+  setTtsVoice: (voice: string | null) => invoke<void>("set_tts_voice", { voice }),
   getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
   loadLlmModel: () => invoke<void>("load_llm_model"),
   unloadLlmModel: () => invoke<void>("unload_llm_model"),
@@ -124,6 +126,9 @@ export const api = {
   startVoiceSession: () => invoke<void>("start_voice_session"),
   stopVoiceSession: () => invoke<void>("stop_voice_session"),
   isVoiceSessionRunning: () => invoke<boolean>("is_voice_session_running"),
+  // ---- 对话记录（~/.zapmomo/conversations.json）----
+  getConversationRecords: () => invoke<ConversationRecord[]>("get_conversation_records"),
+  clearConversationRecords: () => invoke<void>("clear_conversation_records"),
   // ---- 模型库 ----
   listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
   getSystemResources: () => invoke<SystemResources>("get_system_resources"),

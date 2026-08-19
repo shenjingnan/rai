@@ -72,6 +72,10 @@ pub fn find_voice<'a>(voices: &'a [TtsVoice], id: &str) -> Option<&'a TtsVoice> 
 }
 
 /// 解析最终参考音色：自定义 wav > 自定义音色（id/名称）> 内置音色 id > 配置默认。
+///
+/// 音色 id 优先级：显式传入的 `voice_id` 优先于配置默认音色（`cfg.voice`，即
+/// `[tts].voice`），再回退 `cfg.reference_wav`（leijun）。因此设置「默认音色」后，
+/// 所有不显式指定音色的合成（测试语音 / 语音会话 / CLI tts run）都会统一使用该默认音色。
 pub fn resolve_reference(
     cfg: &ResolvedTtsConfig,
     voice_id: Option<&str>,
@@ -83,7 +87,8 @@ pub fn resolve_reference(
             .ok_or_else(|| "自定义参考音频必须同时提供参考文本（逐字转写）".to_string())?;
         return Ok((wav.to_path_buf(), text.to_string()));
     }
-    if let Some(id) = voice_id {
+    let id = voice_id.or(cfg.voice.as_deref());
+    if let Some(id) = id {
         // 优先匹配用户自定义音色（音色库，支持按 id 或展示名）
         if let Some(v) = crate::tts::voice_store::list_custom_voices()
             .into_iter()
@@ -196,6 +201,56 @@ mod tests {
             assert_eq!(wav, v.wav_path);
             assert_eq!(text, "参考文本");
         });
+    }
+
+    #[test]
+    fn test_resolve_reference_default_voice_custom_when_no_voice_id() {
+        // 配置了默认音色（[tts].voice = 自定义音色 id），不显式传 voice_id → 用默认自定义音色
+        crate::test_util::run_with_temp_home(|home| {
+            let src = home.join("src.wav");
+            std::fs::write(&src, sample_wav_bytes()).unwrap();
+            let v = crate::tts::voice_store::save_voice("我的声音", &src, "参考文本").unwrap();
+
+            let cfg = ResolvedTtsConfig {
+                voice: Some(v.id.clone()),
+                ..ResolvedTtsConfig::default()
+            };
+            let (wav, text) = resolve_reference(&cfg, None, None, None).unwrap();
+            assert_eq!(wav, v.wav_path);
+            assert_eq!(text, "参考文本");
+        });
+    }
+
+    #[test]
+    fn test_resolve_reference_default_voice_builtin_when_no_voice_id() {
+        // 配置了默认音色（内置 id），不显式传 voice_id → 用默认内置音色
+        let dir = tempfile::tempdir().unwrap();
+        make_prompt(dir.path(), "news-female.wav 各位村民, 大家新年好!\n");
+        let cfg = ResolvedTtsConfig {
+            model_dir: dir.path().to_path_buf(),
+            voice: Some("news-female".to_string()),
+            ..Default::default()
+        };
+        let (wav, text) = resolve_reference(&cfg, None, None, None).unwrap();
+        assert_eq!(wav, dir.path().join("test_wavs/news-female.wav"));
+        assert!(text.contains("大家新年好"));
+    }
+
+    #[test]
+    fn test_resolve_reference_explicit_voice_id_overrides_default() {
+        // 显式传 voice_id 优先于配置默认音色（默认是 news-female，显式选 leijun）
+        let dir = tempfile::tempdir().unwrap();
+        make_prompt(
+            dir.path(),
+            "leijun-1.wav 那还是36年前.\nnews-female.wav 各位村民!\n",
+        );
+        let cfg = ResolvedTtsConfig {
+            model_dir: dir.path().to_path_buf(),
+            voice: Some("news-female".to_string()),
+            ..Default::default()
+        };
+        let (wav, _) = resolve_reference(&cfg, Some("leijun-1"), None, None).unwrap();
+        assert_eq!(wav, dir.path().join("test_wavs/leijun-1.wav"));
     }
 
     #[test]

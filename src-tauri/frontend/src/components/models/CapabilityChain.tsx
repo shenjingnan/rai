@@ -113,12 +113,12 @@ export function CapabilityChain() {
               icon={AudioWaveform}
               name="唤醒词"
               code="KWS"
-              description="检测唤醒词，辅助开始语音对话"
+              description="检测唤醒词，辅助开启对话记录"
               statusText={kwsStatus.text}
               statusTone={kwsStatus.tone}
               toggled={kwsOn}
               onToggle={handleKwsToggle}
-              tooltip="关键词唤醒：检测到唤醒词后触发事件，可与语音输入配合实现语音对话。"
+              tooltip="关键词唤醒：检测到唤醒词后触发事件，可与语音输入配合实现对话记录。"
             />
           </div>
         </div>

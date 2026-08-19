@@ -325,6 +325,9 @@ pub struct TtsSettings {
     /// 参考音频的逐字转写文本
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_text: Option<String>,
+    /// 默认音色 id（如 `leijun-1` / 自定义音色 id；缺省 None = 用 reference_wav 即 leijun）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
     /// 扩散解码步数（质量/速度权衡），缺省 4
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_steps: Option<i32>,
@@ -812,6 +815,7 @@ mod tests {
             data_dir: None,
             reference_wav: Some("test_wavs/leijun-1.wav".to_string()),
             reference_text: None,
+            voice: Some("custom-voice".to_string()),
             num_steps: Some(4),
             speed: Some(1.0),
             provider: Some("cpu".to_string()),

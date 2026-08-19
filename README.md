@@ -8,14 +8,20 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 > 📚 中文文档：[文档站](docs/)，含快速开始、KWS、配置、桌面应用与开发指南。
 
+<div align="center">
+  <img src="docs/public/screenshots/home.png" alt="ZapMomo 桌面应用概览页" width="760" />
+  <p><em>桌面应用「概览」页：展示当前伙伴与 AI 能力状态</em></p>
+</div>
+
 ## 特性
 
 - **语音唤醒（KWS）** — 基于 sherpa-onnx 的 zipformer 唤醒词检测，支持实时麦克风监听与离线 wav 检测；自定义关键词直接输中文，自动转拼音 token
 - **语音识别（ASR）** — 基于 sherpa-onnx 的流式 zipformer 识别（中英双语），实时转文字幕，自动加标点、支持热词
 - **文本转语音（TTS）** — 基于 sherpa-onnx 的 ZipVoice 零样本声音克隆（中英双语），内置音色与自定义参考音频
 - **本地大语言模型（LLM）** — 集成 llama.cpp 本地推理（任意 GGUF，流式对话 + Agent 工具调用），或接入 OpenAI 兼容远程 API
+- **语音会话（Voice）** — 一句话唤醒 → 语音识别 → LLM 句级流式回复 → TTS 实时播报，支持唤醒词打断与免唤醒续聊
 - **Live2D 虚拟角色** — 桌面应用常驻角色窗口（Cubism 2/3/4/5），位置记忆与百分比缩放，拖动不抢焦点
-- **桌面应用** — 基于 Tauri 2 的 GUI（设置面板 + 常驻角色窗口），Windows / macOS / Linux 三平台安装包
+- **桌面应用** — 基于 Tauri 2 的 GUI（概览 / 对话 / 伙伴 / 模型 / 设置多页面控制面板 + 常驻角色窗口），Windows / macOS / Linux 三平台安装包
 - **音频采集** — 基于 cpal 的麦克风采集 + 自动重采样（设备采样率 → 16k）
 - **CLI 骨架** — 基于 clap 的命令行参数解析，支持子命令和 Shell 补全生成
 - **异步运行时** — 集成 tokio，开箱即用的 async/await 支持
@@ -299,12 +305,51 @@ auto_load = false                  # 应用启动时自动加载模型
 # model = "qwen3-4b"                      # 模型名
 ```
 
+## 语音会话（Voice）
+
+把 KWS / ASR / LLM / TTS 四个能力模块串成一条完整对话链路：**唤醒词 → 识别 → 思考 → 句级流式播报**。
+sherpa-onnx 的 TTS 只有整句一次性合成，因此「流式输出」由句级流水线近似：LLM 流式 token → 断句 → 独立合成线程逐句合成 → 边合成边播放。
+
+- **唤醒词打断** — 播报/思考期间保持唤醒词监听，再次唤醒立即打断回听
+- **免唤醒续聊** — 回复播完后自动进入聆听，无需重复唤醒
+
+### 快速开始
+
+```bash
+# 开始语音会话：说唤醒词唤醒、对话播报，Ctrl-C 退出
+cargo run -- voice run
+```
+
+### 命令说明
+
+| 命令 | 说明 |
+|------|------|
+| `voice run` | 跑完整语音会话（唤醒 → 识别 → 对话 → 句级流式播报）。`--keywords` 唤醒词、`--voice` 音色、`--speed` 语速、`--max-turns` 轮数上限 |
+
+### 配置
+
+可在 `~/.zapmomo/settings.toml` 中添加 `[voice]` 段覆盖默认值（全部可选）：
+
+```toml
+[voice]
+enabled = true                # 应用启动时自动进入待唤醒，默认 true
+keywords = "你好小智"          # 会话唤醒词（中文直接写，多个用 / 分隔），默认 KWS 模型内置
+voice = "leijun-1"             # 回复用 TTS 音色 id
+speed = 1.0                    # 播报语速
+max_turns = 0                  # 最多对话轮数；0 = 无限（Ctrl-C 退出）
+history_max = 12               # 传给 LLM 的历史消息条数上限
+barge_in = true                # 播报/思考中唤醒词打断，默认 true
+follow_up = true               # 回复播完自动聆听（免唤醒续聊），默认 true
+welcome_text = "你好，我在。"  # 唤醒后的欢迎语
+```
+
 ## 桌面应用（Tauri 2）
 
-复用同一套 KWS / ASR / TTS / LLM / 音频 / 配置逻辑的桌面 GUI，由「设置面板」+「常驻角色窗口」双窗口组成：
+复用同一套 KWS / ASR / TTS / LLM / Voice / 音频 / 配置逻辑的桌面 GUI，由「控制面板」+「常驻角色窗口」组成：
 
-- **设置面板** — KWS / ASR 监听、TTS 合成、LLM 对话、Live2D 模型预览与配置、麦克风设备选择、模型下载入口
+- **控制面板** — 多页面 GUI：**概览**（当前伙伴与 AI 能力状态）、**对话**（LLM 聊天，对话记录持久化）、**伙伴**（导入与切换 Live2D 伙伴）、**模型**（KWS / ASR / LLM / TTS 监听、合成、对话与模型下载）、**设置**（麦克风设备、TTS 音色等）
 - **常驻角色窗口** — Live2D 虚拟角色独立悬浮，见下文「Live2D 虚拟角色」
+- **语音会话** — 唤醒 → 对话 → 语音回复全链路，见上文「语音会话」
 
 代码在 `src-tauri/`，前端为 React + Vite + TypeScript（Tailwind CSS + shadcn/ui，构建产物打包进应用）。
 
@@ -373,10 +418,10 @@ window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 ├── src/
 │   ├── main.rs          # 入口文件
 │   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
-│   ├── cli.rs           # CLI 命令定义（kws / asr / tts / llm）
+│   ├── cli.rs           # CLI 命令定义（kws / asr / tts / llm / voice）
 │   ├── config/
 │   │   ├── mod.rs       # 配置模块入口
-│   │   └── settings.rs  # TOML 配置管理（含 [kws]/[asr]/[tts]/[llm]/[live2d] 段）
+│   │   └── settings.rs  # TOML 配置管理（含 [kws]/[asr]/[tts]/[llm]/[voice]/[live2d] 段）
 │   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
 │   │   ├── mod.rs       # KwsEngine + 离线/实时检测
 │   │   ├── config.rs    # KWS 配置解析与默认值
@@ -401,6 +446,19 @@ window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 │   │   ├── agent.rs     # Agent 循环 + 工具调用
 │   │   ├── provider.rs  # LlmProvider trait
 │   │   └── tools.rs     # 工具运行时
+│   ├── voice/           # 语音会话编排（KWS→ASR→LLM→TTS 全链路）
+│   │   ├── mod.rs       # 会话模块入口 + CLI 运行
+│   │   ├── session.rs   # 会话状态机与事件循环（唤醒/聆听/思考/播报）
+│   │   ├── listen.rs    # 唤醒/聆听监听（KWS + ASR）
+│   │   ├── splitter.rs  # LLM 流式 token 断句
+│   │   ├── synthesizer.rs # TTS 句级合成线程
+│   │   ├── player.rs    # 音频播报（rodio Sink）
+│   │   ├── records.rs   # 对话记录持久化
+│   │   ├── events.rs    # 会话事件
+│   │   ├── state.rs     # 会话状态
+│   │   └── config.rs    # [voice] 配置解析
+│   ├── companion.rs     # 伙伴库（Live2D 模型集合 + 当前使用项）
+│   ├── model_library/   # 模型库核心服务（catalog / 安装 / 下载 / 选择）
 │   ├── live2d/          # Live2D 角色模型定位
 │   │   ├── mod.rs
 │   │   └── config.rs    # [live2d] 配置解析
@@ -412,7 +470,7 @@ window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 │   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
 │   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
-│   ├── frontend/        # React + Vite + TypeScript 控制面板（Tailwind + shadcn/ui）
+│   ├── frontend/        # React + Vite + TypeScript 多页面控制面板（Tailwind + shadcn/ui）
 │   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
 │   ├── capabilities/    # 权限声明
 │   └── icons/           # 应用图标
@@ -439,6 +497,8 @@ window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 | LLM | llama-cpp-2 | 本地大语言模型推理（llama.cpp Rust 绑定） |
 | LLM | encoding_rs | token 逐字节解码（llama-cpp-2 UTF-8 decoder） |
 | LLM | reqwest | OpenAI 兼容 HTTP provider（`/v1/responses`） |
+| Voice | rodio | 音频播报（Sink 句级流式播放） |
+| Voice | ctrlc | Ctrl-C 优雅退出（语音会话） |
 | 模型下载 | ureq | HTTP 客户端（模型下载） |
 | 模型下载 | sha2 / hex | 下载模型的 sha256 校验 |
 | 模型下载 | tar / bzip2 | 解压 tar.bz2 模型包 |

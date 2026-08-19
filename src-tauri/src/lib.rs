@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
@@ -1840,6 +1840,7 @@ struct Live2dConfigInfo {
     format: Option<String>,
     models_present: bool,
     window_scale: Option<f64>,
+    window_opacity: Option<f64>,
     settings_path: String,
 }
 
@@ -1860,12 +1861,16 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
             .allow_directory(&cfg.model_dir, true);
     }
 
+    let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
+    let window_opacity = live2d_settings.as_ref().and_then(|l| l.window_opacity);
+
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
         model_file: cfg.model_file.map(|p| p.display().to_string()),
         format: cfg.format.map(|f| f.to_str().to_string()),
         models_present,
-        window_scale: live2d_settings.and_then(|l| l.window_scale),
+        window_scale,
+        window_opacity,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2139,6 +2144,19 @@ fn apply_companion_scale(app: &AppHandle, scale: f64) -> Result<(), String> {
     live2d.window_scale = Some(scale);
     settings::save_settings(&settings)?;
     let _ = app.emit("companion-scale-changed", scale);
+    rebuild_tray_menu(app);
+    Ok(())
+}
+
+/// 保存角色窗口透明度并通知角色窗口（内部实现，供 command 与原生菜单事件共用）。
+fn apply_companion_opacity(app: &AppHandle, opacity: f64) -> Result<(), String> {
+    let opacity = clamp_opacity(opacity);
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.window_opacity = Some(opacity);
+    settings::save_settings(&settings)?;
+    let _ = app.emit("companion-opacity-changed", opacity);
+    rebuild_tray_menu(app);
     Ok(())
 }
 
@@ -2155,6 +2173,27 @@ fn scale_from_id(id: &str) -> Option<f64> {
     }
 }
 
+/// 透明度合法范围（含边界）。
+const OPACITY_MIN: f64 = 0.2;
+const OPACITY_MAX: f64 = 1.0;
+
+/// 把透明度 clamp 到 `[OPACITY_MIN, OPACITY_MAX]`。
+fn clamp_opacity(v: f64) -> f64 {
+    v.clamp(OPACITY_MIN, OPACITY_MAX)
+}
+
+/// 把原生菜单项 id 解析为透明度。
+fn opacity_from_id(id: &str) -> Option<f64> {
+    match id {
+        "opacity_100" => Some(1.0),
+        "opacity_80" => Some(0.8),
+        "opacity_60" => Some(0.6),
+        "opacity_40" => Some(0.4),
+        "opacity_20" => Some(0.2),
+        _ => None,
+    }
+}
+
 /// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
 ///
 /// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
@@ -2163,6 +2202,15 @@ fn scale_from_id(id: &str) -> Option<f64> {
 #[tauri::command]
 fn set_companion_scale(app: AppHandle, scale: f64) -> Result<(), String> {
     apply_companion_scale(&app, scale)
+}
+
+/// 设置并持久化角色窗口透明度（1.0 = 不透明，范围 0.2~1.0）。
+///
+/// 由设置面板调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].window_opacity`，
+/// 并通过 `companion-opacity-changed` 事件通知角色窗口更新渲染层 opacity。
+#[tauri::command]
+fn set_companion_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
+    apply_companion_opacity(&app, opacity)
 }
 
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
@@ -2209,33 +2257,113 @@ fn handle_menu(app: &AppHandle, id: &str) {
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
+            } else if let Some(opacity) = opacity_from_id(id) {
+                let _ = apply_companion_opacity(app, opacity);
             }
         }
     }
 }
 
-/// 构建角色窗口的右键菜单（窗口尺寸子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 构建角色窗口的右键菜单（窗口尺寸/透明度子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let s25 = MenuItem::with_id(app, "scale_25", "25%", true, None::<&str>)?;
-    let s50 = MenuItem::with_id(app, "scale_50", "50%", true, None::<&str>)?;
-    let s70 = MenuItem::with_id(app, "scale_70", "70%", true, None::<&str>)?;
-    let s100 = MenuItem::with_id(app, "scale_100", "100%", true, None::<&str>)?;
-    let s150 = MenuItem::with_id(app, "scale_150", "150%", true, None::<&str>)?;
-    let s200 = MenuItem::with_id(app, "scale_200", "200%", true, None::<&str>)?;
-    let scale_submenu = Submenu::with_items(
-        app,
-        "窗口尺寸",
-        true,
-        &[&s25, &s50, &s70, &s100, &s150, &s200],
-    )?;
+    let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     Menu::with_items(
         app,
-        &[&scale_submenu, &open_settings, &hide, &restart, &quit],
+        &[
+            &scale_submenu,
+            &opacity_submenu,
+            &open_settings,
+            &hide,
+            &restart,
+            &quit,
+        ],
     )
+}
+
+/// 托盘 id（档位变化后 `tray_by_id` 定位托盘并重建菜单）。
+const TRAY_ID: &str = "zapmomo-tray";
+
+/// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
+    let toggle_companion =
+        MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
+    let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    Menu::with_items(
+        app,
+        &[
+            &toggle_companion,
+            &tray_scale,
+            &tray_opacity,
+            &open_settings,
+            &restart,
+            &quit,
+        ],
+    )
+}
+
+/// 档位（尺寸/透明度）变化后重建托盘菜单，刷新勾选态。
+///
+/// 托盘菜单只在启动时构建一次，勾选态是当时的快照；不重建会出现旧档位残留打勾
+/// （新档位被点击时自动勾上，快照里的旧档位没人取消）。
+fn rebuild_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Ok(menu) = build_tray_menu(app)
+    {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+/// 读当前窗口缩放与透明度（读失败或缺省回退 1.0 / 1.0）。
+fn current_companion_metrics() -> (f64, f64) {
+    match settings::load_settings() {
+        Ok(Some(s)) => {
+            let live2d = s.live2d.as_ref();
+            (
+                live2d.and_then(|l| l.window_scale).unwrap_or(1.0),
+                live2d.and_then(|l| l.window_opacity).unwrap_or(1.0),
+            )
+        }
+        _ => (1.0, 1.0),
+    }
+}
+
+/// 构建「窗口尺寸」「透明度」两个档位子菜单（角色右键菜单与托盘菜单共用）。
+///
+/// 档位用 `CheckMenuItem`：构建时读当前 settings，命中的档位打勾。
+fn build_metric_submenus(
+    app: &AppHandle,
+) -> tauri::Result<(Submenu<tauri::Wry>, Submenu<tauri::Wry>)> {
+    let (cur_scale, cur_opacity) = current_companion_metrics();
+    let mk_item = |id: &str, label: &str, cur: f64, v: f64| {
+        CheckMenuItem::with_id(app, id, label, true, v == cur, None::<&str>)
+    };
+    let s25 = mk_item("scale_25", "25%", cur_scale, 0.25)?;
+    let s50 = mk_item("scale_50", "50%", cur_scale, 0.5)?;
+    let s70 = mk_item("scale_70", "70%", cur_scale, 0.7)?;
+    let s100 = mk_item("scale_100", "100%", cur_scale, 1.0)?;
+    let s150 = mk_item("scale_150", "150%", cur_scale, 1.5)?;
+    let s200 = mk_item("scale_200", "200%", cur_scale, 2.0)?;
+    let o20 = mk_item("opacity_20", "20%", cur_opacity, 0.2)?;
+    let o40 = mk_item("opacity_40", "40%", cur_opacity, 0.4)?;
+    let o60 = mk_item("opacity_60", "60%", cur_opacity, 0.6)?;
+    let o80 = mk_item("opacity_80", "80%", cur_opacity, 0.8)?;
+    let o100 = mk_item("opacity_100", "100%", cur_opacity, 1.0)?;
+    let scale_menu = Submenu::with_items(
+        app,
+        "窗口尺寸",
+        true,
+        &[&s25, &s50, &s70, &s100, &s150, &s200],
+    )?;
+    // 档位顺序与「窗口尺寸」一致：从小到大。
+    let opacity_menu = Submenu::with_items(app, "透明度", true, &[&o20, &o40, &o60, &o80, &o100])?;
+    Ok((scale_menu, opacity_menu))
 }
 
 /// 弹出角色窗口右键菜单（由前端在右键时调用，坐标相对窗口左上角，逻辑像素）。
@@ -3253,6 +3381,7 @@ pub fn run() {
             save_cover_image,
             save_companion_position,
             set_companion_scale,
+            set_companion_opacity,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,
@@ -3472,22 +3601,15 @@ pub fn run() {
             )?;
             app.set_menu(app_menu)?;
 
-            // 托盘菜单：显示/隐藏角色、打开设置、重启、退出。
-            let toggle_companion =
-                MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
-            let open_settings =
-                MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
-            let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu =
-                Menu::with_items(app, &[&toggle_companion, &open_settings, &restart, &quit])?;
+            // 托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
+            let tray_menu = build_tray_menu(app.handle())?;
 
             // 托盘图标：使用专用托盘图标（tray-icon.png）——真实应用图标的无边距版本，
             // 撑满菜单栏，避免 512px 主图标 9% 留白导致的偏小。
             let tray_icon =
                 tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
                     .expect("托盘图标加载失败");
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
@@ -3505,4 +3627,30 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod companion_opacity_tests {
+    use super::{clamp_opacity, opacity_from_id};
+
+    #[test]
+    fn test_opacity_from_id_mappings() {
+        assert_eq!(opacity_from_id("opacity_100"), Some(1.0));
+        assert_eq!(opacity_from_id("opacity_80"), Some(0.8));
+        assert_eq!(opacity_from_id("opacity_60"), Some(0.6));
+        assert_eq!(opacity_from_id("opacity_40"), Some(0.4));
+        assert_eq!(opacity_from_id("opacity_20"), Some(0.2));
+        assert_eq!(opacity_from_id("scale_100"), None);
+        assert_eq!(opacity_from_id("unknown"), None);
+    }
+
+    #[test]
+    fn test_clamp_opacity_bounds() {
+        assert_eq!(clamp_opacity(0.05), 0.2);
+        assert_eq!(clamp_opacity(-1.0), 0.2);
+        assert_eq!(clamp_opacity(1.5), 1.0);
+        assert_eq!(clamp_opacity(0.2), 0.2);
+        assert_eq!(clamp_opacity(1.0), 1.0);
+        assert_eq!(clamp_opacity(0.65), 0.65);
+    }
 }

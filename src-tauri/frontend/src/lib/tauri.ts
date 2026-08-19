@@ -171,6 +171,7 @@ export const api = {
   saveCompanionPosition: (args: { x: number; y: number }) =>
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
+  setCompanionOpacity: (args: { opacity: number }) => invoke<void>("set_companion_opacity", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
@@ -243,6 +244,10 @@ export function onLive2dModelChanged(
 
 export function onCompanionScaleChanged(handler: (scale: number) => void): Promise<UnlistenFn> {
   return listen<number>("companion-scale-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionOpacityChanged(handler: (opacity: number) => void): Promise<UnlistenFn> {
+  return listen<number>("companion-opacity-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

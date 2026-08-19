@@ -68,6 +68,7 @@ beforeEach(() => {
             format: null,
             models_present: false,
             window_scale: 1.0,
+            window_opacity: 1.0,
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
@@ -127,22 +128,42 @@ function renderPage() {
 }
 
 describe("CompanionPage 伙伴模型管理器", () => {
-  it("选中伙伴后显示桌宠尺寸控制，拖动滑块调用 set_companion_scale", async () => {
+  it("选中伙伴后显示尺寸控制，拖动滑块调用 set_companion_scale", async () => {
     library = { models: [MODEL_A], active_model_id: MODEL_A.id };
     const user = userEvent.setup();
     renderPage();
 
     await screen.findByRole("button", { name: /大月下.*使用中/ });
     // 初始从 get_live2d_config 读到 window_scale=1.0 → 100%（异步等待出现）。
-    expect(await screen.findByText("桌宠尺寸")).toBeInTheDocument();
-    expect(await screen.findByText("100%")).toBeInTheDocument();
+    expect(await screen.findByText("尺寸")).toBeInTheDocument();
+    // 尺寸与透明度两个滑块初始都是 100%。
+    expect(await screen.findAllByText("100%")).toHaveLength(2);
 
     // 键盘微调滑块（Radix Slider role="slider"）：每次步进 5。
-    const slider = screen.getByRole("slider");
+    const slider = screen.getByRole("slider", { name: "尺寸" });
     slider.focus();
     await user.keyboard("{ArrowRight}");
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_companion_scale", { scale: expect.any(Number) });
+    });
+  });
+
+  it("选中伙伴后显示透明度控制，拖动滑块调用 set_companion_opacity", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("button", { name: /大月下.*使用中/ });
+    expect(await screen.findByText("透明度")).toBeInTheDocument();
+    expect(await screen.findAllByText("100%")).toHaveLength(2);
+
+    const slider = screen.getByRole("slider", { name: "透明度" });
+    slider.focus();
+    await user.keyboard("{ArrowLeft}"); // 100 → 95
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_opacity", {
+        opacity: expect.any(Number),
+      });
     });
   });
 

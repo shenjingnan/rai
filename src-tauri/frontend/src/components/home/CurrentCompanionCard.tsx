@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { api, onCompanionScaleChanged, toAssetUrl } from "@/lib/tauri";
+import { api, onCompanionOpacityChanged, onCompanionScaleChanged, toAssetUrl } from "@/lib/tauri";
 import type { CompanionModelInfo } from "@/types/tauri";
 
 interface CurrentCompanionCardProps {
@@ -14,13 +14,13 @@ interface CurrentCompanionCardProps {
 }
 
 /**
- * 概览页「当前伙伴」卡片：顶部名称/使用中徽标与桌宠尺寸 + Live2D 实时预览。
+ * 概览页「当前伙伴」卡片：顶部名称/使用中徽标与尺寸/透明度控制 + Live2D 实时预览。
  *
  * - 预览复用 `Live2dStage`（与伙伴页同一组件，ResizeObserver 量测容器尺寸），
  *   渲染失败时按伙伴重试两次（启动瞬间 GPU 繁忙导致的瞬时失败可自愈），
  *   仍失败才回退 `cover_image` 静态封面，无封面则提示文案；
- * - 桌宠尺寸与伙伴页共用同一持久化状态（settings.toml [live2d].window_scale），
- *   写入后桌宠窗口即时 resize；桌宠窗口滚轮缩放时经事件同步显示值。
+ * - 尺寸/透明度与伙伴页共用同一持久化状态（settings.toml [live2d].window_scale /
+ *   window_opacity），写入后桌宠窗口即时生效；其它入口（滚轮/菜单）改动时经事件同步显示值。
  */
 export function CurrentCompanionCard({ companion, loading, error }: CurrentCompanionCardProps) {
   // Live2D 预览：量测容器尺寸交给 Live2dStage（PIXI 需要非 0 尺寸）。
@@ -57,13 +57,15 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
     }, 1200);
   }, [companion]);
 
-  // 桌宠尺寸（缩放百分比，25%~200%）：初始从持久化配置读取。
+  // 桌宠尺寸（缩放百分比，25%~200%）与透明度（20%~100%）：初始从持久化配置读取。
   const [percent, setPercent] = useState(100);
+  const [opacityPercent, setOpacityPercent] = useState(100);
   useEffect(() => {
     void api
       .getLive2dConfig()
       .then((cfg) => {
         if (cfg.window_scale != null) setPercent(Math.round(cfg.window_scale * 100));
+        if (cfg.window_opacity != null) setOpacityPercent(Math.round(cfg.window_opacity * 100));
       })
       .catch(() => {});
   }, []);
@@ -78,10 +80,26 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
     };
   }, []);
 
+  // 右键菜单 / 托盘改透明度时同步显示值。
+  useEffect(() => {
+    const unlisten = onCompanionOpacityChanged((opacity) => {
+      setOpacityPercent(Math.round(opacity * 100));
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   const handleScaleChange = useCallback((value: number) => {
     const clamped = Math.max(25, Math.min(200, Math.round(value)));
     setPercent(clamped);
     void api.setCompanionScale({ scale: clamped / 100 });
+  }, []);
+
+  const handleOpacityChange = useCallback((value: number) => {
+    const clamped = Math.max(20, Math.min(100, Math.round(value)));
+    setOpacityPercent(clamped);
+    void api.setCompanionOpacity({ opacity: clamped / 100 });
   }, []);
 
   // 预览分支：Live2D 实时渲染 > 重试耗尽回退封面/文案 > 空态 / 加载中 / 模型不可用
@@ -149,18 +167,34 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
               {!companion.valid && <span className="text-xs text-destructive">模型不可用</span>}
             </div>
 
-            {/* 桌宠尺寸：与伙伴页同一控制（25%~200%），写入后桌宠窗口即时 resize */}
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span className="shrink-0">桌宠尺寸</span>
-              <Slider
-                value={[percent]}
-                min={25}
-                max={200}
-                step={5}
-                onValueChange={([v]) => handleScaleChange(v)}
-                className="w-28"
-              />
-              <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
+            {/* 尺寸/透明度：与伙伴页同一控制，写入后桌宠窗口即时生效（尺寸在上，透明度在下） */}
+            <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <span className="w-12 shrink-0">尺寸</span>
+                <Slider
+                  aria-label="尺寸"
+                  value={[percent]}
+                  min={25}
+                  max={200}
+                  step={5}
+                  onValueChange={([v]) => handleScaleChange(v)}
+                  className="w-28"
+                />
+                <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-12 shrink-0">透明度</span>
+                <Slider
+                  aria-label="透明度"
+                  value={[opacityPercent]}
+                  min={20}
+                  max={100}
+                  step={5}
+                  onValueChange={([v]) => handleOpacityChange(v)}
+                  className="w-28"
+                />
+                <span className="w-10 shrink-0 text-right tabular-nums">{opacityPercent}%</span>
+              </div>
             </div>
           </div>
         )}

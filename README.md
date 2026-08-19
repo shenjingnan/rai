@@ -370,6 +370,13 @@ pnpm tauri build
 > macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
 > `xattr -dr com.apple.quarantine <应用路径>`。
 
+### 一键重启
+
+设置面板「通用」、角色右键菜单与托盘菜单均提供「重启」：退出后自动重新拉起，用于应用需要重启才能生效的配置。
+
+- **打包版（生产）** — 正常：前端资源内置（`asset://`），重启后直接加载。
+- **开发模式（`pnpm tauri dev`）** — 重启后新进程会**白屏**。原因：Tauri 内置重启只重新拉起应用二进制、不重跑 `beforeDevCommand`，而 `tauri dev` 在应用退出时会连同 Vite dev server 一起拆掉（[tauri#6163](https://github.com/tauri-apps/tauri/issues/6163)），新进程连不上 `localhost:1420`。需要重启效果时请手动重跑 `pnpm tauri dev`。
+
 ### Live2D 虚拟角色
 
 常驻角色窗口：显示 Live2D 角色（呼吸 / 眨眼等自动动画），与设置面板分离、独立悬浮。

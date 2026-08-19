@@ -28,6 +28,7 @@ export function ChatPage() {
 
   // 记录 / 流式字幕更新时自动滚动到底部（新消息在底部）
   const scrollRef = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 依赖值仅作「内容变化触发滚动」信号，不参与 effect 计算
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -60,7 +61,8 @@ export function ChatPage() {
         <Alert>
           <AlertTitle>语音互动未启用</AlertTitle>
           <AlertDescription>
-            开启对话记录需要同时启用「唤醒词」(KWS) 与「语音识别」(ASR)。请在「模型与能力」页开启后使用。
+            开启对话记录需要同时启用「唤醒词」(KWS)
+            与「语音识别」(ASR)。请在「模型与能力」页开启后使用。
           </AlertDescription>
         </Alert>
       )}
@@ -87,18 +89,16 @@ export function ChatPage() {
         <CardContent ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           {!hasContent && (
             <p className="text-sm text-muted-foreground">
-              {voice.running
-                ? "待唤醒中，喊唤醒词开始对话…"
-                : "打开开关后，喊唤醒词开始对话…"}
+              {voice.running ? "待唤醒中，喊唤醒词开始对话…" : "打开开关后，喊唤醒词开始对话…"}
             </p>
           )}
 
           {voice.records.length > 0 && (
             <div className="flex flex-col gap-3">
-              {voice.records.map((rec, i) => {
+              {voice.records.map((rec) => {
                 const isUser = rec.role === "user";
                 return (
-                  <div key={i} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                  <div key={rec.at} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
                     <div
                       className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-none ${
                         isUser

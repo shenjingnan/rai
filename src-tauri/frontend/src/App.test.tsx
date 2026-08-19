@@ -442,4 +442,15 @@ describe("App（KWS 控制面板）", () => {
       expect(invokeMock).toHaveBeenCalledWith("set_microphone", { mic: "USB 麦克风" });
     });
   });
+
+  it("设置页点击「重启」按钮调用 restart_app", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings");
+
+    await user.click(await screen.findByRole("button", { name: "重启" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("restart_app");
+    });
+  });
 });

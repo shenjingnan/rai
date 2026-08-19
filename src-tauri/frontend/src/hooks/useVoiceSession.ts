@@ -85,10 +85,9 @@ export function useVoiceSession(): VoiceSessionState {
       onVoiceSessionTranscript((p) => {
         if (p.is_final) {
           setRecords((prev) =>
-            [
-              ...prev,
-              { role: "user" as const, text: p.text, at: new Date().toISOString() },
-            ].slice(-MAX_RECORDS),
+            [...prev, { role: "user" as const, text: p.text, at: new Date().toISOString() }].slice(
+              -MAX_RECORDS,
+            ),
           );
           setPartial("");
         } else {
@@ -103,10 +102,9 @@ export function useVoiceSession(): VoiceSessionState {
         if (p.text && p.text.trim().length > 0) {
           const text = p.text;
           setRecords((prev) =>
-            [
-              ...prev,
-              { role: "assistant" as const, text, at: new Date().toISOString() },
-            ].slice(-MAX_RECORDS),
+            [...prev, { role: "assistant" as const, text, at: new Date().toISOString() }].slice(
+              -MAX_RECORDS,
+            ),
           );
         }
         setPendingReply("");
@@ -121,7 +119,9 @@ export function useVoiceSession(): VoiceSessionState {
     ];
 
     return () => {
-      unsubs.forEach((p) => p.then((fn) => fn()));
+      unsubs.forEach((p) => {
+        void p.then((fn) => fn());
+      });
     };
   }, []);
 

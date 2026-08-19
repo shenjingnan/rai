@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 const Slider = React.forwardRef<
   React.ElementRef<typeof SliderPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root>
-// aria-label 从 Root 解构后转投到 Thumb（role="slider" 的元素），
-// 传给 Root 会被 Radix 丢弃——无障碍命名必须落在 Thumb 上。
+  // aria-label 从 Root 解构后转投到 Thumb（role="slider" 的元素），
+  // 传给 Root 会被 Radix 丢弃——无障碍命名必须落在 Thumb 上。
 >(({ className, "aria-label": ariaLabel, ...props }, ref) => (
   <SliderPrimitive.Root
     ref={ref}

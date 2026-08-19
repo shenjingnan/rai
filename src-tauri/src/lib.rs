@@ -2155,6 +2155,27 @@ fn scale_from_id(id: &str) -> Option<f64> {
     }
 }
 
+/// 透明度合法范围（含边界）。
+const OPACITY_MIN: f64 = 0.2;
+const OPACITY_MAX: f64 = 1.0;
+
+/// 把透明度 clamp 到 `[OPACITY_MIN, OPACITY_MAX]`。
+fn clamp_opacity(v: f64) -> f64 {
+    v.clamp(OPACITY_MIN, OPACITY_MAX)
+}
+
+/// 把原生菜单项 id 解析为透明度。
+fn opacity_from_id(id: &str) -> Option<f64> {
+    match id {
+        "opacity_100" => Some(1.0),
+        "opacity_80" => Some(0.8),
+        "opacity_60" => Some(0.6),
+        "opacity_40" => Some(0.4),
+        "opacity_20" => Some(0.2),
+        _ => None,
+    }
+}
+
 /// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
 ///
 /// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
@@ -3505,4 +3526,30 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod companion_opacity_tests {
+    use super::{clamp_opacity, opacity_from_id};
+
+    #[test]
+    fn test_opacity_from_id_mappings() {
+        assert_eq!(opacity_from_id("opacity_100"), Some(1.0));
+        assert_eq!(opacity_from_id("opacity_80"), Some(0.8));
+        assert_eq!(opacity_from_id("opacity_60"), Some(0.6));
+        assert_eq!(opacity_from_id("opacity_40"), Some(0.4));
+        assert_eq!(opacity_from_id("opacity_20"), Some(0.2));
+        assert_eq!(opacity_from_id("scale_100"), None);
+        assert_eq!(opacity_from_id("unknown"), None);
+    }
+
+    #[test]
+    fn test_clamp_opacity_bounds() {
+        assert_eq!(clamp_opacity(0.05), 0.2);
+        assert_eq!(clamp_opacity(-1.0), 0.2);
+        assert_eq!(clamp_opacity(1.5), 1.0);
+        assert_eq!(clamp_opacity(0.2), 0.2);
+        assert_eq!(clamp_opacity(1.0), 1.0);
+        assert_eq!(clamp_opacity(0.65), 0.65);
+    }
 }

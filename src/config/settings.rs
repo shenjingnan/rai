@@ -370,6 +370,9 @@ pub struct Live2dSettings {
     /// 角色窗口缩放比例（1.0 = 100%；缺省视为 1.0）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_scale: Option<f64>,
+    /// 角色窗口透明度（1.0 = 不透明；缺省视为 1.0）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_opacity: Option<f64>,
 }
 
 /// 本地 LLM 配置。
@@ -886,6 +889,7 @@ mod tests {
             model_dir: Some("/tmp/some-model".to_string()),
             window_position: Some(CompanionWindowPosition { x: 120, y: 800 }),
             window_scale: Some(1.5),
+            window_opacity: Some(0.6),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
@@ -895,10 +899,12 @@ mod tests {
             model_dir: Some("/tmp/some-model".to_string()),
             window_position: None,
             window_scale: None,
+            window_opacity: None,
         };
         let none_toml = toml::to_string(&none_pos).unwrap();
         assert!(!none_toml.contains("window_position"));
         assert!(!none_toml.contains("window_scale"));
+        assert!(!none_toml.contains("window_opacity"));
     }
 
     #[test]

@@ -391,9 +391,9 @@ export function CompanionPage() {
             {selected && (
               <div className="flex w-full flex-col gap-2 text-sm text-muted-foreground">
                 <div className="flex w-full items-center gap-2">
-                  <span className="shrink-0">桌宠尺寸</span>
+                  <span className="w-12 shrink-0">尺寸</span>
                   <Slider
-                    aria-label="桌宠尺寸"
+                    aria-label="尺寸"
                     value={[percent]}
                     min={25}
                     max={200}
@@ -404,7 +404,7 @@ export function CompanionPage() {
                   <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
                 </div>
                 <div className="flex w-full items-center gap-2">
-                  <span className="shrink-0">透明度</span>
+                  <span className="w-12 shrink-0">透明度</span>
                   <Slider
                     aria-label="透明度"
                     value={[opacityPercent]}

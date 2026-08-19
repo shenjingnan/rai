@@ -9,8 +9,8 @@ const { state } = vi.hoisted(() => {
     running: false,
     phase: "idle",
     partial: "",
-    userSegments: [],
-    replyText: "",
+    records: [],
+    pendingReply: "",
     replyDone: false,
     queuedSentences: [],
     currentSentence: null,
@@ -18,6 +18,7 @@ const { state } = vi.hoisted(() => {
     pending: false,
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
+    clearRecords: vi.fn().mockResolvedValue(undefined),
     ...over,
   });
   return { state: { voice: makeVoice(), capabilities: { kws: true, asr: true } } };
@@ -47,17 +48,30 @@ describe("ChatPage", () => {
     expect(screen.getByText(/打开开关后/)).toBeTruthy();
   });
 
-  it("渲染用户句与实时字幕", () => {
+  it("渲染记录行与实时字幕", () => {
     state.voice = {
       ...state.voice,
       running: true,
       phase: "listening",
-      userSegments: [{ id: 1, text: "你好", at: "12:00" }],
+      records: [{ role: "user", text: "你好", at: "2026-08-19T12:00:00" }],
       partial: "正在说",
     };
     render(<ChatPage />);
+    expect(screen.getByText("你")).toBeTruthy();
     expect(screen.getByText("你好")).toBeTruthy();
     expect(screen.getByText("正在说")).toBeTruthy();
+  });
+
+  it("渲染桌宠记录行", () => {
+    state.voice = {
+      ...state.voice,
+      running: true,
+      phase: "speaking",
+      records: [{ role: "assistant", text: "好的，我记住了。", at: "2026-08-19T12:00:05" }],
+    };
+    render(<ChatPage />);
+    expect(screen.getByText("桌宠")).toBeTruthy();
+    expect(screen.getByText("好的，我记住了。")).toBeTruthy();
   });
 
   it("渲染流式回复与正在播报指示", () => {
@@ -65,7 +79,7 @@ describe("ChatPage", () => {
       ...state.voice,
       running: true,
       phase: "speaking",
-      replyText: "今天天气不错。",
+      pendingReply: "今天天气不错。",
       currentSentence: "今天天气不错。",
       replyDone: false,
     };
@@ -86,6 +100,24 @@ describe("ChatPage", () => {
     render(<ChatPage />);
     await userEvent.click(screen.getByRole("switch"));
     expect(state.voice.start).toHaveBeenCalled();
+  });
+
+  it("无记录时清空按钮禁用", () => {
+    state.voice = { ...state.voice, running: false, phase: "idle", records: [] };
+    render(<ChatPage />);
+    expect(screen.getByRole("button", { name: "清空" })).toBeDisabled();
+  });
+
+  it("有记录时点击清空调用 clearRecords", async () => {
+    state.voice = {
+      ...state.voice,
+      running: false,
+      phase: "idle",
+      records: [{ role: "user", text: "你好", at: "2026-08-19T12:00:00" }],
+    };
+    render(<ChatPage />);
+    await userEvent.click(screen.getByRole("button", { name: "清空" }));
+    expect(state.voice.clearRecords).toHaveBeenCalled();
   });
 
   it("错误显示 Alert", () => {

@@ -38,7 +38,7 @@ export function AsrPage() {
         <div>
           <p className="text-sm font-medium text-text-primary">启用语音识别</p>
           <p className="mt-0.5 text-xs text-text-muted">
-            语音会话「能识别」的前提；关闭后语音对话不可用
+            语音会话「能识别」的前提；关闭后对话记录不可用
           </p>
         </div>
         <Switch

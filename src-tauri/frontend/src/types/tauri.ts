@@ -172,6 +172,8 @@ export interface TtsConfigInfo {
   speed: number;
   /** 调试输出，可经 `set_tts_params` 修改 */
   debug: boolean;
+  /** 默认音色 id（`null` = 内置 leijun），可经 `set_tts_voice` 修改 */
+  voice: string | null;
 }
 
 /** `set_tts_params` 载荷：可调整的 TTS 合成参数（snake_case 直传，缺省项不修改）。 */
@@ -309,6 +311,16 @@ export interface VoicePlaySentence {
 /** `voice-session-reply-finished` 事件载荷 */
 export interface VoiceReplyFinished {
   reason: string;
+  /** 该轮完整可见回复（`null` = 空回复），供前端提交对话记录 */
+  text: string | null;
+}
+
+/** 一条持久化的对话记录（`~/.zapmomo/conversations.json`） */
+export interface ConversationRecord {
+  role: "user" | "assistant";
+  text: string;
+  /** ISO 8601 时间戳 */
+  at: string;
 }
 
 /** `voice-session-error` 事件载荷 */

@@ -31,15 +31,20 @@ function Probe() {
       <span data-testid="running">{String(voice.running)}</span>
       <span data-testid="phase">{voice.phase}</span>
       <span data-testid="partial">{voice.partial}</span>
-      <span data-testid="reply">{voice.replyText}</span>
+      <span data-testid="reply">{voice.pendingReply}</span>
       <span data-testid="current">{voice.currentSentence ?? ""}</span>
-      <span data-testid="segments">{voice.userSegments.map((s) => s.text).join("|")}</span>
+      <span data-testid="records">
+        {voice.records.map((r) => `${r.role}:${r.text}`).join("|")}
+      </span>
       <span data-testid="error">{voice.error ?? ""}</span>
       <button data-testid="start" onClick={() => void voice.start()}>
         start
       </button>
       <button data-testid="stop" onClick={() => void voice.stop()}>
         stop
+      </button>
+      <button data-testid="clear" onClick={() => void voice.clearRecords()}>
+        clear
       </button>
     </div>
   );
@@ -51,10 +56,18 @@ beforeEach(() => {
 });
 
 describe("useVoiceSession", () => {
-  it("回读后端运行态并订阅事件驱动状态", async () => {
+  it("回读后端运行态、载入持久化记录，事件驱动状态", async () => {
+    // 顺序：is_voice_session_running → get_conversation_records
     invokeMock.mockResolvedValueOnce(true);
+    invokeMock.mockResolvedValueOnce([
+      { role: "user", text: "昨天的你好", at: "2026-08-18T10:00:00" },
+      { role: "assistant", text: "你好呀", at: "2026-08-18T10:00:01" },
+    ]);
     render(<Probe />);
     await waitFor(() => expect(screen.getByTestId("running").textContent).toBe("true"));
+    await waitFor(() =>
+      expect(screen.getByTestId("records").textContent).toBe("user:昨天的你好|assistant:你好呀"),
+    );
 
     emit("voice-session-state", { running: true, state: "armed" });
     expect(screen.getByTestId("phase").textContent).toBe("armed");
@@ -63,10 +76,10 @@ describe("useVoiceSession", () => {
     expect(screen.getByTestId("partial").textContent).toBe("你");
     emit("voice-session-transcript", { text: "你好", is_final: true });
     expect(screen.getByTestId("partial").textContent).toBe("");
-    expect(screen.getByTestId("segments").textContent).toContain("你好");
+    expect(screen.getByTestId("records").textContent).toContain("user:你好");
   });
 
-  it("LLM token 累积、播放句更新", () => {
+  it("LLM token 累积为 pendingReply，reply-finished 提交桌宠记录并清空", () => {
     render(<Probe />);
     emit("voice-session-token", { delta: "今天" });
     emit("voice-session-token", { delta: "天气不错。" });
@@ -74,6 +87,25 @@ describe("useVoiceSession", () => {
 
     emit("voice-session-play", { sentence: "今天天气不错。" });
     expect(screen.getByTestId("current").textContent).toBe("今天天气不错。");
+
+    emit("voice-session-reply-finished", { reason: "Eos", text: "今天天气不错。" });
+    expect(screen.getByTestId("reply").textContent).toBe("");
+    expect(screen.getByTestId("records").textContent).toContain("assistant:今天天气不错。");
+  });
+
+  it("reply-finished 空回复（text null）不落空行", () => {
+    render(<Probe />);
+    emit("voice-session-reply-finished", { reason: "Eos", text: null });
+    expect(screen.getByTestId("records").textContent).toBe("");
+  });
+
+  it("打断（state 回 armed）清空未提交的 pendingReply", () => {
+    render(<Probe />);
+    emit("voice-session-state", { running: true, state: "thinking" });
+    emit("voice-session-token", { delta: "正在回复" });
+    expect(screen.getByTestId("reply").textContent).toBe("正在回复");
+    emit("voice-session-state", { running: true, state: "armed" });
+    expect(screen.getByTestId("reply").textContent).toBe("");
   });
 
   it("stopped 复位为 idle 并透传错误", () => {
@@ -93,5 +125,17 @@ describe("useVoiceSession", () => {
 
     await user.click(screen.getByTestId("stop"));
     expect(invokeMock).toHaveBeenCalledWith("stop_voice_session");
+  });
+
+  it("clearRecords 调用命令并清空记录", async () => {
+    invokeMock.mockResolvedValueOnce(false);
+    invokeMock.mockResolvedValueOnce([{ role: "user", text: "你好", at: "2026-08-19T10:00:00" }]);
+    const user = userEvent.setup();
+    render(<Probe />);
+    await waitFor(() => expect(screen.getByTestId("records").textContent).toContain("你好"));
+
+    await user.click(screen.getByTestId("clear"));
+    expect(invokeMock).toHaveBeenCalledWith("clear_conversation_records");
+    await waitFor(() => expect(screen.getByTestId("records").textContent).toBe(""));
   });
 });

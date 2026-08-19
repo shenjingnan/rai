@@ -25,8 +25,12 @@ pub enum VoiceEvent {
     ReplySentence { sentence: String },
     /// 合成结果开始播放（`[播放] {sentence}`）
     PlaySentence { sentence: String },
-    /// 一轮回复生成结束（`[回复完成] {reason}`）
-    ReplyFinished { reason: String },
+    /// 一轮回复生成结束（`[回复完成] {reason}`）；`text` 为该轮完整可见回复
+    /// （思考块已过滤，`None` = 空回复），供宿主持久化对话记录。
+    ReplyFinished {
+        reason: String,
+        text: Option<String>,
+    },
     /// 回复播完，进入跟听聆听（`[跟听] 继续说...`；前端不消费）
     FollowUp,
     /// 错误（LLM / 合成 / 打断）
@@ -83,8 +87,13 @@ pub fn log_voice_event(ev: &VoiceEvent) {
         VoiceEvent::PlaySentence { sentence } => {
             tracing::debug!("[voice] TTS 开始播放: {sentence}")
         }
-        VoiceEvent::ReplyFinished { reason } => {
-            tracing::info!("[voice] 回复生成结束: {reason}")
+        VoiceEvent::ReplyFinished { reason, text } => {
+            tracing::info!("[voice] 回复生成结束: {reason}");
+            if let Some(text) = text
+                && !text.is_empty()
+            {
+                tracing::info!("[voice] 回复内容: {text}");
+            }
         }
         VoiceEvent::FollowUp => tracing::info!("[voice] 进入跟听聆听"),
         VoiceEvent::Error { kind, message } => {
@@ -119,7 +128,7 @@ pub fn cli_sink(ev: VoiceEvent) {
         }
         VoiceEvent::ReplySentence { sentence } => println!("  [合成] {sentence}"),
         VoiceEvent::PlaySentence { sentence } => println!("  [播放] {sentence}"),
-        VoiceEvent::ReplyFinished { reason } => {
+        VoiceEvent::ReplyFinished { reason, .. } => {
             println!(); // 结束 token 流的一行
             println!("[回复完成] {reason}");
         }
@@ -177,6 +186,7 @@ mod tests {
             },
             VoiceEvent::ReplyFinished {
                 reason: "Eos".to_string(),
+                text: None,
             },
             VoiceEvent::FollowUp,
             VoiceEvent::Error {
@@ -260,8 +270,16 @@ mod tests {
             (
                 VoiceEvent::ReplyFinished {
                     reason: "Eos".to_string(),
+                    text: Some("好的。".to_string()),
                 },
-                r#"{"type":"reply_finished","reason":"Eos"}"#,
+                r#"{"type":"reply_finished","reason":"Eos","text":"好的。"}"#,
+            ),
+            (
+                VoiceEvent::ReplyFinished {
+                    reason: "Eos".to_string(),
+                    text: None,
+                },
+                r#"{"type":"reply_finished","reason":"Eos","text":null}"#,
             ),
             (
                 VoiceEvent::Error {
@@ -314,6 +332,11 @@ mod tests {
             },
             VoiceEvent::ReplyFinished {
                 reason: "Eos".to_string(),
+                text: Some("好的。".to_string()),
+            },
+            VoiceEvent::ReplyFinished {
+                reason: "Eos".to_string(),
+                text: None,
             },
             VoiceEvent::FollowUp,
             VoiceEvent::Error {

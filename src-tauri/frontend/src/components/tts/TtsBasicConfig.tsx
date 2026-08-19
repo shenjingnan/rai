@@ -4,6 +4,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useRuntime } from "@/providers/RuntimeContext";
 import { modelNameFromDir } from "./ttsMeta";
 
@@ -19,7 +26,17 @@ interface TtsBasicConfigProps {
  */
 export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigProps) {
   const { tts } = useRuntime();
-  const { config, configError, downloading, downloadProgress, downloadError, download } = tts;
+  const {
+    config,
+    configError,
+    downloading,
+    downloadProgress,
+    downloadError,
+    download,
+    voices,
+    selectedVoice,
+    setSelectedVoice,
+  } = tts;
   const [showPath, setShowPath] = useState(false);
 
   const modelsPresent = config?.models_present ?? false;
@@ -118,6 +135,36 @@ export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigPro
                 {modelPath}
               </p>
             )}
+          </dd>
+        </div>
+      </dl>
+
+      {/* 默认音色：所有 TTS 合成（测试 / 语音会话）默认用该音色，选即持久化 [tts].voice */}
+      <dl>
+        <div className="flex items-center justify-between gap-3.5 border-t border-divider px-3.5 py-2.5">
+          <dt className="shrink-0 text-sm text-text-primary">默认音色</dt>
+          <dd className="min-w-0">
+            <Select
+              value={selectedVoice}
+              onValueChange={(v) => void setSelectedVoice(v)}
+              disabled={voices.length === 0}
+            >
+              <SelectTrigger
+                id="tts-default-voice"
+                aria-label="默认音色"
+                className="h-8 w-48"
+              >
+                <SelectValue placeholder="默认（内置 leijun）" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">默认（内置 leijun）</SelectItem>
+                {voices.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </dd>
         </div>
       </dl>

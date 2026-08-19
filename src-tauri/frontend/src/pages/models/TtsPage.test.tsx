@@ -81,6 +81,7 @@ const TTS_CONFIG = {
   num_steps: 4,
   speed: 1.0,
   debug: false,
+  voice: null as string | null,
 };
 
 const LLM_CONFIG = {
@@ -131,6 +132,7 @@ function defaultInvoke(
     referenceText?: string;
     id?: string;
     seconds?: number;
+    voice?: string | null;
   },
 ) {
   switch (cmd) {
@@ -150,6 +152,9 @@ function defaultInvoke(
       ttsConfig = { ...ttsConfig, enabled: args?.enabled ?? false };
       return Promise.resolve(undefined);
     case "set_tts_params":
+      return Promise.resolve(undefined);
+    case "set_tts_voice":
+      ttsConfig = { ...ttsConfig, voice: args?.voice ?? null };
       return Promise.resolve(undefined);
     case "save_tts_voice": {
       const saved = {
@@ -434,6 +439,30 @@ describe("TtsPage（语音合成 TTS）", () => {
     await user.click(screen.getByRole("combobox", { name: "音色" }));
     expect(await screen.findByRole("option", { name: "雷军（男）" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "新闻女声" })).toBeInTheDocument();
+  });
+
+  it("主页「默认音色」选择器渲染并持久化（set_tts_voice）", async () => {
+    const user = userEvent.setup();
+    renderTtsPage();
+    await screen.findByText("语音合成（TTS）配置");
+
+    const combobox = await screen.findByRole("combobox", { name: "默认音色" });
+    await waitFor(() => expect(combobox).toBeEnabled());
+    await user.click(combobox);
+    expect(await screen.findByRole("option", { name: "雷军（男）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "新闻女声" })).toBeInTheDocument();
+
+    // 选择内置音色 → 持久化为全局默认音色
+    await user.click(screen.getByRole("option", { name: "雷军（男）" }));
+    expect(invokeMock).toHaveBeenCalledWith("set_tts_voice", { voice: "leijun-1" });
+  });
+
+  it("主页默认音色显示 get_tts_config 已持久化的音色", async () => {
+    ttsConfig = { ...ttsConfig, models_present: true, voice: "news-female" };
+    renderTtsPage();
+    await screen.findByText("语音合成（TTS）配置");
+    const combobox = await screen.findByRole("combobox", { name: "默认音色" });
+    await waitFor(() => expect(combobox).toHaveTextContent("新闻女声"));
   });
 
   it("文本输入生效，合成调用 synthesize_tts 携带真实 text / voice / speed", async () => {

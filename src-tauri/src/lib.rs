@@ -37,10 +37,12 @@ use zapmomo::model_library::{
     InstallState as LibInstallState, LibraryModel, RuntimeAction as LibRuntimeAction,
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
 };
+use zapmomo::datetime::iso_timestamp_now;
 use zapmomo::tts::config::TtsParamsPatch;
 use zapmomo::voice::VoiceSession;
 use zapmomo::voice::config::CliOverrides as VoiceCliOverrides;
 use zapmomo::voice::events::VoiceEvent;
+use zapmomo::voice::records;
 use zapmomo::voice::state::SessionState as VoicePhase;
 
 // 角色窗口的 macOS 非激活面板：点击/拖动不激活应用、不抢前台焦点，
@@ -160,6 +162,8 @@ struct VoicePlayPayload {
 #[derive(Clone, Serialize)]
 struct VoiceReplyFinishedPayload {
     reason: String,
+    /// 该轮完整可见回复（`None` = 空回复），供前端提交对话记录
+    text: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -837,6 +841,8 @@ struct TtsConfigInfo {
     speed: f32,
     /// 调试输出，可经 `set_tts_params` 修改
     debug: bool,
+    /// 默认音色 id（`None` = 用内置 leijun），可经 `set_tts_voice` 修改
+    voice: Option<String>,
 }
 
 /// 合成结果事件载荷（推给前端播放）。
@@ -876,6 +882,7 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
         num_steps: cfg.num_steps,
         speed: cfg.speed,
         debug: cfg.debug,
+        voice: cfg.voice.clone(),
     })
 }
 
@@ -1317,7 +1324,7 @@ fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), Stri
 #[tauri::command]
 fn unload_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
     if app.state::<VoiceSessionState>().is_running() {
-        return Err("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。".to_string());
+        return Err("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再卸载。".to_string());
     }
     let engine = state.engine.lock().expect("llm lock poisoned").take();
     if let Some(engine) = engine {
@@ -1398,6 +1405,14 @@ fn make_voice_emit(app: AppHandle) -> Box<dyn Fn(VoiceEvent) + Send> {
                 let _ = app.emit("voice-session-wake", VoiceWakePayload { keyword });
             }
             VoiceEvent::Transcript { text, is_final } => {
+                // 最终用户句：持久化到对话记录（~/.zapmomo/conversations.json）
+                if is_final {
+                    records::append_record(records::ConversationRecord {
+                        role: records::RecordRole::User,
+                        text: text.clone(),
+                        at: iso_timestamp_now(),
+                    });
+                }
                 let _ = app.emit(
                     "voice-session-transcript",
                     VoiceTranscriptPayload { text, is_final },
@@ -1412,10 +1427,20 @@ fn make_voice_emit(app: AppHandle) -> Box<dyn Fn(VoiceEvent) + Send> {
             VoiceEvent::PlaySentence { sentence } => {
                 let _ = app.emit("voice-session-play", VoicePlayPayload { sentence });
             }
-            VoiceEvent::ReplyFinished { reason } => {
+            VoiceEvent::ReplyFinished { reason, text } => {
+                // 非空回复：持久化桌宠记录（空回复不落盘，避免空行）
+                if let Some(text) = &text
+                    && !text.is_empty()
+                {
+                    records::append_record(records::ConversationRecord {
+                        role: records::RecordRole::Assistant,
+                        text: text.clone(),
+                        at: iso_timestamp_now(),
+                    });
+                }
                 let _ = app.emit(
                     "voice-session-reply-finished",
-                    VoiceReplyFinishedPayload { reason },
+                    VoiceReplyFinishedPayload { reason, text },
                 );
             }
             VoiceEvent::Error { message, .. } => {
@@ -1581,6 +1606,18 @@ fn is_voice_session_running(state: State<'_, VoiceSessionState>) -> bool {
     state.is_running()
 }
 
+/// 读取持久化的对话记录（`~/.zapmomo/conversations.json`），供前端「对话记录」页载入。
+#[tauri::command]
+fn get_conversation_records() -> Vec<records::ConversationRecord> {
+    records::load_records()
+}
+
+/// 清空持久化的对话记录。
+#[tauri::command]
+fn clear_conversation_records() -> Result<(), String> {
+    records::clear_records()
+}
+
 /// 持久化用户选择的 LLM 模型路径（GGUF 文件），写入 `[llm].model_path`。
 #[tauri::command]
 fn set_llm_model_path(path: String) -> Result<(), String> {
@@ -1663,6 +1700,18 @@ fn set_tts_params(params: TtsParamsPatch) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();
     let tts = settings.tts.get_or_insert_with(TtsSettings::default);
     params.apply_to(tts)?;
+    settings::save_settings(&settings)
+}
+
+/// 设定默认音色（写入 `[tts].voice`；`None` 恢复内置默认 leijun）。
+///
+/// 所有不显式指定音色的合成（测试语音 / 语音会话）都会用该默认音色，
+/// 经 `resolve_reference` 回退生效。保存后下一次合成即生效，无需重启。
+#[tauri::command]
+fn set_tts_voice(voice: Option<String>) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let tts = settings.tts.get_or_insert_with(TtsSettings::default);
+    tts.voice = voice;
     settings::save_settings(&settings)
 }
 
@@ -2513,7 +2562,7 @@ async fn set_current_model(
     }
     // 统一引擎：voice 会话正共享该引擎，切换会让 voice 持旧 Arc 造成双模型 → 运行时拒绝
     if app.state::<VoiceSessionState>().is_running() {
-        return Err("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再切换模型。".to_string());
+        return Err("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再切换模型。".to_string());
     }
     let _guard = LlmSwitchGuard::begin(llm.inner(), path.clone())?;
 
@@ -3157,9 +3206,12 @@ pub fn run() {
             set_llm_system_prompt,
             set_tts_enabled,
             set_tts_params,
+            set_tts_voice,
             start_voice_session,
             stop_voice_session,
             is_voice_session_running,
+            get_conversation_records,
+            clear_conversation_records,
             list_model_library,
             get_system_resources,
             download_library_model,

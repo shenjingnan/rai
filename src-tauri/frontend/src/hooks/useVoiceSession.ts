@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   onVoiceSessionError,
@@ -11,13 +11,10 @@ import {
   onVoiceSessionTranscript,
   onVoiceSessionWake,
 } from "@/lib/tauri";
-import type { VoiceSessionPhase } from "@/types/tauri";
+import type { ConversationRecord, VoiceSessionPhase } from "@/types/tauri";
 
-export interface TranscriptSegment {
-  id: number;
-  text: string;
-  at: string;
-}
+/** 对话记录列表最大条数（与后端 `records.rs` 的 cap 一致）。 */
+const MAX_RECORDS = 200;
 
 /** 语音会话运行态（订阅后端 `voice-session-*` 事件）。 */
 export interface VoiceSessionState {
@@ -25,10 +22,10 @@ export interface VoiceSessionState {
   phase: VoiceSessionPhase;
   /** ASR 实时字幕（部分结果） */
   partial: string;
-  /** 已完成的用户话语（最新在前） */
-  userSegments: TranscriptSegment[];
-  /** LLM 流式回复文本 */
-  replyText: string;
+  /** 已持久化的对话记录（时间正序：旧的在上、新的在下） */
+  records: ConversationRecord[];
+  /** 当前轮 LLM 流式回复（`reply-finished` 时提交为 assistant 记录） */
+  pendingReply: string;
   replyDone: boolean;
   /** 已入队合成的句子 */
   queuedSentences: string[];
@@ -39,24 +36,27 @@ export interface VoiceSessionState {
   pending: boolean;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  clearRecords: () => Promise<void>;
 }
 
 /**
- * 语音会话状态管理：初始化回读后端运行态，订阅 `voice-session-*` 事件；
- * start/stop 包装对应 command。桌宠窗口（无 RuntimeContext）与设置窗口共用。
+ * 语音会话状态管理：初始化回读后端运行态 + 载入持久化对话记录，订阅 `voice-session-*`
+ * 事件驱动。桌宠窗口（无 RuntimeContext）与设置窗口共用。
+ *
+ * 记录流：用户最终句（`transcript` is_final）与桌宠完整回复（`reply-finished` 携带 text）
+ * 均提交进 `records`；后端在事件转发层同步落盘，前端仅做展示与本地累积。
  */
 export function useVoiceSession(): VoiceSessionState {
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<VoiceSessionPhase>("idle");
   const [partial, setPartial] = useState("");
-  const [userSegments, setUserSegments] = useState<TranscriptSegment[]>([]);
-  const [replyText, setReplyText] = useState("");
+  const [records, setRecords] = useState<ConversationRecord[]>([]);
+  const [pendingReply, setPendingReply] = useState("");
   const [replyDone, setReplyDone] = useState(false);
   const [queuedSentences, setQueuedSentences] = useState<string[]>([]);
   const [currentSentence, setCurrentSentence] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const idRef = useRef(0);
 
   useEffect(() => {
     // 启动时回读后端状态（应用可能在 setup 已自动进入待唤醒）
@@ -64,28 +64,54 @@ export function useVoiceSession(): VoiceSessionState {
       .isVoiceSessionRunning()
       .then(setRunning)
       .catch(() => {});
+    // 载入持久化的对话记录（跨应用重启保留）
+    api
+      .getConversationRecords()
+      .then((records) => setRecords((records ?? []).slice(-MAX_RECORDS)))
+      .catch(() => {});
 
     const unsubs = [
       onVoiceSessionState((p) => {
         setRunning(p.running);
         setPhase(p.state);
+        // 打断 / 停止都会回到 Armed 或 Idle（打断不 emit reply-finished，流式缓冲
+        // 会被丢弃），这里清掉被打断的回复，避免残留展示
+        if (p.state === "armed" || p.state === "idle") {
+          setPendingReply("");
+          setCurrentSentence(null);
+        }
       }),
       onVoiceSessionWake(() => {}),
       onVoiceSessionTranscript((p) => {
         if (p.is_final) {
-          const id = ++idRef.current;
-          setUserSegments((prev) =>
-            [{ id, text: p.text, at: new Date().toLocaleTimeString() }, ...prev].slice(0, 50),
+          setRecords((prev) =>
+            [
+              ...prev,
+              { role: "user" as const, text: p.text, at: new Date().toISOString() },
+            ].slice(-MAX_RECORDS),
           );
           setPartial("");
         } else {
           setPartial(p.text);
         }
       }),
-      onVoiceSessionToken((p) => setReplyText((prev) => prev + p.delta)),
+      onVoiceSessionToken((p) => setPendingReply((prev) => prev + p.delta)),
       onVoiceSessionReply((p) => setQueuedSentences((prev) => [...prev, p.sentence])),
       onVoiceSessionPlay((p) => setCurrentSentence(p.sentence)),
-      onVoiceSessionReplyFinished(() => setReplyDone(true)),
+      onVoiceSessionReplyFinished((p) => {
+        // 用后端权威文本提交桌宠记录（空回复 text 为 null，不落空行）
+        if (p.text && p.text.trim().length > 0) {
+          const text = p.text;
+          setRecords((prev) =>
+            [
+              ...prev,
+              { role: "assistant" as const, text, at: new Date().toISOString() },
+            ].slice(-MAX_RECORDS),
+          );
+        }
+        setPendingReply("");
+        setReplyDone(true);
+      }),
       onVoiceSessionError((p) => setError(p.message)),
       onVoiceSessionStopped((p) => {
         setRunning(false);
@@ -102,11 +128,12 @@ export function useVoiceSession(): VoiceSessionState {
   const start = useCallback(async () => {
     setPending(true);
     setError(null);
-    // 新一轮开始前清空上一轮回复展示（LLM 加载完成后后端会发 state 事件）
-    setReplyText("");
+    // 新一轮开始前清空上一轮的流式展示（记录保留，跨轮持续累积）
+    setPendingReply("");
     setReplyDone(false);
     setQueuedSentences([]);
     setCurrentSentence(null);
+    setPartial("");
     try {
       await api.startVoiceSession();
       setRunning(true);
@@ -130,12 +157,21 @@ export function useVoiceSession(): VoiceSessionState {
     }
   }, []);
 
+  const clearRecords = useCallback(async () => {
+    try {
+      await api.clearConversationRecords();
+      setRecords([]);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   return {
     running,
     phase,
     partial,
-    userSegments,
-    replyText,
+    records,
+    pendingReply,
     replyDone,
     queuedSentences,
     currentSentence,
@@ -143,5 +179,6 @@ export function useVoiceSession(): VoiceSessionState {
     pending,
     start,
     stop,
+    clearRecords,
   };
 }

@@ -235,7 +235,7 @@ describe("App（KWS 控制面板）", () => {
 
   it("LLM 卸载失败：右上角通知展示真实原因（如语音会话占用）", async () => {
     llmConfig = { ...llmConfig, ready: true, models_present: true };
-    llmUnloadReject = "语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。";
+    llmUnloadReject = "语音会话正在使用 LLM。请先在「对话记录」页停止会话后再卸载。";
     const user = userEvent.setup();
     renderApp("/models");
 
@@ -244,7 +244,7 @@ describe("App（KWS 控制面板）", () => {
 
     // 真实错误经右上角 Toast 透出（而非仅红色「错误」）
     expect(
-      await screen.findByText("语音会话正在使用 LLM。请先在「语音对话」页停止会话后再卸载。"),
+      await screen.findByText("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再卸载。"),
     ).toBeInTheDocument();
   });
 

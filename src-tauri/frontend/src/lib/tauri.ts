@@ -177,6 +177,7 @@ export const api = {
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),
+  restartApp: () => invoke<void>("restart_app"),
 };
 
 /** 类型安全的事件订阅（返回的 Promise resolve 后得到取消订阅函数）。 */

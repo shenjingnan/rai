@@ -33,17 +33,15 @@ function Probe() {
       <span data-testid="partial">{voice.partial}</span>
       <span data-testid="reply">{voice.pendingReply}</span>
       <span data-testid="current">{voice.currentSentence ?? ""}</span>
-      <span data-testid="records">
-        {voice.records.map((r) => `${r.role}:${r.text}`).join("|")}
-      </span>
+      <span data-testid="records">{voice.records.map((r) => `${r.role}:${r.text}`).join("|")}</span>
       <span data-testid="error">{voice.error ?? ""}</span>
-      <button data-testid="start" onClick={() => void voice.start()}>
+      <button type="button" data-testid="start" onClick={() => void voice.start()}>
         start
       </button>
-      <button data-testid="stop" onClick={() => void voice.stop()}>
+      <button type="button" data-testid="stop" onClick={() => void voice.stop()}>
         stop
       </button>
-      <button data-testid="clear" onClick={() => void voice.clearRecords()}>
+      <button type="button" data-testid="clear" onClick={() => void voice.clearRecords()}>
         clear
       </button>
     </div>

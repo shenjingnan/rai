@@ -116,6 +116,16 @@ export function SettingsPage() {
               onCheckedChange={handleToggle}
             />
           </div>
+
+          <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+            <div className="min-w-0">
+              <dt className="text-sm text-text-primary">重启应用</dt>
+              <dd className="mt-0.5 text-xs text-text-muted">关闭并重新启动 ZapMomo</dd>
+            </div>
+            <Button size="sm" onClick={() => void api.restartApp()}>
+              重启
+            </Button>
+          </div>
         </dl>
 
         {devicesError && (

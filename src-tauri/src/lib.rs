@@ -23,6 +23,7 @@ use zapmomo::config::settings::{
     self, AsrSettings, CompanionWindowPosition, KwsSettings, Live2dSettings, LlmSettings,
     TtsSettings,
 };
+use zapmomo::datetime::iso_timestamp_now;
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
 use zapmomo::llm::types::{ChatMessage, ChatRole, GenParams, InputItem, LlmParamsPatch};
 use zapmomo::llm::{LlmEngine, LlmEvent};
@@ -37,7 +38,6 @@ use zapmomo::model_library::{
     InstallState as LibInstallState, LibraryModel, RuntimeAction as LibRuntimeAction,
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
 };
-use zapmomo::datetime::iso_timestamp_now;
 use zapmomo::tts::config::TtsParamsPatch;
 use zapmomo::voice::VoiceSession;
 use zapmomo::voice::config::CliOverrides as VoiceCliOverrides;
@@ -2204,6 +2204,7 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "show_settings" | "open_settings" => show_settings_window(app),
         "toggle_companion" => toggle_companion_window(app),
         "hide_companion" => hide_companion_window(app),
+        "restart" => app.request_restart(),
         "quit" => app.exit(0),
         _ => {
             if let Some(scale) = scale_from_id(id) {
@@ -2213,7 +2214,7 @@ fn handle_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// 构建角色窗口的右键菜单（窗口尺寸子菜单 + 打开设置 / 隐藏角色 / 退出）。
+/// 构建角色窗口的右键菜单（窗口尺寸子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let s25 = MenuItem::with_id(app, "scale_25", "25%", true, None::<&str>)?;
     let s50 = MenuItem::with_id(app, "scale_50", "50%", true, None::<&str>)?;
@@ -2229,8 +2230,12 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    Menu::with_items(app, &[&scale_submenu, &open_settings, &hide, &quit])
+    Menu::with_items(
+        app,
+        &[&scale_submenu, &open_settings, &hide, &restart, &quit],
+    )
 }
 
 /// 弹出角色窗口右键菜单（由前端在右键时调用，坐标相对窗口左上角，逻辑像素）。
@@ -2289,6 +2294,12 @@ fn hide_companion(app: AppHandle) {
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.request_restart();
 }
 
 // ===========================================================================
@@ -3247,7 +3258,8 @@ pub fn run() {
             set_hide_dock_icon,
             open_settings,
             hide_companion,
-            quit_app
+            quit_app,
+            restart_app
         ])
         .setup(|app| {
             // macOS：默认以普通应用出现（Dock + Cmd+Tab 可见，有全局菜单栏）；
@@ -3460,13 +3472,15 @@ pub fn run() {
             )?;
             app.set_menu(app_menu)?;
 
-            // 托盘菜单：显示/隐藏角色、打开设置、退出。
+            // 托盘菜单：显示/隐藏角色、打开设置、重启、退出。
             let toggle_companion =
                 MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
             let open_settings =
                 MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
+            let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&toggle_companion, &open_settings, &quit])?;
+            let tray_menu =
+                Menu::with_items(app, &[&toggle_companion, &open_settings, &restart, &quit])?;
 
             // 托盘图标：使用专用托盘图标（tray-icon.png）——真实应用图标的无边距版本，
             // 撑满菜单栏，避免 512px 主图标 9% 留白导致的偏小。

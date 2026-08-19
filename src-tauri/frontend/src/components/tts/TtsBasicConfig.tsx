@@ -149,11 +149,7 @@ export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigPro
               onValueChange={(v) => void setSelectedVoice(v)}
               disabled={voices.length === 0}
             >
-              <SelectTrigger
-                id="tts-default-voice"
-                aria-label="默认音色"
-                className="h-8 w-48"
-              >
+              <SelectTrigger id="tts-default-voice" aria-label="默认音色" className="h-8 w-48">
                 <SelectValue placeholder="默认（内置 leijun）" />
               </SelectTrigger>
               <SelectContent>

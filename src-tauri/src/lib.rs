@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
@@ -2255,33 +2255,77 @@ fn handle_menu(app: &AppHandle, id: &str) {
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
+            } else if let Some(opacity) = opacity_from_id(id) {
+                let _ = apply_companion_opacity(app, opacity);
             }
         }
     }
 }
 
-/// 构建角色窗口的右键菜单（窗口尺寸子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 构建角色窗口的右键菜单（窗口尺寸/透明度子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let s25 = MenuItem::with_id(app, "scale_25", "25%", true, None::<&str>)?;
-    let s50 = MenuItem::with_id(app, "scale_50", "50%", true, None::<&str>)?;
-    let s70 = MenuItem::with_id(app, "scale_70", "70%", true, None::<&str>)?;
-    let s100 = MenuItem::with_id(app, "scale_100", "100%", true, None::<&str>)?;
-    let s150 = MenuItem::with_id(app, "scale_150", "150%", true, None::<&str>)?;
-    let s200 = MenuItem::with_id(app, "scale_200", "200%", true, None::<&str>)?;
-    let scale_submenu = Submenu::with_items(
-        app,
-        "窗口尺寸",
-        true,
-        &[&s25, &s50, &s70, &s100, &s150, &s200],
-    )?;
+    let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     Menu::with_items(
         app,
-        &[&scale_submenu, &open_settings, &hide, &restart, &quit],
+        &[
+            &scale_submenu,
+            &opacity_submenu,
+            &open_settings,
+            &hide,
+            &restart,
+            &quit,
+        ],
     )
+}
+
+/// 读当前窗口缩放与透明度（读失败或缺省回退 1.0 / 1.0）。
+fn current_companion_metrics() -> (f64, f64) {
+    match settings::load_settings() {
+        Ok(Some(s)) => {
+            let live2d = s.live2d.as_ref();
+            (
+                live2d.and_then(|l| l.window_scale).unwrap_or(1.0),
+                live2d.and_then(|l| l.window_opacity).unwrap_or(1.0),
+            )
+        }
+        _ => (1.0, 1.0),
+    }
+}
+
+/// 构建「窗口尺寸」「透明度」两个档位子菜单（角色右键菜单与托盘菜单共用）。
+///
+/// 档位用 `CheckMenuItem`：构建时读当前 settings，命中的档位打勾。
+fn build_metric_submenus(
+    app: &AppHandle,
+) -> tauri::Result<(Submenu<tauri::Wry>, Submenu<tauri::Wry>)> {
+    let (cur_scale, cur_opacity) = current_companion_metrics();
+    let mk_item = |id: &str, label: &str, cur: f64, v: f64| {
+        CheckMenuItem::with_id(app, id, label, true, v == cur, None::<&str>)
+    };
+    let s25 = mk_item("scale_25", "25%", cur_scale, 0.25)?;
+    let s50 = mk_item("scale_50", "50%", cur_scale, 0.5)?;
+    let s70 = mk_item("scale_70", "70%", cur_scale, 0.7)?;
+    let s100 = mk_item("scale_100", "100%", cur_scale, 1.0)?;
+    let s150 = mk_item("scale_150", "150%", cur_scale, 1.5)?;
+    let s200 = mk_item("scale_200", "200%", cur_scale, 2.0)?;
+    let o100 = mk_item("opacity_100", "100%", cur_opacity, 1.0)?;
+    let o80 = mk_item("opacity_80", "80%", cur_opacity, 0.8)?;
+    let o60 = mk_item("opacity_60", "60%", cur_opacity, 0.6)?;
+    let o40 = mk_item("opacity_40", "40%", cur_opacity, 0.4)?;
+    let o20 = mk_item("opacity_20", "20%", cur_opacity, 0.2)?;
+    let scale_menu = Submenu::with_items(
+        app,
+        "窗口尺寸",
+        true,
+        &[&s25, &s50, &s70, &s100, &s150, &s200],
+    )?;
+    let opacity_menu =
+        Submenu::with_items(app, "透明度", true, &[&o100, &o80, &o60, &o40, &o20])?;
+    Ok((scale_menu, opacity_menu))
 }
 
 /// 弹出角色窗口右键菜单（由前端在右键时调用，坐标相对窗口左上角，逻辑像素）。
@@ -3519,15 +3563,25 @@ pub fn run() {
             )?;
             app.set_menu(app_menu)?;
 
-            // 托盘菜单：显示/隐藏角色、打开设置、重启、退出。
+            // 托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
+            let (tray_scale, tray_opacity) = build_metric_submenus(app.handle())?;
             let toggle_companion =
                 MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
             let open_settings =
                 MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
             let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu =
-                Menu::with_items(app, &[&toggle_companion, &open_settings, &restart, &quit])?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[
+                    &toggle_companion,
+                    &tray_scale,
+                    &tray_opacity,
+                    &open_settings,
+                    &restart,
+                    &quit,
+                ],
+            )?;
 
             // 托盘图标：使用专用托盘图标（tray-icon.png）——真实应用图标的无边距版本，
             // 撑满菜单栏，避免 512px 主图标 9% 留白导致的偏小。

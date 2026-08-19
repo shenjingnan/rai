@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.1.14](https://github.com/shenjingnan/zapmomo/compare/v0.1.13...v0.1.14) - 2026-08-19
+
+### Added
+
+- *(live2d)* 模型透明度调节（右键菜单 / 托盘 / 伙伴页 / 概览） ([#97](https://github.com/shenjingnan/zapmomo/pull/97))
+- 一键重启应用（设置页 / 角色右键菜单 / 托盘菜单） ([#96](https://github.com/shenjingnan/zapmomo/pull/96))
+- 对话记录持久化 + TTS 默认音色选择 ([#94](https://github.com/shenjingnan/zapmomo/pull/94))
+- *(voice)* 语音会话编排器（KWS→ASR→LLM→TTS 句级流式 + 唤醒词打断） ([#93](https://github.com/shenjingnan/zapmomo/pull/93))
+- *(companion)* 伙伴模型管理器 ([#85](https://github.com/shenjingnan/zapmomo/pull/85))
+- *(models)* 新增模型库 ([#84](https://github.com/shenjingnan/zapmomo/pull/84))
+- *(tts)* 重构配置页、新增音色库与高级参数，修复合成崩溃 ([#71](https://github.com/shenjingnan/zapmomo/pull/71))
+- *(models)* 重构 ASR 配置页并支持高级参数，模型摘要整行进入配置页 ([#70](https://github.com/shenjingnan/zapmomo/pull/70))
+- *(kws)* 重构唤醒词配置页并支持启用后自动监听 ([#69](https://github.com/shenjingnan/zapmomo/pull/69))
+- *(llm)* 重构 LLM 配置页并开放参数 UI 配置 ([#67](https://github.com/shenjingnan/zapmomo/pull/67))
+- *(models)* 重设计 /models 模型概览页为能力链路 + 模型摘要 ([#66](https://github.com/shenjingnan/zapmomo/pull/66))
+- *(app-shell)* 重构主界面外壳与侧边栏，新增 Dock 图标隐藏设置 ([#54](https://github.com/shenjingnan/zapmomo/pull/54))
+
+### Fixed
+
+- *(deps)* downgrade pixi.js to 6.5.10 to restore Live2D rendering ([#91](https://github.com/shenjingnan/zapmomo/pull/91))
+- *(download)* 删除 enqueue 中遮蔽确定性视图的残留 view_of 调用 ([#90](https://github.com/shenjingnan/zapmomo/pull/90))
+- *(download)* enqueue 返回值改为入队时刻的确定性视图 ([#88](https://github.com/shenjingnan/zapmomo/pull/88))
+
+### Other
+
+- README 补充概览页截图并同步 Voice/多页面 GUI 现状 ([#95](https://github.com/shenjingnan/zapmomo/pull/95))
+- *(deps)* bump sha2 from 0.10.9 to 0.11.0 ([#76](https://github.com/shenjingnan/zapmomo/pull/76))
+- *(license)* 切换许可证为 GPL-3.0 ([#87](https://github.com/shenjingnan/zapmomo/pull/87))
+- *(deps)* bump react-router-dom from 6.30.4 to 7.18.2 ([#81](https://github.com/shenjingnan/zapmomo/pull/81))
+- *(deps)* bump ureq from 2.12.1 to 3.4.0 ([#77](https://github.com/shenjingnan/zapmomo/pull/77))
+- *(deps)* bump fumadocs-ui from 16.14.3 to 16.14.4 ([#78](https://github.com/shenjingnan/zapmomo/pull/78))
+- *(deps)* bump fumadocs-core from 16.14.3 to 16.14.4 ([#80](https://github.com/shenjingnan/zapmomo/pull/80))
+- *(deps)* bump dtolnay/rust-toolchain from 1.97.1 to 1.100.0 ([#73](https://github.com/shenjingnan/zapmomo/pull/73))
+- *(deps)* bump softprops/action-gh-release from 2 to 3 ([#74](https://github.com/shenjingnan/zapmomo/pull/74))
+- *(deps)* bump bzip2 from 0.4.4 to 0.6.1 ([#75](https://github.com/shenjingnan/zapmomo/pull/75))
+- *(deps)* bump reqwest from 0.12.28 to 0.13.4 ([#79](https://github.com/shenjingnan/zapmomo/pull/79))
+- *(deps)* bump next from 16.3.0 to 16.3.1 ([#82](https://github.com/shenjingnan/zapmomo/pull/82))
+- *(deps)* bump pixi.js from 6.5.10 to 8.19.0 ([#83](https://github.com/shenjingnan/zapmomo/pull/83))
+
 ## [0.1.13](https://github.com/shenjingnan/zapmomo/compare/v0.1.12...v0.1.13) - 2026-08-16
 
 ### Other

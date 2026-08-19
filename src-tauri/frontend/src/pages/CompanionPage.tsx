@@ -383,14 +383,14 @@ export function CompanionPage() {
 
         {/* 右侧：预览（边框/阴影对齐模型库界面的面板样式） */}
         <Card className="flex min-w-0 flex-1 flex-col border-panel-border shadow-none">
-          <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
+          <CardHeader className="flex-col items-start gap-3 space-y-0">
             <CardTitle className="text-base font-semibold">
               {selected ? selected.name : "暂无伙伴"}
             </CardTitle>
-            {/* 桌宠尺寸/透明度：调整窗口缩放与模型透明度，同步到桌宠窗口 */}
+            {/* 桌宠尺寸/透明度：调整窗口缩放与模型透明度，同步到桌宠窗口（尺寸在上，透明度在下） */}
             {selected && (
-              <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                <div className="flex items-center gap-2">
+              <div className="flex w-full flex-col gap-2 text-sm text-muted-foreground">
+                <div className="flex w-full items-center gap-2">
                   <span className="shrink-0">桌宠尺寸</span>
                   <Slider
                     aria-label="桌宠尺寸"
@@ -399,11 +399,11 @@ export function CompanionPage() {
                     max={200}
                     step={5}
                     onValueChange={([v]) => handleScaleChange(v)}
-                    className="w-28"
+                    className="flex-1"
                   />
                   <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full items-center gap-2">
                   <span className="shrink-0">透明度</span>
                   <Slider
                     aria-label="透明度"
@@ -412,7 +412,7 @@ export function CompanionPage() {
                     max={100}
                     step={5}
                     onValueChange={([v]) => handleOpacityChange(v)}
-                    className="w-28"
+                    className="flex-1"
                   />
                   <span className="w-10 shrink-0 text-right tabular-nums">{opacityPercent}%</span>
                 </div>

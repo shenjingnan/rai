@@ -2144,6 +2144,7 @@ fn apply_companion_scale(app: &AppHandle, scale: f64) -> Result<(), String> {
     live2d.window_scale = Some(scale);
     settings::save_settings(&settings)?;
     let _ = app.emit("companion-scale-changed", scale);
+    rebuild_tray_menu(app);
     Ok(())
 }
 
@@ -2155,6 +2156,7 @@ fn apply_companion_opacity(app: &AppHandle, opacity: f64) -> Result<(), String> 
     live2d.window_opacity = Some(opacity);
     settings::save_settings(&settings)?;
     let _ = app.emit("companion-opacity-changed", opacity);
+    rebuild_tray_menu(app);
     Ok(())
 }
 
@@ -2282,6 +2284,42 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
+/// 托盘 id（档位变化后 `tray_by_id` 定位托盘并重建菜单）。
+const TRAY_ID: &str = "zapmomo-tray";
+
+/// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
+    let toggle_companion =
+        MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
+    let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    Menu::with_items(
+        app,
+        &[
+            &toggle_companion,
+            &tray_scale,
+            &tray_opacity,
+            &open_settings,
+            &restart,
+            &quit,
+        ],
+    )
+}
+
+/// 档位（尺寸/透明度）变化后重建托盘菜单，刷新勾选态。
+///
+/// 托盘菜单只在启动时构建一次，勾选态是当时的快照；不重建会出现旧档位残留打勾
+/// （新档位被点击时自动勾上，快照里的旧档位没人取消）。
+fn rebuild_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Ok(menu) = build_tray_menu(app)
+    {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 /// 读当前窗口缩放与透明度（读失败或缺省回退 1.0 / 1.0）。
 fn current_companion_metrics() -> (f64, f64) {
     match settings::load_settings() {
@@ -2312,18 +2350,19 @@ fn build_metric_submenus(
     let s100 = mk_item("scale_100", "100%", cur_scale, 1.0)?;
     let s150 = mk_item("scale_150", "150%", cur_scale, 1.5)?;
     let s200 = mk_item("scale_200", "200%", cur_scale, 2.0)?;
-    let o100 = mk_item("opacity_100", "100%", cur_opacity, 1.0)?;
-    let o80 = mk_item("opacity_80", "80%", cur_opacity, 0.8)?;
-    let o60 = mk_item("opacity_60", "60%", cur_opacity, 0.6)?;
-    let o40 = mk_item("opacity_40", "40%", cur_opacity, 0.4)?;
     let o20 = mk_item("opacity_20", "20%", cur_opacity, 0.2)?;
+    let o40 = mk_item("opacity_40", "40%", cur_opacity, 0.4)?;
+    let o60 = mk_item("opacity_60", "60%", cur_opacity, 0.6)?;
+    let o80 = mk_item("opacity_80", "80%", cur_opacity, 0.8)?;
+    let o100 = mk_item("opacity_100", "100%", cur_opacity, 1.0)?;
     let scale_menu = Submenu::with_items(
         app,
         "窗口尺寸",
         true,
         &[&s25, &s50, &s70, &s100, &s150, &s200],
     )?;
-    let opacity_menu = Submenu::with_items(app, "透明度", true, &[&o100, &o80, &o60, &o40, &o20])?;
+    // 档位顺序与「窗口尺寸」一致：从小到大。
+    let opacity_menu = Submenu::with_items(app, "透明度", true, &[&o20, &o40, &o60, &o80, &o100])?;
     Ok((scale_menu, opacity_menu))
 }
 
@@ -3563,31 +3602,14 @@ pub fn run() {
             app.set_menu(app_menu)?;
 
             // 托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
-            let (tray_scale, tray_opacity) = build_metric_submenus(app.handle())?;
-            let toggle_companion =
-                MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
-            let open_settings =
-                MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
-            let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(
-                app,
-                &[
-                    &toggle_companion,
-                    &tray_scale,
-                    &tray_opacity,
-                    &open_settings,
-                    &restart,
-                    &quit,
-                ],
-            )?;
+            let tray_menu = build_tray_menu(app.handle())?;
 
             // 托盘图标：使用专用托盘图标（tray-icon.png）——真实应用图标的无边距版本，
             // 撑满菜单栏，避免 512px 主图标 9% 留白导致的偏小。
             let tray_icon =
                 tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
                     .expect("托盘图标加载失败");
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))

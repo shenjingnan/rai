@@ -94,33 +94,38 @@ export function ChatPage() {
           )}
 
           {voice.records.length > 0 && (
-            <ul className="divide-y divide-divider">
-              {voice.records.map((rec, i) => (
-                <li key={i} className="flex items-start justify-between gap-3 py-1.5 text-sm">
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className={`text-xs font-semibold ${
-                        rec.role === "assistant" ? "text-violet-600" : "text-text-muted"
+            <div className="flex flex-col gap-3">
+              {voice.records.map((rec, i) => {
+                const isUser = rec.role === "user";
+                return (
+                  <div key={i} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-none ${
+                        isUser
+                          ? "rounded-br-sm bg-blue-100 text-text-primary"
+                          : "rounded-bl-sm bg-muted text-text-primary"
                       }`}
                     >
-                      {rec.role === "user" ? "你" : "桌宠"}
-                    </p>
-                    <p className="mt-0.5 text-sm text-text-primary">{rec.text}</p>
+                      <p className="whitespace-pre-wrap break-words">{rec.text}</p>
+                      <p className="mt-1 text-right text-[11px] text-text-muted">
+                        {formatTime(rec.at)}
+                      </p>
+                    </div>
                   </div>
-                  <span className="shrink-0 text-xs text-text-muted">{formatTime(rec.at)}</span>
-                </li>
-              ))}
-            </ul>
+                );
+              })}
+            </div>
           )}
 
           {voice.partial && (
-            <p className="text-sm italic text-muted-foreground">{voice.partial}</p>
+            <p className="text-right text-sm italic text-muted-foreground">{voice.partial}</p>
           )}
 
           {voice.pendingReply && (
-            <div className="py-1.5">
-              <p className="text-xs font-semibold text-violet-600">桌宠</p>
-              <p className="mt-0.5 text-sm text-text-primary">{voice.pendingReply}</p>
+            <div className="flex justify-start">
+              <div className="max-w-[75%] rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-text-primary">
+                <p className="whitespace-pre-wrap break-words">{voice.pendingReply}</p>
+              </div>
             </div>
           )}
 

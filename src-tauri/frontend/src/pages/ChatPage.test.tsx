@@ -48,7 +48,7 @@ describe("ChatPage", () => {
     expect(screen.getByText(/打开开关后/)).toBeTruthy();
   });
 
-  it("渲染记录行与实时字幕", () => {
+  it("渲染记录气泡与实时字幕", () => {
     state.voice = {
       ...state.voice,
       running: true,
@@ -57,12 +57,13 @@ describe("ChatPage", () => {
       partial: "正在说",
     };
     render(<ChatPage />);
-    expect(screen.getByText("你")).toBeTruthy();
+    // 用户气泡不再有「你」标签，靠右侧深色气泡区分；文本与实时字幕仍在
     expect(screen.getByText("你好")).toBeTruthy();
     expect(screen.getByText("正在说")).toBeTruthy();
+    expect(screen.queryByText("你")).toBeNull();
   });
 
-  it("渲染桌宠记录行", () => {
+  it("渲染桌宠记录气泡", () => {
     state.voice = {
       ...state.voice,
       running: true,
@@ -70,8 +71,9 @@ describe("ChatPage", () => {
       records: [{ role: "assistant", text: "好的，我记住了。", at: "2026-08-19T12:00:05" }],
     };
     render(<ChatPage />);
-    expect(screen.getByText("桌宠")).toBeTruthy();
+    // 桌宠气泡不再有「桌宠」标签，靠左侧浅色气泡区分；文本仍在
     expect(screen.getByText("好的，我记住了。")).toBeTruthy();
+    expect(screen.queryByText("桌宠")).toBeNull();
   });
 
   it("渲染流式回复与正在播报指示", () => {

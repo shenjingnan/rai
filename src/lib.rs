@@ -11,6 +11,7 @@ pub mod llm;
 pub mod logging;
 pub mod model_library;
 pub mod tts;
+pub mod voice;
 
 #[cfg(test)]
 pub(crate) mod test_util {

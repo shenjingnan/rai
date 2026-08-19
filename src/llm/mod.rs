@@ -24,8 +24,8 @@ use error::LlmError;
 use tools::ToolRuntime;
 use types::{FinishReason, GenParams, InputItem, OutputItem, TokenDelta};
 
-/// LLM 引擎事件（worker 线程 → 调用方）。
-#[derive(Debug, PartialEq)]
+/// LLM 引擎事件（worker 线程 → 调用方）。`Clone` 供广播给多个订阅者。
+#[derive(Debug, Clone, PartialEq)]
 pub enum LlmEvent {
     /// 一次文本增量
     Token(TokenDelta),
@@ -66,7 +66,11 @@ pub struct LlmLoadError {
 /// 卸载/失败清空；`last_load_error` 记录「哪个模型」加载失败。
 pub struct LlmEngine {
     cmd_tx: Sender<LlmCommand>,
-    evt_rx: Mutex<Receiver<LlmEvent>>,
+    /// 事件广播：每个订阅者一个 mpsc channel（`mpsc::Sender` 是 `Sync`，`LlmEngine` 保持
+    /// `Send + Sync`，可被 `Arc` 跨线程共享；voice 与 GUI 各自 `subscribe()` 互不抢事件）。
+    subscribers: Arc<Mutex<Vec<Sender<LlmEvent>>>>,
+    /// 生成互斥标志（voice/chat 不能同时生成，统一引擎串行）
+    generating: Arc<AtomicBool>,
     handle: Mutex<Option<JoinHandle<()>>>,
     ready: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -77,7 +81,8 @@ pub struct LlmEngine {
 impl LlmEngine {
     pub fn new(config: ResolvedLlmConfig) -> Result<Self, LlmError> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let (evt_tx, evt_rx) = mpsc::channel();
+        let subscribers = Arc::new(Mutex::new(Vec::<Sender<LlmEvent>>::new()));
+        let generating = Arc::new(AtomicBool::new(false));
         let ready = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
         let loaded_path = Arc::new(Mutex::new(None));
@@ -86,13 +91,16 @@ impl LlmEngine {
         let ready_clone = ready.clone();
         let loaded_clone = loaded_path.clone();
         let error_clone = last_load_error.clone();
+        let subs_clone = subscribers.clone();
+        let generating_clone = generating.clone();
         let handle = std::thread::Builder::new()
             .name("llm-worker".to_string())
             .spawn(move || {
                 worker_loop(
                     config,
                     cmd_rx,
-                    evt_tx,
+                    subs_clone,
+                    generating_clone,
                     ready_clone,
                     loaded_clone,
                     error_clone,
@@ -102,13 +110,24 @@ impl LlmEngine {
 
         Ok(Self {
             cmd_tx,
-            evt_rx: Mutex::new(evt_rx),
+            subscribers,
+            generating,
             handle: Mutex::new(Some(handle)),
             ready,
             cancel,
             loaded_path,
             last_load_error,
         })
+    }
+
+    /// 订阅事件流（每个调用方持独立 `Receiver`，互不抢事件；断开的订阅者自动清理）。
+    pub fn subscribe(&self) -> Receiver<LlmEvent> {
+        let (tx, rx) = mpsc::channel();
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
+        rx
     }
 
     /// 模型是否已加载。
@@ -135,6 +154,8 @@ impl LlmEngine {
         self.cmd_tx
             .send(LlmCommand::Load)
             .map_err(|_| "LLM worker 线程已退出".to_string())?;
+        // 订阅自己的事件流（广播，不影响其它订阅者），只消费本次 Load 的 Status/Error
+        let rx = self.subscribe();
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let now = std::time::Instant::now();
@@ -142,12 +163,7 @@ impl LlmEngine {
                 return Err("LLM 模型加载超时".to_string());
             }
             let remaining = deadline.saturating_duration_since(now);
-            let recv = self
-                .evt_rx
-                .lock()
-                .map_err(|_| "LLM 事件通道不可用".to_string())?
-                .recv_timeout(remaining);
-            match recv {
+            match rx.recv_timeout(remaining) {
                 Ok(LlmEvent::Status { ready: true }) => return Ok(()),
                 Ok(LlmEvent::Status { ready: false }) => {
                     return Err("LLM 模型加载失败".to_string());
@@ -179,25 +195,30 @@ impl LlmEngine {
     }
 
     /// 发起一次流式生成（异步：结果经 [`LlmEvent::Token`] 返回）。
+    ///
+    /// **生成互斥**：统一引擎串行，voice 与 GUI 不能同时生成（第二个调用返回 [`LlmError::Busy`]）。
     pub fn generate(&self, input: Vec<InputItem>, params: GenParams) -> Result<(), LlmError> {
+        if self.generating.swap(true, Ordering::SeqCst) {
+            return Err(LlmError::Busy);
+        }
         self.cancel.store(false, Ordering::Relaxed);
-        self.cmd_tx
+        let result = self
+            .cmd_tx
             .send(LlmCommand::Generate {
                 input,
                 params,
                 cancel: self.cancel.clone(),
             })
-            .map_err(|_| LlmError::BackendUnavailable("LLM worker 线程已退出".to_string()))
+            .map_err(|_| LlmError::BackendUnavailable("LLM worker 线程已退出".to_string()));
+        if result.is_err() {
+            self.generating.store(false, Ordering::SeqCst);
+        }
+        result
     }
 
     /// 取消当前生成。
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
-    }
-
-    /// 非阻塞拉取一个事件（由调用方线程轮询并转发，例如 Tauri `emit`）。
-    pub fn try_recv(&self) -> Option<LlmEvent> {
-        self.evt_rx.lock().ok()?.try_recv().ok()
     }
 }
 
@@ -224,11 +245,18 @@ pub fn create_provider(
     }
 }
 
+/// 把事件广播给所有订阅者；发送失败（订阅者断开）的 Sender 移除。
+fn broadcast_to(subs: &Arc<Mutex<Vec<Sender<LlmEvent>>>>, ev: &LlmEvent) {
+    let mut subs = subs.lock().unwrap_or_else(|e| e.into_inner());
+    subs.retain(|s| s.send(ev.clone()).is_ok());
+}
+
 /// worker 线程主循环：创建 provider 后处理命令，直到 `Shutdown` 或 channel 关闭。
 fn worker_loop(
     config: ResolvedLlmConfig,
     cmd_rx: Receiver<LlmCommand>,
-    evt_tx: Sender<LlmEvent>,
+    subs: Arc<Mutex<Vec<Sender<LlmEvent>>>>,
+    generating: Arc<AtomicBool>,
     ready: Arc<AtomicBool>,
     loaded_path: Arc<Mutex<Option<std::path::PathBuf>>>,
     last_load_error: Arc<Mutex<Option<LlmLoadError>>>,
@@ -237,7 +265,7 @@ fn worker_loop(
     let mut provider = match create_provider(config) {
         Ok(p) => p,
         Err(e) => {
-            let _ = evt_tx.send(LlmEvent::Error(e.to_string()));
+            broadcast_to(&subs, &LlmEvent::Error(e.to_string()));
             return;
         }
     };
@@ -251,7 +279,7 @@ fn worker_loop(
                     *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(model_path.clone());
                     *last_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    let _ = evt_tx.send(LlmEvent::Status { ready: true });
+                    broadcast_to(&subs, &LlmEvent::Status { ready: true });
                 }
                 Err(e) => {
                     *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -260,7 +288,7 @@ fn worker_loop(
                             model_path: model_path.clone(),
                             message: e.to_string(),
                         });
-                    let _ = evt_tx.send(LlmEvent::Error(e.to_string()));
+                    broadcast_to(&subs, &LlmEvent::Error(e.to_string()));
                 }
             },
             LlmCommand::Unload => {
@@ -268,7 +296,7 @@ fn worker_loop(
                 ready.store(false, Ordering::Relaxed);
                 *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 *last_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                let _ = evt_tx.send(LlmEvent::Status { ready: false });
+                broadcast_to(&subs, &LlmEvent::Status { ready: false });
             }
             LlmCommand::Generate {
                 input,
@@ -277,19 +305,18 @@ fn worker_loop(
             } => {
                 let mut emit = |item: OutputItem| match item {
                     OutputItem::MessageDelta(delta) => {
-                        let _ = evt_tx.send(LlmEvent::Token(delta));
+                        broadcast_to(&subs, &LlmEvent::Token(delta));
                     }
                     OutputItem::ToolCall(_) => {
                         // 工具调用由 Agent Loop 内部处理，不外传（未来可发 llm-tool-call 事件）
                     }
                 };
-                match agent.run(&mut *provider, &input, &params, &mut emit, cancel) {
-                    Ok(reason) => {
-                        let _ = evt_tx.send(LlmEvent::Finished(reason));
-                    }
-                    Err(e) => {
-                        let _ = evt_tx.send(LlmEvent::Error(e.to_string()));
-                    }
+                let result = agent.run(&mut *provider, &input, &params, &mut emit, cancel);
+                // 生成结束（含错误/取消）→ 释放互斥标志
+                generating.store(false, Ordering::SeqCst);
+                match result {
+                    Ok(reason) => broadcast_to(&subs, &LlmEvent::Finished(reason)),
+                    Err(e) => broadcast_to(&subs, &LlmEvent::Error(e.to_string())),
                 }
             }
             LlmCommand::Shutdown => break,
@@ -299,4 +326,61 @@ fn worker_loop(
     provider.unload();
     ready.store(false, Ordering::Relaxed);
     *loaded_path.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::run_with_temp_home;
+    use std::time::Duration;
+
+    #[test]
+    fn test_broadcast_to_all_subscribers() {
+        let subs = Arc::new(Mutex::new(Vec::new()));
+        let (tx1, rx1) = mpsc::channel();
+        let (tx2, rx2) = mpsc::channel();
+        subs.lock().unwrap().push(tx1);
+        subs.lock().unwrap().push(tx2);
+
+        let ev = LlmEvent::Token(TokenDelta::new("你好"));
+        broadcast_to(&subs, &ev);
+        assert_eq!(rx1.try_recv().unwrap(), ev.clone());
+        assert_eq!(rx2.try_recv().unwrap(), ev);
+
+        // 断开订阅者被清理
+        drop(rx1);
+        broadcast_to(&subs, &LlmEvent::Status { ready: true });
+        assert_eq!(subs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_subscribe_each_receiver_gets_copy() {
+        run_with_temp_home(|_| {
+            let cfg = crate::llm::config::resolve(None, None).unwrap();
+            let engine = LlmEngine::new(cfg).unwrap();
+            let rx1 = engine.subscribe();
+            let rx2 = engine.subscribe();
+            // 触发一次事件（Unload 无条件广播 Status{ready:false}）
+            engine.unload().unwrap();
+            let e1 = rx1.recv_timeout(Duration::from_secs(2)).unwrap();
+            let e2 = rx2.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(e1, LlmEvent::Status { ready: false }));
+            assert_eq!(e1, e2);
+        });
+    }
+
+    #[test]
+    fn test_generate_mutual_exclusion() {
+        run_with_temp_home(|_| {
+            let cfg = crate::llm::config::resolve(None, None).unwrap();
+            let engine = LlmEngine::new(cfg).unwrap();
+            // 模拟生成中：generating=true 时再 generate → Busy
+            engine.generating.store(true, Ordering::SeqCst);
+            let err = engine.generate(vec![], GenParams::default()).unwrap_err();
+            assert!(matches!(err, LlmError::Busy));
+            engine.generating.store(false, Ordering::SeqCst);
+            // 空闲时可发起（入队成功）
+            assert!(engine.generate(vec![], GenParams::default()).is_ok());
+        });
+    }
 }

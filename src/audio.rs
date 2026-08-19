@@ -241,6 +241,57 @@ fn mic_permission_hint() -> String {
         .to_string()
 }
 
+/// 请求 macOS 麦克风授权（弹出系统授权窗），返回是否已授权。
+///
+/// macOS 上未授权时 CoreAudio 会隐藏输入设备，导致 [`list_input_devices`] /
+/// [`start_capture`] 枚举为空；必须显式调用 AVCaptureDevice 的
+/// `requestAccessForMediaType:` 弹窗授权后设备才可见。授权绑定当前可执行文件的
+/// 签名（CDHash），调试模式下每次重新编译后授权会失效，需再次请求。
+///
+/// 返回：`Ok(true)` 已授权；`Ok(false)` 用户拒绝或系统限制；`Err` 请求失败。
+/// 非 macOS 平台无需显式授权，恒返回 `Ok(true)`。
+#[cfg(target_os = "macos")]
+pub fn request_mic_permission() -> Result<bool, String> {
+    use block2::RcBlock;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::Bool;
+    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    autoreleasepool(|_| {
+        let media_type = unsafe { AVMediaTypeAudio }
+            .ok_or_else(|| "AVFoundation 未加载音频媒体类型常量".to_string())?;
+        let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) };
+        match status {
+            AVAuthorizationStatus::Authorized => Ok(true),
+            AVAuthorizationStatus::Denied | AVAuthorizationStatus::Restricted => Ok(false),
+            AVAuthorizationStatus::NotDetermined => {
+                let (tx, rx) = mpsc::channel::<bool>();
+                let block = RcBlock::new(move |granted: Bool| {
+                    let _ = tx.send(granted.as_bool());
+                });
+                unsafe {
+                    AVCaptureDevice::requestAccessForMediaType_completionHandler(
+                        media_type, &block,
+                    );
+                }
+                match rx.recv_timeout(Duration::from_secs(60)) {
+                    Ok(granted) => Ok(granted),
+                    Err(_) => Err("等待麦克风授权结果超时".to_string()),
+                }
+            }
+            other => Err(format!("未知麦克风权限状态: {other:?}")),
+        }
+    })
+}
+
+/// 非 macOS 平台无系统级麦克风授权机制，视为已授权。
+#[cfg(not(target_os = "macos"))]
+pub fn request_mic_permission() -> Result<bool, String> {
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

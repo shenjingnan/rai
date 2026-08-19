@@ -20,23 +20,31 @@ export function LlmRunControl() {
   };
 
   return (
-    <div className="flex items-center gap-2.5">
-      <span
-        className={cn(
-          "inline-flex items-center gap-1.5 text-sm font-medium",
-          STATUS_COLOR[status.tone],
-        )}
-      >
-        <span className="h-1.5 w-1.5 rounded-full bg-current" />
-        {status.label}
-      </span>
-      <Switch
-        aria-label="模型加载开关"
-        checked={llm.ready}
-        onCheckedChange={handleToggle}
-        disabled={!configured || llm.loading || llm.generating}
-        trackClass="bg-emerald-500"
-      />
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2.5">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 text-sm font-medium",
+            STATUS_COLOR[status.tone],
+          )}
+          title={llm.error ?? undefined}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          {status.label}
+        </span>
+        <Switch
+          aria-label="模型加载开关"
+          checked={llm.ready}
+          onCheckedChange={handleToggle}
+          disabled={!configured || llm.loading || llm.generating}
+          trackClass="bg-emerald-500"
+        />
+      </div>
+      {llm.error && (
+        <span className="max-w-xs truncate text-right text-xs text-destructive" title={llm.error}>
+          {llm.error}
+        </span>
+      )}
     </div>
   );
 }

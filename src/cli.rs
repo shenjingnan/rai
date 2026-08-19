@@ -58,6 +58,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: LlmCmd,
     },
+    /// 语音会话（KWS→ASR→LLM→TTS 全链路：唤醒 → 识别 → 句级流式播报 → 打断回听）
+    Voice {
+        #[command(subcommand)]
+        cmd: VoiceCmd,
+    },
 }
 
 /// KWS 子命令
@@ -207,6 +212,53 @@ pub enum LlmCmd {
     },
 }
 
+/// 语音会话子命令
+#[derive(Subcommand)]
+pub enum VoiceCmd {
+    /// 跑一个完整语音会话：唤醒词打断 + 句级流式播报
+    Run {
+        /// 指定输入设备名（包含匹配），默认系统默认麦克风或 settings.microphone
+        #[arg(long)]
+        device: Option<String>,
+        /// 会话唤醒词（原始字符串，多个用 / 分隔），缺省 KWS 模型内置
+        #[arg(long)]
+        keywords: Option<String>,
+        /// TTS 音色 id（如 leijun-1 / news-female）
+        #[arg(long)]
+        voice: Option<String>,
+        /// TTS 语速，缺省 1.0
+        #[arg(long)]
+        speed: Option<f32>,
+        /// 最多对话轮数，缺省无限（Ctrl-C 退出）
+        #[arg(long)]
+        max_turns: Option<u32>,
+        /// 历史消息条数上限，缺省 12
+        #[arg(long)]
+        history_max: Option<usize>,
+        /// 关闭播报/思考中的唤醒词打断
+        #[arg(long)]
+        no_bargein: bool,
+        /// 关闭回复播完后的自动跟听聆听（播完回待唤醒，需再喊唤醒词）
+        #[arg(long)]
+        no_follow_up: bool,
+        /// 打断用 KWS 触发阈值，缺省 0.5
+        #[arg(long)]
+        bargein_threshold: Option<f32>,
+        /// KWS 模型目录（覆盖 settings.toml 的 kws.model_dir）
+        #[arg(long)]
+        kws_model_dir: Option<PathBuf>,
+        /// ASR 模型目录（覆盖 settings.toml 的 asr.model_dir）
+        #[arg(long)]
+        asr_model_dir: Option<PathBuf>,
+        /// TTS 模型目录（覆盖 settings.toml 的 tts.model_dir）
+        #[arg(long)]
+        tts_model_dir: Option<PathBuf>,
+        /// LLM GGUF 模型文件路径（覆盖 settings.toml 的 llm.model_path）
+        #[arg(long)]
+        llm_model_path: Option<PathBuf>,
+    },
+}
+
 /// config 命令
 fn cmd_config() -> Result<String, String> {
     let config = serde_json::json!({
@@ -248,6 +300,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
         Some(Commands::Asr { cmd }) => cmd_asr(cmd).await,
         Some(Commands::Tts { cmd }) => cmd_tts(cmd).await,
         Some(Commands::Llm { cmd }) => cmd_llm(cmd).await,
+        Some(Commands::Voice { cmd }) => cmd_voice(cmd).await,
         None => unreachable!(),
     }
 }
@@ -517,6 +570,46 @@ fn llm_config(
     let settings = crate::config::settings::load_settings()?;
     let llm_settings = settings.as_ref().and_then(|s| s.llm.clone());
     crate::llm::config::resolve(llm_settings.as_ref(), cli_model_path.map(|p| p.as_path()))
+}
+
+/// 语音会话命令入口：把 CLI 参数转成 `CliOverrides` 后交给 `voice::run_cli`。
+async fn cmd_voice(cmd: VoiceCmd) -> Result<(), String> {
+    let VoiceCmd::Run {
+        device,
+        keywords,
+        voice,
+        speed,
+        max_turns,
+        history_max,
+        no_bargein,
+        no_follow_up,
+        bargein_threshold,
+        kws_model_dir,
+        asr_model_dir,
+        tts_model_dir,
+        llm_model_path,
+    } = cmd;
+    let overrides = crate::voice::config::CliOverrides {
+        device,
+        keywords,
+        voice,
+        speed,
+        max_turns,
+        history_max,
+        no_bargein,
+        no_follow_up,
+        barge_in_threshold: bargein_threshold,
+        // 欢迎语/门控参数暂不暴露 CLI flag，从 settings.toml 配置
+        welcome_text: None,
+        vad_silence_threshold: None,
+        asr_max_trailing_silence: None,
+        welcome_wait_timeout: None,
+        kws_model_dir,
+        asr_model_dir,
+        tts_model_dir,
+        llm_model_path,
+    };
+    crate::voice::run_cli(overrides).await
 }
 
 #[cfg(test)]
@@ -859,6 +952,104 @@ mod tests {
                 }
             )),
             _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_voice_run_minimal() {
+        let cli = Cli::try_parse_from(&["test", "voice", "run"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Voice { cmd } => {
+                assert!(matches!(
+                    cmd,
+                    VoiceCmd::Run {
+                        keywords: None,
+                        no_bargein: false,
+                        ..
+                    }
+                ))
+            }
+            _ => panic!("Expected Voice command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_voice_run_full() {
+        let cli = Cli::try_parse_from(&[
+            "test",
+            "voice",
+            "run",
+            "--device",
+            "内置麦克风",
+            "--keywords",
+            "你好小智",
+            "--voice",
+            "news-female",
+            "--speed",
+            "1.2",
+            "--max-turns",
+            "5",
+            "--history-max",
+            "16",
+            "--no-bargein",
+            "--no-follow-up",
+            "--bargein-threshold",
+            "0.7",
+            "--kws-model-dir",
+            "/tmp/kws",
+            "--asr-model-dir",
+            "/tmp/asr",
+            "--tts-model-dir",
+            "/tmp/tts",
+            "--llm-model-path",
+            "/tmp/model.gguf",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Voice { cmd } => match cmd {
+                VoiceCmd::Run {
+                    device,
+                    keywords,
+                    voice,
+                    speed,
+                    max_turns,
+                    history_max,
+                    no_bargein,
+                    no_follow_up,
+                    bargein_threshold,
+                    kws_model_dir,
+                    asr_model_dir,
+                    tts_model_dir,
+                    llm_model_path,
+                } => {
+                    assert_eq!(device.as_deref(), Some("内置麦克风"));
+                    assert_eq!(keywords.as_deref(), Some("你好小智"));
+                    assert_eq!(voice.as_deref(), Some("news-female"));
+                    assert_eq!(speed, Some(1.2));
+                    assert_eq!(max_turns, Some(5));
+                    assert_eq!(history_max, Some(16));
+                    assert!(no_bargein);
+                    assert!(no_follow_up);
+                    assert_eq!(bargein_threshold, Some(0.7));
+                    assert_eq!(
+                        kws_model_dir.as_deref(),
+                        Some(std::path::Path::new("/tmp/kws"))
+                    );
+                    assert_eq!(
+                        asr_model_dir.as_deref(),
+                        Some(std::path::Path::new("/tmp/asr"))
+                    );
+                    assert_eq!(
+                        tts_model_dir.as_deref(),
+                        Some(std::path::Path::new("/tmp/tts"))
+                    );
+                    assert_eq!(
+                        llm_model_path.as_deref(),
+                        Some(std::path::Path::new("/tmp/model.gguf"))
+                    );
+                }
+            },
+            _ => panic!("Expected Voice command"),
         }
     }
 }

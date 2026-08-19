@@ -93,6 +93,9 @@ pub struct AppConfig {
     /// 本地 LLM 配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmSettings>,
+    /// 语音会话（KWS→ASR→LLM→TTS 全链路）配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceSettings>,
     /// 模型库配置（用户通过「添加本地模型」注册的 external 模型等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_library: Option<ModelLibrarySettings>,
@@ -224,6 +227,9 @@ pub struct KwsSettings {
 /// 因此这里用 `Option` 以区分「未配置」与「配置了」。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AsrSettings {
+    /// 是否启用 ASR（语音会话「能识别」的前提），缺省 false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
@@ -430,6 +436,52 @@ pub struct LlmSettings {
     pub model: Option<String>,
 }
 
+/// 语音会话配置（`voice run` 的会话级参数）。
+///
+/// 全部字段可缺省：未配置的项回退到 `voice::config` 的内置默认值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct VoiceSettings {
+    /// 是否在应用启动时自动启动语音会话（进入待唤醒），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// 会话唤醒词（原始字符串，多个用 / 分隔），缺省 None = KWS 模型内置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<String>,
+    /// TTS 音色 id（如 leijun-1 / news-female / 自定义音色 id），缺省 None = 配置默认
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    /// TTS 语速，缺省 1.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
+    /// 最多对话轮数，缺省 None = 无限（Ctrl-C 退出）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// 传给 LLM 的历史消息条数上限，缺省 12
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_max: Option<usize>,
+    /// 播报/思考中唤醒词打断，缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barge_in: Option<bool>,
+    /// 回复播完后自动进入 ASR 聆听（免唤醒续聊；空识别保持聆听不回待唤醒），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<bool>,
+    /// 打断用 KWS 触发阈值（高于监听阈值，缓解回声误触发），缺省 0.5
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barge_in_threshold: Option<f32>,
+    /// 唤醒后的欢迎语文本（TTS 用当前音色合成播放），缺省 "你好，我在。"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub welcome_text: Option<String>,
+    /// 「真正说话」RMS 音量阈值，缺省 0.02
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vad_silence_threshold: Option<f32>,
+    /// ASR 阶段连续静音多久判定说完（秒），缺省 3.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_max_trailing_silence: Option<f32>,
+    /// 欢迎语后等用户真正说话的超时（秒），超时回待唤醒，缺省 8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub welcome_wait_timeout: Option<f32>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -447,6 +499,7 @@ impl Default for AppConfig {
             tts: None,
             live2d: None,
             llm: None,
+            voice: None,
             model_library: None,
         }
     }
@@ -628,6 +681,7 @@ mod tests {
             tts: None,
             live2d: None,
             llm: None,
+            voice: None,
             model_library: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
@@ -870,6 +924,7 @@ mod tests {
                     ..Default::default()
                 }),
                 llm: None,
+                voice: None,
                 model_library: None,
             };
             save_settings(&config).unwrap();

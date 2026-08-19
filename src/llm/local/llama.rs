@@ -38,9 +38,13 @@ pub struct LocalLlamaProvider {
 
 impl LocalLlamaProvider {
     pub fn new(config: ResolvedLlmConfig) -> Result<Self, LlmError> {
+        let mut backend =
+            LlamaBackend::init().map_err(|e| LlmError::BackendUnavailable(e.to_string()))?;
+        // 静音 llama.cpp 内部日志（graph_reserve / sched_reserve 等加载噪音）。
+        // 真正的错误仍经 provider 返回的 LlmError 传播，不依赖这些日志。
+        backend.void_logs();
         Ok(Self {
-            backend: LlamaBackend::init()
-                .map_err(|e| LlmError::BackendUnavailable(e.to_string()))?,
+            backend,
             model: None,
             context: None,
             config,

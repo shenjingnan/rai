@@ -42,12 +42,22 @@ import type {
   TtsProgress,
   TtsResult,
   TtsVoice,
+  VoiceError,
+  VoicePlaySentence,
+  VoiceReplyFinished,
+  VoiceReplySentence,
+  VoiceSessionStatePayload,
+  VoiceStopped,
+  VoiceToken,
+  VoiceTranscript,
+  VoiceWake,
 } from "@/types/tauri";
 
 /** 类型安全的 Tauri command 封装。 */
 export const api = {
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   listDevices: () => invoke<string[]>("list_devices"),
+  requestMicPermission: () => invoke<boolean>("request_mic_permission"),
   getKwsConfig: () => invoke<KwsConfigInfo>("get_kws_config"),
   setKwsEnabled: (args: { enabled: boolean }) => invoke<void>("set_kws_enabled", args),
   setKwsCustomKeywords: (args: { keywords: string }) =>
@@ -61,6 +71,7 @@ export const api = {
   getMicrophone: () => invoke<string>("get_microphone"),
   setMicrophone: (args: { mic: string }) => invoke<void>("set_microphone", args),
   getAsrConfig: () => invoke<AsrConfigInfo>("get_asr_config"),
+  setAsrEnabled: (args: { enabled: boolean }) => invoke<void>("set_asr_enabled", args),
   setAsrParams: (args: { params: AsrParamsPatch }) => invoke<void>("set_asr_params", args),
   startAsrListen: (args: { device: string | null }) => invoke<void>("start_asr_listen", args),
   stopAsrListen: () => invoke<void>("stop_asr_listen"),
@@ -109,6 +120,10 @@ export const api = {
   setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
   setLlmParams: (args: { params: LlmParamsPatch }) => invoke<void>("set_llm_params", args),
   setLlmSystemPrompt: (args: { prompt: string }) => invoke<void>("set_llm_system_prompt", args),
+  // ---- 语音会话（KWS→ASR→LLM→TTS 全链路）----
+  startVoiceSession: () => invoke<void>("start_voice_session"),
+  stopVoiceSession: () => invoke<void>("stop_voice_session"),
+  isVoiceSessionRunning: () => invoke<boolean>("is_voice_session_running"),
   // ---- 模型库 ----
   listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
   getSystemResources: () => invoke<SystemResources>("get_system_resources"),
@@ -168,6 +183,10 @@ export function onListenStopped(handler: (payload: ListenStopped) => void): Prom
   return listen<ListenStopped>("kws-stopped", (e) => handler(e.payload));
 }
 
+export function onListenStarted(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("kws-started", (e) => handler(e.payload));
+}
+
 export function onDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
@@ -180,6 +199,10 @@ export function onAsrResult(handler: (result: AsrResult) => void): Promise<Unlis
 
 export function onAsrStopped(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
   return listen<ListenStopped>("asr-stopped", (e) => handler(e.payload));
+}
+
+export function onAsrStarted(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
+  return listen<ListenStopped>("asr-started", (e) => handler(e.payload));
 }
 
 export function onAsrDownloadProgress(
@@ -243,6 +266,56 @@ export function onLlmError(handler: (error: string) => void): Promise<UnlistenFn
 
 export function onLlmStatus(handler: (status: LlmStatus) => void): Promise<UnlistenFn> {
   return listen<LlmStatus>("llm-status", (e) => handler(e.payload));
+}
+
+// ---- 语音会话事件 ----
+
+export function onVoiceSessionState(
+  handler: (payload: VoiceSessionStatePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<VoiceSessionStatePayload>("voice-session-state", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionWake(handler: (payload: VoiceWake) => void): Promise<UnlistenFn> {
+  return listen<VoiceWake>("voice-session-wake", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionTranscript(
+  handler: (payload: VoiceTranscript) => void,
+): Promise<UnlistenFn> {
+  return listen<VoiceTranscript>("voice-session-transcript", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionToken(handler: (payload: VoiceToken) => void): Promise<UnlistenFn> {
+  return listen<VoiceToken>("voice-session-token", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionReply(
+  handler: (payload: VoiceReplySentence) => void,
+): Promise<UnlistenFn> {
+  return listen<VoiceReplySentence>("voice-session-reply", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionPlay(
+  handler: (payload: VoicePlaySentence) => void,
+): Promise<UnlistenFn> {
+  return listen<VoicePlaySentence>("voice-session-play", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionReplyFinished(
+  handler: (payload: VoiceReplyFinished) => void,
+): Promise<UnlistenFn> {
+  return listen<VoiceReplyFinished>("voice-session-reply-finished", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionError(handler: (payload: VoiceError) => void): Promise<UnlistenFn> {
+  return listen<VoiceError>("voice-session-error", (e) => handler(e.payload));
+}
+
+export function onVoiceSessionStopped(
+  handler: (payload: VoiceStopped) => void,
+): Promise<UnlistenFn> {
+  return listen<VoiceStopped>("voice-session-stopped", (e) => handler(e.payload));
 }
 
 /**

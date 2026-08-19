@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useToast } from "@/components/ui/toast";
 import { api, onLlmError, onLlmFinished, onLlmStatus, onLlmToken } from "@/lib/tauri";
 import type { LlmConfigInfo, LlmParamsPatch } from "@/types/tauri";
 
@@ -36,6 +37,18 @@ export function useLlm(): LlmState {
   const [generating, setGenerating] = useState(false);
   const [response, setResponse] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const toast = useToast();
+
+  /** 命令失败：写入 error 状态（UI 红字「错误」）并通过右上角通知透出真实原因。 */
+  const fail = useCallback(
+    (e: unknown) => {
+      const msg = String(e);
+      setError(msg);
+      toast.error(msg);
+    },
+    [toast],
+  );
 
   const refreshConfig = useCallback(async () => {
     try {
@@ -80,10 +93,10 @@ export function useLlm(): LlmState {
       await api.loadLlmModel();
       // 加载结果经 llm-status / llm-error 事件更新
     } catch (e) {
-      setError(String(e));
+      fail(e);
       setLoading(false);
     }
-  }, []);
+  }, [fail]);
 
   const unload = useCallback(async () => {
     try {
@@ -91,32 +104,35 @@ export function useLlm(): LlmState {
       setReady(false);
       setResponse("");
     } catch (e) {
-      setError(String(e));
+      fail(e);
     }
-  }, []);
+  }, [fail]);
 
-  const chat = useCallback(async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setError(null);
-    setResponse("");
-    setGenerating(true);
-    try {
-      await api.chatLlm({ text: trimmed });
-      // token 流经 llm-token 事件，结束经 llm-finished
-    } catch (e) {
-      setError(String(e));
-      setGenerating(false);
-    }
-  }, []);
+  const chat = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      setError(null);
+      setResponse("");
+      setGenerating(true);
+      try {
+        await api.chatLlm({ text: trimmed });
+        // token 流经 llm-token 事件，结束经 llm-finished
+      } catch (e) {
+        fail(e);
+        setGenerating(false);
+      }
+    },
+    [fail],
+  );
 
   const stop = useCallback(async () => {
     try {
       await api.stopLlm();
     } catch (e) {
-      setError(String(e));
+      fail(e);
     }
-  }, []);
+  }, [fail]);
 
   const setThinking = useCallback(
     async (enabled: boolean) => {
@@ -124,10 +140,10 @@ export function useLlm(): LlmState {
         await api.setLlmThinking({ enabled });
         await refreshConfig();
       } catch (e) {
-        setError(String(e));
+        fail(e);
       }
     },
-    [refreshConfig],
+    [fail, refreshConfig],
   );
 
   const setAutoLoad = useCallback(
@@ -136,10 +152,10 @@ export function useLlm(): LlmState {
         await api.setLlmAutoLoad({ enabled });
         await refreshConfig();
       } catch (e) {
-        setError(String(e));
+        fail(e);
       }
     },
-    [refreshConfig],
+    [fail, refreshConfig],
   );
 
   const setParams = useCallback(

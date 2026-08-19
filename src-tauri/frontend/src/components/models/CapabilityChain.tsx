@@ -44,21 +44,36 @@ export function CapabilityChain() {
     llm,
     tts,
     device,
+    sessionKeywords,
   } = useRuntime();
 
-  const asrOn = asrListening.isListening;
-  const kwsOn = kwsListening.isListening;
+  // KWS/ASR 开关绑定**持久化 enabled**（模型与能力页启用/禁用能力，重启保持）
+  const asrOn = asrConfig?.config?.enabled ?? false;
+  const kwsOn = kwsConfig?.config?.enabled ?? false;
 
   const asrStatus = listenerStatus(asrListening.error, asrOn, asrConfig?.config?.models_present);
   const kwsStatus = listenerStatus(kwsListening.error, kwsOn, kwsConfig?.config?.models_present);
   const llmStatusNow = llmStatus(llm.error, llm.loading, llm.ready, llm.config?.models_present);
 
-  /** KWS 开关：直接开始/停止 KWS（与 ASR 相互独立，后端不强关联）。 */
+  /** KWS 开关：持久化「启用」+ 立即开始/停止监听（与配置页 KwsRunControl 一致）。 */
   const handleKwsToggle = () => {
     if (kwsOn) {
-      void kwsListening.stop();
+      if (kwsListening.isListening) void kwsListening.stop();
+      void kwsConfig.setEnabled(false);
     } else {
-      void kwsListening.start(device || null, null);
+      void kwsConfig.setEnabled(true);
+      void kwsListening.start(device || null, sessionKeywords || null);
+    }
+  };
+
+  /** ASR 开关：持久化「启用」+ 立即开始/停止识别（与配置页一致）。 */
+  const handleAsrToggle = () => {
+    if (asrOn) {
+      if (asrListening.isListening) void asrListening.stop();
+      void asrConfig.setEnabled(false);
+    } else {
+      void asrConfig.setEnabled(true);
+      void asrListening.start(device || null);
     }
   };
 
@@ -90,7 +105,7 @@ export function CapabilityChain() {
               statusText={asrStatus.text}
               statusTone={asrStatus.tone}
               toggled={asrOn}
-              onToggle={() => (asrOn ? asrListening.stop() : asrListening.start(device || null))}
+              onToggle={handleAsrToggle}
               tooltip="语音识别：将麦克风语音实时转写为文字。"
             />
             <CapabilityRow

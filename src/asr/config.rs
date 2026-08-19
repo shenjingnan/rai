@@ -32,6 +32,8 @@ pub const PUNCT_REQUIRED_FILES: [&str; 1] = [DEFAULT_PUNCT_MODEL];
 /// 解析后的完整 ASR 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAsrConfig {
+    /// 是否启用 ASR（语音会话「能识别」的前提），缺省 false
+    pub enabled: bool,
     pub model_dir: PathBuf,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
@@ -65,6 +67,7 @@ impl Default for ResolvedAsrConfig {
         let model_dir = default_model_dir();
         let join = |name: &str| model_dir.join(name);
         Self {
+            enabled: false,
             encoder: join(DEFAULT_ENCODER),
             decoder: join(DEFAULT_DECODER),
             joiner: join(DEFAULT_JOINER),
@@ -187,6 +190,7 @@ pub fn resolve(
     cfg.joiner = file("joiner", DEFAULT_JOINER)?;
     cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
 
+    cfg.enabled = s.and_then(|s| s.enabled).unwrap_or(false);
     cfg.provider = s
         .and_then(|s| s.provider.clone())
         .unwrap_or_else(|| "cpu".to_string());
@@ -384,6 +388,20 @@ mod tests {
         run_with_temp_home(|_| {
             let cfg = resolve(None, None).unwrap();
             assert_eq!(cfg, ResolvedAsrConfig::default());
+        });
+    }
+
+    #[test]
+    fn test_resolve_enabled_default_false_and_override() {
+        run_with_temp_home(|_| {
+            // 缺省 enabled=false
+            assert!(!resolve(None, None).unwrap().enabled);
+            // settings 显式启用
+            let settings = AsrSettings {
+                enabled: Some(true),
+                ..Default::default()
+            };
+            assert!(resolve(Some(&settings), None).unwrap().enabled);
         });
     }
 

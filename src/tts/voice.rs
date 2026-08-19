@@ -71,7 +71,7 @@ pub fn find_voice<'a>(voices: &'a [TtsVoice], id: &str) -> Option<&'a TtsVoice> 
     voices.iter().find(|v| v.id == id)
 }
 
-/// 解析最终参考音色：自定义 wav > 内置音色 id > 配置默认。
+/// 解析最终参考音色：自定义 wav > 自定义音色（id/名称）> 内置音色 id > 配置默认。
 pub fn resolve_reference(
     cfg: &ResolvedTtsConfig,
     voice_id: Option<&str>,
@@ -84,6 +84,14 @@ pub fn resolve_reference(
         return Ok((wav.to_path_buf(), text.to_string()));
     }
     if let Some(id) = voice_id {
+        // 优先匹配用户自定义音色（音色库，支持按 id 或展示名）
+        if let Some(v) = crate::tts::voice_store::list_custom_voices()
+            .into_iter()
+            .find(|v| v.id == id || v.name == id)
+        {
+            return Ok((v.wav_path, v.reference_text));
+        }
+        // 再匹配模型包内置音色
         let voices = list_builtin_voices(&cfg.model_dir);
         let v = find_voice(&voices, id).ok_or_else(|| format!("未找到音色: {id}"))?;
         return Ok((v.wav_path.clone(), v.reference_text.clone()));
@@ -138,5 +146,86 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let voices = list_builtin_voices(dir.path());
         assert!(voices.is_empty());
+    }
+
+    /// 生成一个合法最小 wav（RIFF 头 + 少量样本），满足 `voice_store::save_voice` 校验。
+    fn sample_wav_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&44u32.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&16000u32.to_le_bytes());
+        buf.extend_from_slice(&32000u32.to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        buf.extend_from_slice(&0i16.to_le_bytes());
+        buf.extend_from_slice(&0i16.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_resolve_reference_custom_voice_by_name() {
+        crate::test_util::run_with_temp_home(|home| {
+            let src = home.join("src.wav");
+            std::fs::write(&src, sample_wav_bytes()).unwrap();
+            let v = crate::tts::voice_store::save_voice("大月下", &src, "为什么人类要起这么早啊")
+                .unwrap();
+
+            let cfg = ResolvedTtsConfig::default();
+            let (wav, text) = resolve_reference(&cfg, Some("大月下"), None, None).unwrap();
+            assert_eq!(wav, v.wav_path);
+            assert_eq!(text, "为什么人类要起这么早啊");
+        });
+    }
+
+    #[test]
+    fn test_resolve_reference_custom_voice_by_id() {
+        crate::test_util::run_with_temp_home(|home| {
+            let src = home.join("src.wav");
+            std::fs::write(&src, sample_wav_bytes()).unwrap();
+            let v = crate::tts::voice_store::save_voice("大月下", &src, "参考文本").unwrap();
+
+            let cfg = ResolvedTtsConfig::default();
+            let (wav, text) = resolve_reference(&cfg, Some(&v.id), None, None).unwrap();
+            assert_eq!(wav, v.wav_path);
+            assert_eq!(text, "参考文本");
+        });
+    }
+
+    #[test]
+    fn test_resolve_reference_builtin_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        make_prompt(dir.path(), "leijun-1.wav 那还是36年前, 1987年.\n");
+        let cfg = ResolvedTtsConfig {
+            model_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let (wav, text) = resolve_reference(&cfg, Some("leijun-1"), None, None).unwrap();
+        assert_eq!(wav, dir.path().join("test_wavs/leijun-1.wav"));
+        assert!(text.contains("1987年"));
+    }
+
+    #[test]
+    fn test_resolve_reference_unknown_voice_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ResolvedTtsConfig {
+            model_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let err = resolve_reference(&cfg, Some("不存在的音色"), None, None).unwrap_err();
+        assert!(err.contains("未找到音色"), "err: {err}");
+    }
+
+    #[test]
+    fn test_resolve_reference_custom_wav_requires_text() {
+        let cfg = ResolvedTtsConfig::default();
+        let err = resolve_reference(&cfg, None, Some(Path::new("/tmp/a.wav")), None).unwrap_err();
+        assert!(err.contains("参考文本"), "err: {err}");
     }
 }

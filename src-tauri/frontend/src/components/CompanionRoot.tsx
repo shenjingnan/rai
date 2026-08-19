@@ -1,7 +1,9 @@
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
+import { VoiceStatusDot } from "@/components/voice/VoiceStatusDot";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
+import { useVoiceSession } from "@/hooks/useVoiceSession";
 import { api, onCompanionScaleChanged, onLive2dModelChanged, toAssetUrl } from "@/lib/tauri";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
@@ -30,6 +32,8 @@ const WHEEL_SCALE_STEP = 1.1;
 export function CompanionRoot() {
   const containerRef = useRef<HTMLDivElement>(null);
   const { config } = useLive2dConfig();
+  // 桌宠窗口无 RuntimeContext：hook 自包含，与设置窗口订阅同一批后端 voice 事件。
+  const voice = useVoiceSession();
   const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [scale, setScale] = useState(1.0);
@@ -174,7 +178,7 @@ export function CompanionRoot() {
     <div
       ref={containerRef}
       role="application"
-      className="h-screen w-screen select-none overflow-hidden bg-transparent"
+      className="relative h-screen w-screen select-none overflow-hidden bg-transparent"
       onMouseDown={(e) => {
         if (e.button !== 0) return;
         void getCurrentWindow().startDragging();
@@ -190,6 +194,9 @@ export function CompanionRoot() {
         height={size.height}
         onModelMetrics={handleModelMetrics}
       />
+      <span className="absolute right-2 top-2">
+        <VoiceStatusDot phase={voice.phase} running={voice.running} />
+      </span>
     </div>
   );
 }

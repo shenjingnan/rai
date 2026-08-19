@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, onAsrStopped } from "@/lib/tauri";
+import { api, onAsrStarted, onAsrStopped } from "@/lib/tauri";
 
 export interface AsrListeningState {
   isListening: boolean;
@@ -29,9 +29,14 @@ export function useAsrListening(): AsrListeningState {
       setIsListening(false);
       if (payload.error) setError(payload.error);
     });
+    const unlistenStarted = onAsrStarted(() => {
+      setIsListening(true);
+      setError(null);
+    });
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenStarted.then((fn) => fn());
     };
   }, []);
 

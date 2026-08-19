@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/toast";
 import type { RuntimeState } from "@/providers/RuntimeContext";
-import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
+import type { CompanionLibraryView, CompanionModelInfo, VoiceSessionPhase } from "@/types/tauri";
 import { HomePage } from "./HomePage";
 
 const { invokeMock, state } = vi.hoisted(() => ({
@@ -68,10 +68,23 @@ function makeKws(o?: {
   };
 }
 
-function makeAsr(o?: { modelsPresent?: boolean; isListening?: boolean; error?: string | null }) {
+function makeAsr(o?: {
+  enabled?: boolean;
+  modelsPresent?: boolean;
+  isListening?: boolean;
+  pending?: boolean;
+  error?: string | null;
+}) {
   return {
-    config: { config: { models_present: o?.modelsPresent ?? false }, error: null },
-    listening: { isListening: o?.isListening ?? false, pending: false, error: o?.error ?? null },
+    config: {
+      config: { enabled: o?.enabled ?? false, models_present: o?.modelsPresent ?? false },
+      error: null,
+    },
+    listening: {
+      isListening: o?.isListening ?? false,
+      pending: o?.pending ?? false,
+      error: o?.error ?? null,
+    },
   };
 }
 
@@ -107,12 +120,21 @@ function makeTts(o?: {
   };
 }
 
+function makeVoice(o?: { running?: boolean; phase?: VoiceSessionPhase; error?: string | null }) {
+  return {
+    running: o?.running ?? false,
+    phase: o?.phase ?? "idle",
+    error: o?.error ?? null,
+  };
+}
+
 function makeRuntime(
   overrides?: Partial<{
     kws: ReturnType<typeof makeKws>;
     asr: ReturnType<typeof makeAsr>;
     llm: ReturnType<typeof makeLlm>;
     tts: ReturnType<typeof makeTts>;
+    voice: ReturnType<typeof makeVoice>;
   }>,
 ): RuntimeState {
   return {
@@ -120,6 +142,7 @@ function makeRuntime(
     asr: overrides?.asr ?? makeAsr(),
     llm: overrides?.llm ?? makeLlm(),
     tts: overrides?.tts ?? makeTts(),
+    voice: overrides?.voice ?? makeVoice(),
   } as unknown as RuntimeState;
 }
 
@@ -235,6 +258,24 @@ describe("HomePage 概览", () => {
     const capabilities = await screen.findByLabelText("AI 能力");
     expect(await within(capabilities).findByText("未启用")).toBeInTheDocument();
     expect(within(capabilities).getByText("已关闭")).toBeInTheDocument();
+  });
+
+  it("ASR：enabled 且模型在但未识别 → 已就绪（读取持久化 enabled）", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    state.runtime = makeRuntime({ asr: makeAsr({ enabled: true, modelsPresent: true }) });
+    renderHome();
+
+    const capabilities = await screen.findByLabelText("AI 能力");
+    expect(await within(capabilities).findByText("已就绪")).toBeInTheDocument();
+  });
+
+  it("ASR：模型在但未启用 → 未启用", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    state.runtime = makeRuntime({ asr: makeAsr({ enabled: false, modelsPresent: true }) });
+    renderHome();
+
+    const capabilities = await screen.findByLabelText("AI 能力");
+    expect(await within(capabilities).findByText("未启用")).toBeInTheDocument();
   });
 
   it("伙伴模型不可用：预览提示文案 + 名称旁「模型不可用」", async () => {

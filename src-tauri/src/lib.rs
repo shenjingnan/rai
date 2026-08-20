@@ -1268,6 +1268,16 @@ impl LlmState {
     }
 }
 
+/// 共享 LLM 引擎是否正在生成（voice / GUI 任一在生成）。切换/卸载保护据此判断：
+/// 仅当 LLM 真正在工作时才阻止，空闲（待唤醒）时允许切换（voice 会从共享槽感知新引擎）。
+fn llm_engine_is_generating(llm: &LlmState) -> bool {
+    llm.engine
+        .lock()
+        .ok()
+        .and_then(|e| e.as_ref().map(|e| e.is_generating()))
+        .unwrap_or(false)
+}
+
 /// RAII：模型切换事务 guard，所有出口（成功/失败/回滚/早退/panic）都复位标志。
 struct LlmSwitchGuard {
     in_progress: Arc<AtomicBool>,
@@ -1330,9 +1340,17 @@ fn llm_resolved_config() -> Result<zapmomo::llm::config::ResolvedLlmConfig, Stri
 }
 
 /// 把 LLM 引擎事件转发为 Tauri 事件，直到 `Finished`/`Error`（`stop_on_status` 时 `Status` 也终止）。
-fn forward_llm_events(app: AppHandle, engine: Arc<LlmEngine>, stop_on_status: bool) {
-    // 订阅自己的事件流（广播：与 voice 会话等其它订阅者互不抢事件）
-    let rx = engine.subscribe();
+/// 持续把 LLM 引擎事件转发为 Tauri 事件，直到 `Error` / 引擎被释放（`Disconnected`；
+/// `stop_on_status` 时 `Status` 也终止）。**`Finished` 不退出**——同一引擎每次生成
+/// （GUI 对话 / voice 会话）都会继续产生 Token/Finished，单个转发线程持续服务，
+/// 否则第二次生成的事件无人转发，前端会一直停在「生成中」。
+/// 只持事件流 `rx`，不持引擎 Arc——引擎被替换后（set_current_model / load）无引用即
+/// drop，旧 forward 线程随 `Disconnected` 退出，避免旧模型内存泄漏。
+fn forward_llm_events(
+    app: AppHandle,
+    rx: std::sync::mpsc::Receiver<LlmEvent>,
+    stop_on_status: bool,
+) {
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(10)) {
             Ok(LlmEvent::Token(delta)) => {
@@ -1340,7 +1358,7 @@ fn forward_llm_events(app: AppHandle, engine: Arc<LlmEngine>, stop_on_status: bo
             }
             Ok(LlmEvent::Finished(reason)) => {
                 let _ = app.emit("llm-finished", reason);
-                break;
+                // 不 break：等待下一次生成的事件
             }
             Ok(LlmEvent::Error(e)) => {
                 let _ = app.emit("llm-error", e);
@@ -1397,6 +1415,11 @@ fn get_llm_config(state: State<'_, LlmState>) -> Result<LlmConfigInfo, String> {
 ///
 /// 加载在 worker 线程异步进行，结果经 `llm-status`/`llm-error` 事件返回。
 fn load_llm_impl(app: AppHandle, state: &LlmState) -> Result<(), String> {
+    // 统一引擎：加载会替换共享槽引擎，voice 空闲时可加载（voice 会感知新引擎）；
+    // LLM 正在生成时禁止替换（避免破坏 voice / GUI 的当前生成）。
+    if app.state::<VoiceSessionState>().is_running() && llm_engine_is_generating(state) {
+        return Err("语音会话正在使用 LLM 生成回复，请稍候再加载。".to_string());
+    }
     let cfg = llm_resolved_config()?;
     if !cfg.model_path.is_file() {
         return Err(format!(
@@ -1408,7 +1431,7 @@ fn load_llm_impl(app: AppHandle, state: &LlmState) -> Result<(), String> {
     engine.load().map_err(|e| e.to_string())?;
     *state.engine.lock().expect("llm lock poisoned") = Some(engine.clone());
     // 持续转发事件（voice 会话与 chat_llm 共用同一引擎，都由这一个 forward 转发，避免多线程重复 emit）
-    std::thread::spawn(move || forward_llm_events(app, engine, false));
+    std::thread::spawn(move || forward_llm_events(app, engine.subscribe(), false));
     Ok(())
 }
 
@@ -1419,11 +1442,11 @@ fn load_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), Stri
     load_llm_impl(app, state.inner())
 }
 
-/// 卸载 LLM 模型并释放内存。语音会话运行时拒绝（共享引擎，voice 在用）。
+/// 卸载 LLM 模型并释放内存。仅当 LLM 正在生成时拒绝（语音会话空闲时可卸载，voice 会感知引擎变化）。
 #[tauri::command]
 fn unload_llm_model(app: AppHandle, state: State<'_, LlmState>) -> Result<(), String> {
-    if app.state::<VoiceSessionState>().is_running() {
-        return Err("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再卸载。".to_string());
+    if app.state::<VoiceSessionState>().is_running() && llm_engine_is_generating(&state) {
+        return Err("语音会话正在使用 LLM 生成回复，请稍候再卸载。".to_string());
     }
     let engine = state.engine.lock().expect("llm lock poisoned").take();
     if let Some(engine) = engine {
@@ -1580,42 +1603,40 @@ fn start_voice_session_impl(app: AppHandle, state: &VoiceSessionState) -> Result
 
     // 统一 LLM 引擎：确保 `LlmState` 持有引擎（voice 与 GUI 共享，只加载一份）。
     // 未创建则创建并存入；加载延迟到 voice `run()` 内的 `load_blocking`。
+    // voice 会话持「共享引擎槽」引用而非引擎 Arc 克隆——运行时引擎被外部切换
+    // （set_current_model / load）时，voice 在每轮编排循环开头感知并重新绑定新引擎。
     let llm_state = app.state::<LlmState>();
-    let llm = {
+    {
         let mut guard = llm_state.engine.lock().expect("llm lock poisoned");
-        match guard.as_ref() {
-            Some(e) => e.clone(),
-            None => {
-                let e = Arc::new(
-                    zapmomo::llm::LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?,
-                );
-                *guard = Some(e.clone());
-                // 新引擎就绪后 spawn 持续 forward（GUI LLM 状态反映共享引擎）
-                let app = app.clone();
-                let e_for_fwd = e.clone();
-                std::thread::spawn(move || forward_llm_events(app, e_for_fwd, false));
-                e
-            }
+        if guard.is_none() {
+            let e =
+                Arc::new(zapmomo::llm::LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?);
+            *guard = Some(e.clone());
+            // 新引擎就绪后 spawn 持续 forward（GUI LLM 状态反映共享引擎）
+            let app = app.clone();
+            let e_for_fwd = e.clone();
+            std::thread::spawn(move || forward_llm_events(app, e_for_fwd.subscribe(), false));
         }
-    };
+    }
 
     let running = state.running.clone();
     running.store(true, Ordering::Relaxed);
     let emit = make_voice_emit(app.clone());
+    let shared_llm_slot = llm_state.engine.clone();
     let handle = std::thread::spawn(move || {
-        let mut session = match VoiceSession::new_with_parts(cfg, emit, running.clone(), Some(llm))
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("语音会话创建失败: {e}");
-                running.store(false, Ordering::Relaxed);
-                let _ = app.emit(
-                    "voice-session-stopped",
-                    VoiceStoppedPayload { error: Some(e) },
-                );
-                return;
-            }
-        };
+        let mut session =
+            match VoiceSession::new_with_parts(cfg, emit, running.clone(), Some(shared_llm_slot)) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("语音会话创建失败: {e}");
+                    running.store(false, Ordering::Relaxed);
+                    let _ = app.emit(
+                        "voice-session-stopped",
+                        VoiceStoppedPayload { error: Some(e) },
+                    );
+                    return;
+                }
+            };
         let result = session.run();
         running.store(false, Ordering::Relaxed);
         match &result {
@@ -2798,9 +2819,10 @@ async fn set_current_model(
     if !zapmomo::llm::local::llama::is_gguf_file(&path) {
         return Err("不是有效的 GGUF 模型文件".to_string());
     }
-    // 统一引擎：voice 会话正共享该引擎，切换会让 voice 持旧 Arc 造成双模型 → 运行时拒绝
-    if app.state::<VoiceSessionState>().is_running() {
-        return Err("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再切换模型。".to_string());
+    // 统一引擎：voice 会话共享引擎槽。仅当 LLM 正在生成时拒绝切换（会破坏 voice 回复）；
+    // 空闲（待唤醒）时允许切换——voice 每轮从共享槽重新绑定，能感知新引擎。
+    if app.state::<VoiceSessionState>().is_running() && llm_engine_is_generating(&llm) {
+        return Err("语音会话正在使用 LLM 生成回复，请稍候再切换模型。".to_string());
     }
     let _guard = LlmSwitchGuard::begin(llm.inner(), path.clone())?;
 
@@ -2848,7 +2870,7 @@ async fn set_current_model(
 
     match load_result {
         Ok(()) => {
-            std::thread::spawn(move || forward_llm_events(app, new_engine, false));
+            std::thread::spawn(move || forward_llm_events(app, new_engine.subscribe(), false));
             Ok(SetCurrentResult {
                 model_type: mt,
                 model_id: model.id,
@@ -2878,7 +2900,9 @@ async fn set_current_model(
             .map_err(|e| format!("恢复加载任务异常：{e}"))?;
             match old_result {
                 Ok(()) => {
-                    std::thread::spawn(move || forward_llm_events(app, old_engine, false));
+                    std::thread::spawn(move || {
+                        forward_llm_events(app, old_engine.subscribe(), false)
+                    });
                     Ok(SetCurrentResult {
                         model_type: mt,
                         model_id: model.id,

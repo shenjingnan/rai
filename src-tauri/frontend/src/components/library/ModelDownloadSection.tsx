@@ -1,7 +1,8 @@
-import { ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { formatBytes } from "@/components/library/libraryMeta";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { estimateRamGb } from "@/lib/catalog/quantization";
 import type { DownloadTaskView, ModelArtifact } from "@/types/catalog";
 import type { LibraryModel } from "@/types/modelLibrary";
@@ -22,10 +23,11 @@ interface ModelDownloadSectionProps {
   onCancel: (taskId: string) => void;
   onSetCurrent: (installId: string) => void;
   onOpenDir: (installId: string) => void;
+  onUninstall: (model: LibraryModel) => void;
   onViewOnHf: () => void;
 }
 
-/** 右下下载区：文件/大小 + 状态机操作（下载/取消/已安装/设为当前/暂不支持）。 */
+/** 右下下载区：文件/大小 + 状态机操作（下载/取消/已安装/设为当前/卸载/暂不支持）。 */
 export function ModelDownloadSection({
   artifact,
   canInstall,
@@ -35,6 +37,7 @@ export function ModelDownloadSection({
   onCancel,
   onSetCurrent,
   onOpenDir,
+  onUninstall,
   onViewOnHf,
 }: ModelDownloadSectionProps) {
   const fileLabel =
@@ -42,6 +45,8 @@ export function ModelDownloadSection({
       ? `${artifact.files.length} 个文件`
       : (artifact.files[0]?.path ?? artifact.name);
   const task = local.task;
+  // 平滑插值：消除高频下载进度事件造成的进度条抖动
+  const smoothProgress = useSmoothProgress(task?.progress ?? null);
 
   const renderAction = () => {
     const installed = local.installed;
@@ -67,6 +72,15 @@ export function ModelDownloadSection({
             onClick={() => installId && onOpenDir(installId)}
           >
             打开目录
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shadow-none text-destructive hover:text-destructive"
+            onClick={() => onUninstall(installed)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            卸载
           </Button>
         </>
       );
@@ -127,7 +141,7 @@ export function ModelDownloadSection({
       </div>
       {task && (task.state === "downloading" || task.state === "queued") && (
         <div className="mt-2 space-y-1">
-          <Progress value={task.progress} />
+          <Progress value={smoothProgress} />
           <p className="truncate text-[11px] text-text-muted">
             {task.currentFile ?? ""} · {formatBytes(task.bytesDownloaded)} /{" "}
             {formatBytes(task.totalBytes)}

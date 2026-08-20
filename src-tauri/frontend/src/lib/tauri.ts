@@ -119,8 +119,7 @@ export const api = {
   stopLlm: () => invoke<void>("stop_llm"),
   isLlmReady: () => invoke<boolean>("is_llm_ready"),
   setLlmModelPath: (args: { path: string }) => invoke<void>("set_llm_model_path", args),
-  downloadLlmModel: (args: { id: string }) =>
-    invoke<LlmDownloadResult>("download_llm_model", args),
+  downloadLlmModel: (args: { id: string }) => invoke<LlmDownloadResult>("download_llm_model", args),
   setLlmThinking: (args: { enabled: boolean }) => invoke<void>("set_llm_thinking", args),
   setLlmAutoLoad: (args: { enabled: boolean }) => invoke<void>("set_llm_auto_load", args),
   setLlmParams: (args: { params: LlmParamsPatch }) => invoke<void>("set_llm_params", args),

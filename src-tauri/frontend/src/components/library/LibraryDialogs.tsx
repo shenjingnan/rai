@@ -39,6 +39,7 @@ export function ModelConfirmDialog({ open, onClose, model, onConfirm }: ModelCon
           </Button>
           <Button
             variant={external ? "outline" : "destructive"}
+            aria-label={external ? "确认移除" : "确认卸载"}
             onClick={() => model && onConfirm(model)}
           >
             {external ? "移除" : "卸载"}

@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useRuntime } from "@/providers/RuntimeContext";
 import { LlmTestDialog } from "./LlmTestDialog";
-import { currentModelName } from "./llmMeta";
+import { currentModelName, isHttpProvider } from "./llmMeta";
 
 interface LlmCoreConfigProps {
-  pick: () => Promise<void>;
-  pickError: string | null;
+  /** 打开「选择模型」弹窗（内置预设 + 导入 GGUF） */
+  onOpenPresets: () => void;
 }
 
 /**
@@ -17,7 +17,7 @@ interface LlmCoreConfigProps {
  * 当前模型（名称 + 按需展开的完整路径）/ 启动时自动加载 / 思考模式 + 底部操作按钮。
  * 路径默认隐藏，点 FolderOpen 图标展开，hover 图标可看全路径。
  */
-export function LlmCoreConfig({ pick, pickError }: LlmCoreConfigProps) {
+export function LlmCoreConfig({ onOpenPresets }: LlmCoreConfigProps) {
   const { llm } = useRuntime();
   const [testOpen, setTestOpen] = useState(false);
   const [showPath, setShowPath] = useState(false);
@@ -25,8 +25,8 @@ export function LlmCoreConfig({ pick, pickError }: LlmCoreConfigProps) {
   const busy = llm.loading || llm.generating;
   const modelName = currentModelName(llm.config);
   const modelPath = llm.config?.model_path ?? "";
-  // 选择模型在已加载时也可用（pick 会静默触发 reload 无缝切换）；加载中/生成中禁用
-  const pickDisabled = llm.loading || llm.generating;
+  // 选择模型在已加载时也可用（切换会静默触发 reload 无缝换模）；加载中/生成中/远程 provider 禁用
+  const pickDisabled = isHttpProvider(llm.config?.provider) || llm.loading || llm.generating;
   const testDisabled = !llm.ready || busy;
 
   return (
@@ -41,22 +41,13 @@ export function LlmCoreConfig({ pick, pickError }: LlmCoreConfigProps) {
         </div>
       </div>
 
-      {(llm.configError || pickError) && (
+      {llm.configError && (
         <div className="space-y-2 px-3.5 pb-2">
-          {llm.configError && (
-            <Alert variant="destructive">
-              <AlertDescription className="whitespace-pre-wrap">
-                读取配置失败：{llm.configError}
-              </AlertDescription>
-            </Alert>
-          )}
-          {pickError && (
-            <Alert variant="destructive">
-              <AlertDescription className="whitespace-pre-wrap">
-                选择模型失败：{pickError}
-              </AlertDescription>
-            </Alert>
-          )}
+          <Alert variant="destructive">
+            <AlertDescription className="whitespace-pre-wrap">
+              读取配置失败：{llm.configError}
+            </AlertDescription>
+          </Alert>
         </div>
       )}
 
@@ -118,7 +109,7 @@ export function LlmCoreConfig({ pick, pickError }: LlmCoreConfigProps) {
       </dl>
 
       <div className="flex flex-wrap gap-2 border-t border-divider px-3.5 py-2.5">
-        <Button onClick={() => void pick()} disabled={pickDisabled}>
+        <Button onClick={onOpenPresets} disabled={pickDisabled}>
           <FolderOpen className="h-4 w-4" />
           选择模型
         </Button>

@@ -1,4 +1,4 @@
-import { AudioWaveform, Brain, Loader2, type LucideIcon, Mic, Volume2 } from "lucide-react";
+import { AudioWaveform, Brain, Loader2, type LucideIcon, Mic, Trash2, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ModelDetailState } from "@/hooks/useModelDetail";
@@ -8,7 +8,9 @@ import { isInstallable } from "@/lib/catalog/query";
 import { api } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import type { ModelArtifact, ModelCategory, UnifiedModelItem } from "@/types/catalog";
+import type { LibraryModel } from "@/types/modelLibrary";
 import { CompatibilityBadge } from "./CompatibilityBadge";
+import { ModelConfirmDialog } from "./LibraryDialogs";
 import { type ArtifactLocalState, ModelDownloadSection } from "./ModelDownloadSection";
 import { ModelFilesTab } from "./ModelFilesTab";
 import { ModelOverviewTab } from "./ModelOverviewTab";
@@ -86,6 +88,7 @@ export function ModelDetailPane({ detail, lib, downloads }: ModelDetailPaneProps
   const item = detail.selected;
   const [tab, setTab] = useState<Tab>("overview");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [confirmModel, setConfirmModel] = useState<LibraryModel | null>(null);
 
   // 选中模型后：自动确认兼容性（Possible → files → Compatible/Unsupported）
   // biome-ignore lint/correctness/useExhaustiveDependencies: canonicalKey 是选择变化触发器
@@ -254,6 +257,7 @@ export function ModelDetailPane({ detail, lib, downloads }: ModelDetailPaneProps
                   onCancel={(taskId) => void downloads.cancel(taskId)}
                   onSetCurrent={(installId) => void lib.setCurrent(installId)}
                   onOpenDir={(installId) => void api.openModelDirectory({ id: installId })}
+                  onUninstall={setConfirmModel}
                   onViewOnHf={() => void api.openExternal(`https://huggingface.co/${item.modelId}`)}
                 />
               )}
@@ -261,16 +265,38 @@ export function ModelDetailPane({ detail, lib, downloads }: ModelDetailPaneProps
           )}
         </>
       ) : (
-        <BuiltinActions item={item} lib={lib} />
+        <BuiltinActions item={item} lib={lib} onUninstall={setConfirmModel} />
       )}
+
+      <ModelConfirmDialog
+        open={confirmModel !== null}
+        model={confirmModel}
+        onClose={() => setConfirmModel(null)}
+        onConfirm={(m) => {
+          setConfirmModel(null);
+          void lib.remove(m.id);
+        }}
+      />
     </div>
   );
 }
 
-/** 内置精选操作（manifest 下载 / 导入 GGUF / 已安装+设为当前）。 */
-function BuiltinActions({ item, lib }: { item: UnifiedModelItem; lib: ModelLibraryState }) {
+/** 内置精选操作（manifest 下载 / 导入 GGUF / 已安装+设为当前/卸载）。 */
+function BuiltinActions({
+  item,
+  lib,
+  onUninstall,
+}: {
+  item: UnifiedModelItem;
+  lib: ModelLibraryState;
+  onUninstall: (model: LibraryModel) => void;
+}) {
   const regId = item.modelId;
-  const installed = (lib.models ?? []).find((m) => m.id === regId || m.repoId === regId) ?? null;
+  // 仅「完整已安装」视为已安装（list_model_library 对未安装 registry 模型也返回记录）
+  const installed =
+    (lib.models ?? []).find(
+      (m) => (m.id === regId || m.repoId === regId) && m.installState === "installed",
+    ) ?? null;
   const installId = installed?.installId ?? installed?.id ?? regId;
 
   if (installed) {
@@ -293,6 +319,17 @@ function BuiltinActions({ item, lib }: { item: UnifiedModelItem; lib: ModelLibra
         >
           打开目录
         </Button>
+        {!installed.current && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shadow-none text-destructive hover:text-destructive"
+            onClick={() => onUninstall(installed)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            卸载
+          </Button>
+        )}
       </div>
     );
   }

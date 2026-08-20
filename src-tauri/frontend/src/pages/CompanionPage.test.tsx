@@ -5,9 +5,17 @@ import { ToastProvider } from "@/components/ui/toast";
 import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
 import { CompanionPage } from "./CompanionPage";
 
-const { invokeMock, openMock } = vi.hoisted(() => ({
+type StageCatalog = import("@/components/live2d/previewManager").Live2dCatalog;
+const { invokeMock, openMock, stageHandleMock, stageState } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openMock: vi.fn(),
+  stageHandleMock: {
+    playMotion: vi.fn(async () => true),
+    applyExpression: vi.fn(async () => true),
+    resetExpression: vi.fn(),
+  },
+  /** 供 mock 替身注入目录的可变容器（vi.mock 工厂只可靠引用 hoisted 变量）。 */
+  stageState: { catalog: null as StageCatalog | null },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -23,10 +31,26 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 // SharedLive2dStage 依赖 pixi / WebGL，jsdom 无法运行；预览容器量测（ResizeObserver）在
-// jsdom 是空桩、尺寸保持 0，本组件不会真正渲染 stage，这里仍 mock 掉避免模块加载副作用。
-vi.mock("@/components/live2d/SharedLive2dStage", () => ({
-  SharedLive2dStage: () => <div data-testid="live2d-stage" />,
-}));
+// jsdom 是空桩、尺寸保持 0，本组件不会真正渲染 stage。这里 mock 成可注入目录与句柄的替身：
+// 挂载时注入外部可控的 stageState.catalog，并把自己的命令式句柄挂到传入的 ref 上。
+vi.mock("@/components/live2d/SharedLive2dStage", async () => {
+  const { useEffect } = await import("react");
+  return {
+    SharedLive2dStage: ({
+      onModelCatalog,
+      ref,
+    }: {
+      onModelCatalog?: (c: StageCatalog | null) => void;
+      ref?: { current: unknown };
+    }) => {
+      useEffect(() => {
+        onModelCatalog?.(stageState.catalog);
+        if (ref) ref.current = stageHandleMock;
+      }, [onModelCatalog, ref]);
+      return <div data-testid="live2d-stage" />;
+    },
+  };
+});
 
 function model(id: string, name: string, valid = true): CompanionModelInfo {
   return {
@@ -53,6 +77,10 @@ let importSeq: number;
 beforeEach(() => {
   invokeMock.mockReset();
   openMock.mockReset();
+  stageHandleMock.playMotion.mockReset();
+  stageHandleMock.applyExpression.mockReset();
+  stageHandleMock.resetExpression.mockReset();
+  stageState.catalog = null;
   library = { models: [], active_model_id: null };
   importSeq = 0;
 
@@ -119,7 +147,42 @@ beforeEach(() => {
   );
 });
 
+/**
+ * 覆盖 vitest.setup 的空 ResizeObserver 桩：observe 后**异步**报告非零 contentRect
+ * （真实 ResizeObserver 回调在渲染帧后触发，须异步——同步触发会违反 React/Radix
+ * 渲染时序导致 SliderThumbProvider 崩溃）。使预览容器量测产生非 0 尺寸 →
+ * `showStage` 成立 → 舞台替身被挂载（面板才能渲染）。仅本文件生效。
+ */
+function enablePreviewResize() {
+  class FakeResizeObserver implements ResizeObserver {
+    constructor(private cb: ResizeObserverCallback) {}
+    observe(target: Element): void {
+      setTimeout(() => {
+        const rect = {
+          x: 0, y: 0, width: 300, height: 200,
+          top: 0, right: 300, bottom: 200, left: 0,
+        };
+        // Radix react-use-size 读 contentBoxSize[0].inlineSize/blockSize，
+        // 空数组会让它崩；按真实浏览器结构填充。
+        const sizes = [{ inlineSize: 300, blockSize: 200 }];
+        const entry = {
+          target,
+          contentRect: rect,
+          borderBoxSize: sizes,
+          contentBoxSize: sizes,
+          devicePixelContentBoxSize: sizes,
+        };
+        this.cb([entry as unknown as ResizeObserverEntry], this);
+      }, 0);
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  window.ResizeObserver = FakeResizeObserver;
+}
+
 function renderPage() {
+  enablePreviewResize();
   return render(
     <ToastProvider>
       <CompanionPage />
@@ -397,5 +460,46 @@ describe("CompanionPage 伙伴模型管理器", () => {
     await user.keyboard("{Escape}");
 
     expect(invokeMock).not.toHaveBeenCalledWith("rename_companion", expect.anything());
+  });
+
+  it("展示动作与表情目录：点击动作播放、点击表情应用、重置恢复", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    stageState.catalog = {
+      motionGroups: [
+        {
+          group: "Extra",
+          motions: [
+            { index: 0, name: "睡觉动画" },
+            { index: 1, name: "循环动画" },
+          ],
+        },
+      ],
+      expressions: [
+        { index: 0, name: "03 生气" },
+        { index: 1, name: "07 星星眼" },
+      ],
+    };
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "动作" }));
+    await user.click(screen.getByRole("button", { name: "播放动作 睡觉动画" }));
+    expect(stageHandleMock.playMotion).toHaveBeenCalledWith("Extra", 0);
+
+    await user.click(screen.getByRole("tab", { name: "表情" }));
+    await user.click(screen.getByRole("button", { name: "应用表情 07 星星眼" }));
+    expect(stageHandleMock.applyExpression).toHaveBeenCalledWith(1);
+    await user.click(screen.getByRole("button", { name: "重置表情" }));
+    expect(stageHandleMock.resetExpression).toHaveBeenCalledTimes(1);
+  });
+
+  it("模型没有动作与表情时显示空态；目录未就绪时不渲染面板", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    stageState.catalog = { motionGroups: [], expressions: [] };
+    renderPage();
+    // 舞台替身挂载（showStage 成立）是面板渲染的前提；等它出现再断言空态。
+    expect(await screen.findByTestId("live2d-stage")).toBeInTheDocument();
+    expect(await screen.findByText("此模型未提供动作或表情")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "动作" })).not.toBeInTheDocument();
   });
 });

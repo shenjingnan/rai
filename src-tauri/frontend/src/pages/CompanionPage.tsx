@@ -10,6 +10,8 @@ import {
 } from "react";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
 import { SharedLive2dStage } from "@/components/live2d/SharedLive2dStage";
+import type { SharedLive2dStageHandle } from "@/components/live2d/SharedLive2dStage";
+import type { Live2dCatalog } from "@/components/live2d/previewManager";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -193,6 +195,120 @@ function CompanionListItem({
   );
 }
 
+/** 动作/表情预览面板：手写下划线 Tab（对齐 ModelDetailPane 先例，不引 Tabs 依赖）。 */
+function MotionCatalogPanel({
+  catalog,
+  onPlayMotion,
+  onApplyExpression,
+  onResetExpression,
+}: {
+  catalog: Live2dCatalog;
+  onPlayMotion: (group: string, index: number) => void;
+  onApplyExpression: (index: number) => void;
+  onResetExpression: () => void;
+}) {
+  const [tab, setTab] = useState<"motions" | "expressions">("motions");
+  const [playingKey, setPlayingKey] = useState<string | null>(null);
+  const [appliedExpression, setAppliedExpression] = useState<number | null>(null);
+
+  const hasMotions = catalog.motionGroups.length > 0;
+  const hasExpressions = catalog.expressions.length > 0;
+  const activeTab = tab === "motions" && !hasMotions ? "expressions" : tab;
+
+  const handlePlay = (group: string, index: number) => {
+    setPlayingKey(`${group}/${index}`);
+    // 播放结束（或失败）后恢复按钮；首次播放含懒加载延迟。
+    void Promise.resolve(onPlayMotion(group, index)).finally(() => setPlayingKey(null));
+  };
+
+  const empty = !hasMotions && !hasExpressions;
+  return (
+    <div className="mt-3 shrink-0 border-t border-panel-border pt-3" data-testid="motion-catalog">
+      {empty ? (
+        <p className="text-xs text-muted-foreground">此模型未提供动作或表情</p>
+      ) : (
+        <>
+          {hasMotions && hasExpressions && (
+            <div role="tablist" aria-label="预览类型" className="mb-2 flex gap-4">
+              {(["motions", "expressions"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === t}
+                  onClick={() => setTab(t)}
+                  className={cn(
+                    "border-b-2 pb-1 text-sm transition-colors",
+                    activeTab === t
+                      ? "border-blue-500 text-text-primary"
+                      : "border-transparent text-muted-foreground hover:text-text-primary",
+                  )}
+                >
+                  {t === "motions" ? "动作" : "表情"}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex max-h-40 flex-wrap content-start gap-2 overflow-y-auto">
+            {activeTab === "motions"
+              ? catalog.motionGroups.map(({ group, motions }) => (
+                  <div key={group} className="w-full">
+                    {catalog.motionGroups.length > 1 && (
+                      <p className="mb-1 text-xs font-medium text-muted-foreground">{group}</p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {motions.map((m) => {
+                        const key = `${group}/${m.index}`;
+                        return (
+                          <Button
+                            key={key}
+                            variant="outline"
+                            size="sm"
+                            aria-label={`播放动作 ${m.name}`}
+                            disabled={playingKey !== null}
+                            onClick={() => handlePlay(group, m.index)}
+                          >
+                            {playingKey === key ? "播放中…" : m.name}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              : catalog.expressions.map((e) => (
+                  <Button
+                    key={e.index}
+                    variant={appliedExpression === e.index ? "default" : "outline"}
+                    size="sm"
+                    aria-label={`应用表情 ${e.name}`}
+                    onClick={() => {
+                      onApplyExpression(e.index);
+                      setAppliedExpression(e.index);
+                    }}
+                  >
+                    {e.name}
+                  </Button>
+                ))}
+            {activeTab === "expressions" && appliedExpression != null && (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="重置表情"
+                onClick={() => {
+                  onResetExpression();
+                  setAppliedExpression(null);
+                }}
+              >
+                重置表情
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * 伙伴页：伙伴模型管理器。
  *
@@ -210,8 +326,11 @@ export function CompanionPage() {
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [removeTarget, setRemoveTarget] = useState<CompanionModelInfo | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const stageHandleRef = useRef<SharedLive2dStageHandle>(null);
+  const [catalog, setCatalog] = useState<Live2dCatalog | null>(null);
   /** 最近一次待移除目标：关闭动画期间 removeTarget 已置空，用它兜底保持正文不闪空。 */
   const lastRemoveTarget = useRef<CompanionModelInfo | null>(null);
+
 
   useEffect(() => {
     if (removeTarget) lastRemoveTarget.current = removeTarget;
@@ -235,8 +354,10 @@ export function CompanionPage() {
   }, [library, selectedId]);
 
   const selectModel = useCallback((id: string) => {
-    // 切换选中模型时重置渲染错误。
+    // 切换选中模型时重置渲染错误并清空旧目录（不能放在 effect 里随 selectedId 清：
+    // 首次校正 selectedId 会与 onModelCatalog 竞争，把新目录覆盖成 null）。
     setStageError(null);
+    setCatalog(null);
     setSelectedId(id);
   }, []);
 
@@ -438,6 +559,8 @@ export function CompanionPage() {
                   height={previewSize.height}
                   onError={handleStageError}
                   onModelReady={handleModelReady}
+                  onModelCatalog={setCatalog}
+                  ref={stageHandleRef}
                   className="h-full w-full"
                 />
               )}
@@ -454,6 +577,15 @@ export function CompanionPage() {
                 </div>
               )}
             </div>
+
+            {showStage && catalog && (
+              <MotionCatalogPanel
+                catalog={catalog}
+                onPlayMotion={(group, index) => void stageHandleRef.current?.playMotion(group, index)}
+                onApplyExpression={(index) => void stageHandleRef.current?.applyExpression(index)}
+                onResetExpression={() => stageHandleRef.current?.resetExpression()}
+              />
+            )}
 
             {stageError && (
               <Alert variant="destructive" className="mt-3">

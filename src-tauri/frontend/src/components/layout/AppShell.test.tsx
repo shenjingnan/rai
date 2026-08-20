@@ -93,19 +93,36 @@ describe("AppShell 窗口控件的平台布局", () => {
     expect(mainPanelOuter(root).className).toContain("pt-9");
   });
 
-  it("Linux：三键仍在侧边栏左上角，保留 CSS 圆角与主面板原布局", () => {
+  it("Windows：自绘四边完整窗口边框（后端关 DWM shadow 后由 CSS 补边框）", () => {
+    const { container } = renderShellWithUserAgent(WINDOWS_UA);
+    const root = shellRoot(container);
+
+    expect(root.className).toContain("border-window-border");
+  });
+
+  it("Linux：三键与 Windows 一致悬浮右上角，保留 CSS 圆角，主面板顶部让位", () => {
     const { container } = renderShellWithUserAgent(LINUX_UA);
     const root = shellRoot(container);
 
+    // 三键渲染，且不在侧边栏内（悬浮于主面板上方，而非左上角）
     const buttons = queryWindowButtons();
-    expect(buttons.minimize?.closest("aside")).not.toBeNull();
+    expect(buttons.minimize).not.toBeNull();
+    expect(buttons.maximize).not.toBeNull();
+    expect(buttons.close).not.toBeNull();
+    expect(buttons.minimize?.closest("aside")).toBeNull();
 
-    // 无右上角悬浮条
-    expect(floatingControlsBar(root)).toBeUndefined();
+    // 悬浮条存在且容纳三键（可拖拽窗口）
+    const bar = floatingControlsBar(root);
+    expect(bar).toBeDefined();
+    expect(bar?.contains(buttons.close as HTMLElement)).toBe(true);
 
     // 透明窗口圆角仍由 CSS 裁出
     expect(root.className).toContain("rounded-xl");
-    expect(mainPanelOuter(root).className).not.toContain("pt-9");
+    // Linux 窗口边框场景由系统/圆角承担，不加 Windows 专用边框类
+    expect(root.className).not.toContain("border-window-border");
+
+    // 主面板顶部让出三键高度，避免内容被遮挡
+    expect(mainPanelOuter(root).className).toContain("pt-9");
   });
 
   it("macOS：不自绘三键（系统红绿灯），无 CSS 圆角", () => {
@@ -118,5 +135,7 @@ describe("AppShell 窗口控件的平台布局", () => {
     expect(buttons.close).toBeNull();
 
     expect(root.className).not.toContain("rounded-xl");
+    // macOS 窗口边框由系统绘制，不加 Windows 专用边框类
+    expect(root.className).not.toContain("border-window-border");
   });
 });

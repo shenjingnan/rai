@@ -31,6 +31,8 @@
   --sidebar-background: #f7f9fc;
   --panel-background: #ffffff;
   --panel-border: #e9ecf4;
+  /* 窗口最外缘边框：比面板边框深一档，替代 Windows 上被关掉的 DWM 窗框 */
+  --window-border: #d8dde8;
   --nav-hover: #eef3fc;
   --nav-active: #e2eafd;
   --text-primary: #111827;
@@ -89,6 +91,7 @@
   --color-sidebar-background: var(--sidebar-background);
   --color-panel-background: var(--panel-background);
   --color-panel-border: var(--panel-border);
+  --color-window-border: var(--window-border);
   --color-nav-hover: var(--nav-hover);
   --color-nav-active: var(--nav-active);
   --color-text-primary: var(--text-primary);

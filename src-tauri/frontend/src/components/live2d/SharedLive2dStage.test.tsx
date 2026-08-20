@@ -1,8 +1,8 @@
 import { cleanup, render } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SharedLive2dStage } from "./SharedLive2dStage";
 import type { SharedLive2dStageHandle } from "./SharedLive2dStage";
+import { SharedLive2dStage } from "./SharedLive2dStage";
 
 /**
  * 只验证组件与 previewManager 的接线契约（claim/release/updateLayout/showModel 的
@@ -131,11 +131,13 @@ describe("SharedLive2dStage", () => {
     const opts = claimMock.mock.calls[0][0];
     expect(opts.callbacks).toHaveProperty("onModelCatalog");
 
-    expect(await ref.current!.playMotion("Extra", 0)).toBe(true);
+    const handle = ref.current;
+    if (!handle) throw new Error("SharedLive2dStage handle 未挂载");
+    expect(await handle.playMotion("Extra", 0)).toBe(true);
     expect(handleStub.playMotion).toHaveBeenCalledWith("Extra", 0);
-    expect(await ref.current!.applyExpression(1)).toBe(true);
+    expect(await handle.applyExpression(1)).toBe(true);
     expect(handleStub.applyExpression).toHaveBeenCalledWith(1);
-    ref.current!.resetExpression();
+    handle.resetExpression();
     expect(handleStub.resetExpression).toHaveBeenCalledTimes(1);
   });
 });

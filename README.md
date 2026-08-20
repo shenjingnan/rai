@@ -1,12 +1,26 @@
 <div align="center">
   <img src="docs/public/logo.svg" alt="ZapMomo Logo" width="300" />
+
+  <p>
+    <a href="https://github.com/shenjingnan/zapmomo/releases"><img src="https://img.shields.io/github/v/release/shenjingnan/zapmomo" alt="GitHub Release" /></a>
+    <a href="https://crates.io/crates/zapmomo"><img src="https://img.shields.io/crates/v/zapmomo" alt="crates.io 版本" /></a>
+    <a href="https://crates.io/crates/zapmomo"><img src="https://img.shields.io/crates/d/zapmomo" alt="crates.io 下载量" /></a>
+    <a href="https://github.com/shenjingnan/zapmomo/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/shenjingnan/zapmomo/ci.yml?branch=main&label=CI" alt="GitHub Actions CI 状态" /></a>
+    <a href="https://codecov.io/gh/shenjingnan/zapmomo"><img src="https://codecov.io/gh/shenjingnan/zapmomo/graph/badge.svg" alt="Codecov 覆盖率" /></a>
+    <br />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License: GPL-3.0" /></a>
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust" alt="Rust 1.97+" /></a>
+    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows 支持" /></a>
+    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS 支持" /></a>
+    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux 支持" /></a>
+  </p>
 </div>
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
 
 开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
-> 📚 中文文档：[文档站](docs/)，含快速开始、KWS，配置、桌面应用与开发指南。
+> 📚 中文文档：[文档站](docs/)，含快速开始、KWS / ASR / TTS / LLM、配置、桌面应用与贡献指南。
 > 🛠 参与开发 / CLI 与完整配置参考：[贡献指南](CONTRIBUTING.md)。
 
 <div align="center">
@@ -111,7 +125,7 @@ xattr -cr "/Applications/Zap Momo.app"
 ## 参与开发
 
 - [贡献指南](CONTRIBUTING.md)：环境搭建、CLI 命令与完整配置参考、测试、项目结构与发布流程
-- [文档站](docs/)：「开发指南」分区
+- [文档站](docs/)：「贡献指南」与「开发指南」分区
 
 ## 许可
 

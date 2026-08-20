@@ -346,10 +346,10 @@ describe("App（KWS 控制面板）", () => {
 
     // 模型名区域 = 文本 + 切换按钮（等 llm config 异步加载完成）
     await screen.findByText("qwen3-4b.gguf");
-    await user.click(screen.getByRole("button", { name: "切换 AI 大脑模型" }));
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
 
     // 打开与 LLM 配置页同款「选择模型」弹窗：当前预设标记，另一预设可「设为当前」
-    expect(await screen.findByText("选择模型")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "选择模型" })).toBeInTheDocument();
     expect(screen.getByText("当前模型")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "设为当前" }));
 

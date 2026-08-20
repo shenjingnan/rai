@@ -1,4 +1,4 @@
-import { CircleAlert, Download, FolderOpen, Trash2 } from "lucide-react";
+import { CircleAlert, Download, FolderOpen, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
@@ -27,7 +27,19 @@ export function LlmPresetDialog({ open, onClose }: LlmPresetDialogProps) {
   const presets = useLlmPresets();
   const { pick, pickError } = useLlmModelPicker();
   const [confirmModel, setConfirmModel] = useState<LibraryModel | null>(null);
+  /** 正在切换到当前模型的预设 id；期间按钮转圈并禁用（后端热切换需数秒） */
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
   const { downloading, currentId, progress, error } = llm.download;
+
+  // set_current_model 在 LLM 已加载时会同步卸旧载新（本地模型固有耗时），等待期需要反馈。
+  const handleSetCurrent = async (id: string) => {
+    setSwitchingId(id);
+    try {
+      await presets.setCurrent(id);
+    } finally {
+      setSwitchingId(null);
+    }
+  };
 
   // verifying/done 阶段后端 percent=-1，直接喂 Progress 会异常，非 downloading 一律按 100
   const targetPercent =
@@ -71,16 +83,20 @@ export function LlmPresetDialog({ open, onClose }: LlmPresetDialogProps) {
                     <>
                       <Button
                         size="sm"
-                        onClick={() => void presets.setCurrent(installed.id)}
-                        disabled={busy}
+                        onClick={() => void handleSetCurrent(installed.id)}
+                        disabled={busy || switchingId !== null}
                       >
-                        设为当前
+                        {switchingId === installed.id && (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        )}
+                        {switchingId === installed.id ? "切换中…" : "设为当前"}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         className="shadow-none text-destructive hover:text-destructive"
                         onClick={() => setConfirmModel(installed)}
+                        disabled={switchingId !== null}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                         卸载

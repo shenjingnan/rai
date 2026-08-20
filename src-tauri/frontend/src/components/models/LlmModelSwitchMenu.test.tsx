@@ -18,7 +18,12 @@ vi.mock("@/components/llm/LlmPresetDialog", () => ({
 }));
 
 // mock runtime：llm 切片可变（provider / model_path）。
-const { state } = vi.hoisted(() => ({ state: { llm: null as LlmState | null } }));
+const { state, navProbe } = vi.hoisted(() => ({
+  state: { llm: null as LlmState | null },
+  // 模拟浏览器原生行为：a 内嵌 button 点击的默认动作是跟随祖先 href；
+  // jsdom 不实现该行为，这里以 defaultPrevented 为准计数「原生导航」次数。
+  navProbe: { count: 0 },
+}));
 
 vi.mock("@/providers/RuntimeContext", () => ({
   useRuntime: () => ({ llm: state.llm }),
@@ -35,6 +40,7 @@ function makeLlm(o?: { modelPath?: string; provider?: string }): LlmState {
     error: null,
     ready: false,
     loading: false,
+    generating: false,
     refreshConfig: vi.fn(),
     load: vi.fn(),
     unload: vi.fn(),
@@ -47,7 +53,14 @@ function Probe() {
   return (
     <>
       <div data-testid="location">{location.pathname}</div>
-      <a href="/models/llm" data-testid="row-link" onClick={(e) => e.preventDefault()}>
+      <a
+        href="/models/llm"
+        data-testid="row-link"
+        onClick={(e) => {
+          // 模拟原生「激活祖先 a」：拦截层调用了 preventDefault 则视为已阻止导航。
+          if (!e.defaultPrevented) navProbe.count++;
+        }}
+      >
         <LlmModelSwitchMenu />
       </a>
     </>
@@ -67,22 +80,23 @@ function renderMenu() {
 
 beforeEach(() => {
   dialogProps.last = null;
+  navProbe.count = 0;
   state.llm = makeLlm();
 });
 
 describe("LlmModelSwitchMenu 模型快速切换（弹窗版）", () => {
-  it("模型名文本 + 明显的切换按钮", () => {
+  it("模型名文本 + 与配置页同款「选择模型」按钮", () => {
     renderMenu();
     expect(screen.getByText("qwen3-4b.gguf")).toBeInTheDocument();
-    const button = screen.getByRole("button", { name: "切换 AI 大脑模型" });
-    expect(button).toHaveTextContent("切换");
+    const button = screen.getByRole("button", { name: "选择模型" });
+    expect(button).toHaveTextContent("选择模型");
   });
 
   it("点击切换按钮打开选择模型弹窗", async () => {
     const user = userEvent.setup();
     renderMenu();
 
-    await user.click(screen.getByRole("button", { name: "切换 AI 大脑模型" }));
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
 
     expect(dialogProps.last?.open).toBe(true);
     expect(screen.getByTestId("preset-dialog")).toBeInTheDocument();
@@ -92,30 +106,32 @@ describe("LlmModelSwitchMenu 模型快速切换（弹窗版）", () => {
     const user = userEvent.setup();
     renderMenu();
 
-    await user.click(screen.getByRole("button", { name: "切换 AI 大脑模型" }));
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
     expect(dialogProps.last?.open).toBe(true);
 
     // onClose 触发 setState，等待 stub 以 open=false 重渲染。
     act(() => dialogProps.last?.onClose());
     await waitFor(() => expect(dialogProps.last?.open).toBe(false));
 
-    await user.click(screen.getByRole("button", { name: "切换 AI 大脑模型" }));
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
     await waitFor(() => expect(dialogProps.last?.open).toBe(true));
   });
 
-  it("点击行内按钮/弹窗不触发所在行的链接导航", async () => {
+  it("点击行内按钮/弹窗不触发所在行的链接导航（含原生 href 默认行为）", async () => {
     const user = userEvent.setup();
     renderMenu();
 
-    await user.click(screen.getByRole("button", { name: "切换 AI 大脑模型" }));
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
     expect(screen.getByTestId("preset-dialog")).toBeInTheDocument();
     expect(screen.getByTestId("location")).toHaveTextContent("/models");
+    // 回归：拦截层必须 preventDefault，否则浏览器原生跟随 <a href> 整页跳转。
+    expect(navProbe.count).toBe(0);
   });
 
   it("HTTP API 模式：只显示模型名，无切换按钮与弹窗", () => {
     state.llm = makeLlm({ provider: "openai" });
     renderMenu();
     expect(screen.getByText("qwen3-4b.gguf")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "切换 AI 大脑模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择模型" })).not.toBeInTheDocument();
   });
 });

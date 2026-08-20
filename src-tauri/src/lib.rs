@@ -3925,7 +3925,7 @@ pub fn run() {
                     .hidden_title(true)
                     .shadow(true);
             }
-            // Linux：去掉系统标题栏，保留透明窗口供 CSS 圆角裁出（三键在 Sidebar 左上角）。
+            // Linux：去掉系统标题栏，保留透明窗口供 CSS 圆角裁出（三键悬浮右上角，与 Windows 一致）。
             #[cfg(target_os = "linux")]
             {
                 settings = settings.decorations(false).transparent(true);

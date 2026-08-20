@@ -1,6 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Live2dStage } from "@/components/live2d/Live2dStage";
+import { SharedLive2dStage } from "@/components/live2d/SharedLive2dStage";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { api, onCompanionOpacityChanged, onCompanionScaleChanged, toAssetUrl } from "@/lib/tauri";
@@ -16,14 +16,14 @@ interface CurrentCompanionCardProps {
 /**
  * 概览页「当前伙伴」卡片：顶部名称/使用中徽标与尺寸/透明度控制 + Live2D 实时预览。
  *
- * - 预览复用 `Live2dStage`（与伙伴页同一组件，ResizeObserver 量测容器尺寸），
+ * - 预览复用共享舞台 `SharedLive2dStage`（与伙伴页同一 PIXI 实例，ResizeObserver 量测容器尺寸），
  *   渲染失败时按伙伴重试两次（启动瞬间 GPU 繁忙导致的瞬时失败可自愈），
  *   仍失败才回退 `cover_image` 静态封面，无封面则提示文案；
  * - 尺寸/透明度与伙伴页共用同一持久化状态（settings.toml [live2d].window_scale /
  *   window_opacity），写入后桌宠窗口即时生效；其它入口（滚轮/菜单）改动时经事件同步显示值。
  */
 export function CurrentCompanionCard({ companion, loading, error }: CurrentCompanionCardProps) {
-  // Live2D 预览：量测容器尺寸交给 Live2dStage（PIXI 需要非 0 尺寸）。
+  // Live2D 预览：量测容器尺寸交给 SharedLive2dStage（PIXI 需要非 0 尺寸）。
   const previewRef = useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   // Live2D 挂载尝试（伙伴 id + 次数）：伙伴 id 变化自然重置；失败后隔 1.2s 递增
@@ -48,7 +48,7 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
 
   const handleStageError = useCallback(() => {
     if (!companion) return;
-    // 短暂退避后递增尝试次数：key 变化 → Live2dStage 重挂载重试。
+    // 短暂退避后递增尝试次数：reloadKey 变化 → 共享舞台强制销毁重载模型。
     window.setTimeout(() => {
       setLive2dAttempt((prev) => ({
         id: companion.id,
@@ -135,8 +135,9 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
     );
   } else {
     preview = stageReady ? (
-      <Live2dStage
-        key={`${companion.id}-${attemptFor}`}
+      // reloadKey 等价原 React key 语义：伙伴变化或失败重试时强制销毁重载模型。
+      <SharedLive2dStage
+        reloadKey={`${companion.id}-${attemptFor}`}
         modelUrl={toAssetUrl(companion.model_file)}
         width={previewSize.width}
         height={previewSize.height}

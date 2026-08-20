@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
-import { Live2dStage } from "@/components/live2d/Live2dStage";
+import { SharedLive2dStage } from "@/components/live2d/SharedLive2dStage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -240,7 +240,7 @@ export function CompanionPage() {
     setSelectedId(id);
   }, []);
 
-  // 量测预览容器尺寸，交给 Live2dStage（PIXI 需要非 0 尺寸）。
+  // 量测预览容器尺寸，交给 SharedLive2dStage（PIXI 需要非 0 尺寸）。
   useEffect(() => {
     const el = previewRef.current;
     if (!el) return;
@@ -432,7 +432,7 @@ export function CompanionPage() {
 
             <div ref={previewRef} className="relative min-h-0 flex-1 overflow-hidden">
               {showStage && previewUrl && (
-                <Live2dStage
+                <SharedLive2dStage
                   modelUrl={previewUrl}
                   width={previewSize.width}
                   height={previewSize.height}

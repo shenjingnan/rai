@@ -20,6 +20,11 @@ vi.mock("@/components/llm/LlmPresetDialog", () => ({
   LlmPresetDialog: () => null,
 }));
 
+// KWS 选择模型弹窗同理：stub 避免 useKwsModelSwitch 的 useToast/invoke 依赖。
+vi.mock("@/components/kws/KwsModelDialog", () => ({
+  KwsModelDialog: () => null,
+}));
+
 // LLM 行快速切换菜单依赖 useLlmPresets（内部用 useToast/invoke）；mock 模块避免依赖 Provider。
 const { presetsState } = vi.hoisted(() => ({
   presetsState: {

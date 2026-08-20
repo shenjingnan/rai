@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn test_overlay_parses_and_is_verified() {
         let reg = VerifiedRegistry::builtin();
-        assert_eq!(reg.entries.len(), 17, "应与内置精选一一对应");
+        assert_eq!(reg.entries.len(), 18, "应与内置精选一一对应");
         // 不复制 model_registry 的定义字段：这里只应有验证字段
         assert!(
             reg.all()

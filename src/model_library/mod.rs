@@ -363,7 +363,15 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
     let path_str = path.to_string_lossy().to_string();
     update_settings(|cfg| match mt {
         ModelType::Kws => {
-            cfg.kws.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let kws = cfg.kws.get_or_insert_with(Default::default);
+            kws.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（如 zh-en 的
+            // epoch-13 文件名）会污染新模型的文件探测，交回 resolve 自动探测。
+            kws.encoder = None;
+            kws.decoder = None;
+            kws.joiner = None;
+            kws.tokens = None;
+            kws.keywords_file = None;
         }
         ModelType::Asr => {
             cfg.asr.get_or_insert_with(Default::default).model_dir = Some(path_str);
@@ -527,7 +535,7 @@ fn build_installed_model(
         }
     } else {
         let ok = match mt {
-            ModelType::Kws => crate::kws::model::is_installed(dir),
+            ModelType::Kws => crate::kws::config::kws_files_present(dir),
             ModelType::Asr => crate::asr::is_installed(dir),
             ModelType::Tts => crate::tts::is_installed(dir),
             ModelType::Llm => false,
@@ -784,7 +792,7 @@ fn build_local_model(lm: &LocalModel, sel: &Selections) -> LibraryModel {
                 }
             }
             ModelType::Kws => {
-                if crate::kws::model::is_installed(&path) {
+                if crate::kws::config::kws_files_present(&path) {
                     InstallState::Installed
                 } else {
                     InstallState::Invalid
@@ -888,7 +896,7 @@ fn detect_model_type(path: &Path) -> Option<ModelType> {
         return None;
     }
     let mut found = Vec::new();
-    if crate::kws::model::is_installed(path) {
+    if crate::kws::config::kws_files_present(path) {
         found.push(ModelType::Kws);
     }
     if crate::asr::is_installed(path) {
@@ -1306,6 +1314,44 @@ mod tests {
             // set/restore 不触碰 kws/tts enabled
             assert!(cfg.kws.is_none());
             assert!(cfg.tts.is_none());
+        });
+    }
+
+    #[test]
+    fn test_set_selected_kws_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟 zh-en 时代的手写配置）
+            update_settings(|cfg| {
+                let kws = cfg.kws.get_or_insert_with(Default::default);
+                kws.model_dir = Some("old-model".to_string());
+                kws.encoder = Some("old-encoder.onnx".to_string());
+                kws.decoder = Some("old-decoder.onnx".to_string());
+                kws.joiner = Some("old-joiner.onnx".to_string());
+                kws.tokens = Some("old-tokens.txt".to_string());
+                kws.keywords_file = Some("old-keywords.txt".to_string());
+                kws.enabled = Some(true);
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/wenetspeech");
+            set_selected_model(ModelType::Kws, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let kws = cfg.kws.as_ref().expect("kws 段应存在");
+            assert_eq!(
+                kws.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(kws.encoder, None);
+            assert_eq!(kws.decoder, None);
+            assert_eq!(kws.joiner, None);
+            assert_eq!(kws.tokens, None);
+            assert_eq!(kws.keywords_file, None);
+            // enabled 不受切换影响
+            assert_eq!(kws.enabled, Some(true));
         });
     }
 

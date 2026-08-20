@@ -1,4 +1,4 @@
-import { BellRing, CircleAlert, Download, FolderOpen, Settings2 } from "lucide-react";
+import { BellRing, CircleAlert, Download, FolderOpen, Repeat2, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -7,18 +7,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { useRuntime } from "@/providers/RuntimeContext";
-import { modelNameFromDir } from "./kwsMeta";
+import { isDefaultKwsModelDir, modelNameFromDir } from "./kwsMeta";
 
 interface KwsBasicConfigProps {
   onTestOpen: () => void;
+  /** 打开「选择唤醒词模型」弹窗（由 KwsPage 持有弹窗状态） */
+  onSwitchOpen: () => void;
 }
 
 /**
  * 基础配置（macOS 设置行）：
- * 当前模型（名称 + 就绪/未下载 Badge + 可展开完整路径）/ 麦克风来源 / 自定义唤醒词 +
- * 底部「下载模型 / 测试唤醒词」操作按钮。
+ * 当前模型（名称 + 就绪/未下载 Badge + 切换模型 + 可展开完整路径）/ 麦克风来源 /
+ * 自定义唤醒词 + 底部「下载模型 / 选择模型 / 测试唤醒词」操作按钮。
  */
-export function KwsBasicConfig({ onTestOpen }: KwsBasicConfigProps) {
+export function KwsBasicConfig({ onTestOpen, onSwitchOpen }: KwsBasicConfigProps) {
   const {
     kws,
     devices: { error: devicesError },
@@ -32,6 +34,9 @@ export function KwsBasicConfig({ onTestOpen }: KwsBasicConfigProps) {
   const modelsPresent = config?.models_present ?? false;
   const modelPath = config?.model_dir ?? "";
   const modelName = modelNameFromDir(modelPath);
+  // 当前模型是否为默认 zh-en：只有它才允许用 legacy「下载模型」一键下载
+  // （download_kws_model 固定装 zh-en；其他模型缺失时走「选择模型」弹窗）
+  const isDefaultModel = isDefaultKwsModelDir(modelPath);
 
   const percent =
     progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;
@@ -66,7 +71,9 @@ export function KwsBasicConfig({ onTestOpen }: KwsBasicConfigProps) {
             <CircleAlert className="h-4 w-4" />
             <AlertTitle>模型文件缺失</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">
-              模型文件缺失（{config.model_dir}）。点击下方「下载模型」按钮下载后即可开始监听。
+              {isDefaultModel
+                ? `模型文件缺失（${config.model_dir}）。点击下方「下载模型」按钮下载后即可开始监听。`
+                : `当前模型文件缺失（${config.model_dir}）。点击下方「选择模型」换回已安装模型，或在弹窗中重新下载。`}
             </AlertDescription>
           </Alert>
         </div>
@@ -104,6 +111,16 @@ export function KwsBasicConfig({ onTestOpen }: KwsBasicConfigProps) {
               >
                 {modelsPresent ? "已就绪" : "未下载"}
               </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shadow-none"
+                onClick={onSwitchOpen}
+                aria-label="切换唤醒词模型"
+              >
+                <Repeat2 className="h-3.5 w-3.5" />
+                切换模型
+              </Button>
             </span>
             {showPath && modelPath && (
               <p className="mt-1 truncate font-mono text-xs text-text-muted" title={modelPath}>
@@ -148,12 +165,18 @@ export function KwsBasicConfig({ onTestOpen }: KwsBasicConfigProps) {
       )}
 
       <div className="flex flex-wrap gap-2 border-t border-divider px-3.5 py-2.5">
-        {!modelsPresent && (
-          <Button onClick={download} disabled={busy}>
-            <Download className="h-4 w-4" />
-            {busy ? "下载中…" : "下载模型"}
-          </Button>
-        )}
+        {!modelsPresent &&
+          (isDefaultModel ? (
+            <Button onClick={download} disabled={busy}>
+              <Download className="h-4 w-4" />
+              {busy ? "下载中…" : "下载模型"}
+            </Button>
+          ) : (
+            <Button onClick={onSwitchOpen}>
+              <Download className="h-4 w-4" />
+              选择模型
+            </Button>
+          ))}
         <Button
           variant="secondary"
           className="shadow-none"

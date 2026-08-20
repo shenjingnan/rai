@@ -120,6 +120,79 @@ fn resolve_file(
     }
 }
 
+/// onnx 默认文件名探测：settings 未显式配置某 onnx 文件时按模型目录内容选择。
+///
+/// 规则（确定性）：
+/// 1. 默认常量文件名存在 → 直接用（zh-en 已装用户零行为变化，混放两代文件时偏默认代）；
+/// 2. 否则扫目录中 `{prefix}-` 开头、`.onnx` 结尾、含 `chunk-16` 且非 `.int8` 的文件，
+///    排序取第一个（read_dir 顺序不确定，排序保证确定性；字母序下 epoch-12 优先于 epoch-99）；
+/// 3. 目录不存在或无匹配 → 回退默认常量名（后续预检报「缺少模型文件」，错误路径清晰）。
+fn detect_default_onnx(model_dir: &Path, prefix: &str, fallback: &str) -> String {
+    if model_dir.join(fallback).is_file() {
+        return fallback.to_string();
+    }
+    let Ok(entries) = std::fs::read_dir(model_dir) else {
+        return fallback.to_string();
+    };
+    let mut candidates: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| {
+            n.starts_with(&format!("{prefix}-"))
+                && n.ends_with(".onnx")
+                && n.contains("chunk-16")
+                && !n.contains(".int8")
+        })
+        .collect();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// keywords 默认文件名探测：不同模型包自带的关键词文件名不同，按候选链取第一个存在的。
+fn detect_keywords_rel(model_dir: &Path) -> String {
+    /// 候选链（固定顺序）：zh-en 在前（与 DEFAULT_KEYWORDS_REL 一致），wenetspeech 次之。
+    const CANDIDATES: [&str; 4] = [
+        DEFAULT_KEYWORDS_REL,
+        "test_wavs/test_keywords.txt",
+        "test_keywords.txt",
+        "keywords.txt",
+    ];
+    CANDIDATES
+        .iter()
+        .find(|c| model_dir.join(c).is_file())
+        .copied()
+        .unwrap_or(DEFAULT_KEYWORDS_REL)
+        .to_string()
+}
+
+/// settings 未显式配置某文件字段时的默认名探测入口（tokens 各模型同名，不探测）。
+fn detect_default_name(field: &str, model_dir: &Path, fallback: &str) -> String {
+    match field {
+        "encoder" => detect_default_onnx(model_dir, "encoder", fallback),
+        "decoder" => detect_default_onnx(model_dir, "decoder", fallback),
+        "joiner" => detect_default_onnx(model_dir, "joiner", fallback),
+        "keywords_file" => detect_keywords_rel(model_dir),
+        _ => fallback.to_string(),
+    }
+}
+
+/// 目录内是否探测得到完整的一套 KWS 模型文件（模型无关，替代按 zh-en 文件名硬编码的
+/// [`crate::kws::model::is_installed`]，供模型库 external/HF 导入的完整性判断复用）。
+pub fn kws_files_present(model_dir: &Path) -> bool {
+    let files = [
+        detect_default_onnx(model_dir, "encoder", DEFAULT_ENCODER),
+        detect_default_onnx(model_dir, "decoder", DEFAULT_DECODER),
+        detect_default_onnx(model_dir, "joiner", DEFAULT_JOINER),
+        DEFAULT_TOKENS.to_string(),
+        detect_keywords_rel(model_dir),
+    ];
+    files.iter().all(|f| model_dir.join(f).is_file())
+}
+
 /// 解析模型目录：CLI > settings > 默认。
 fn resolve_model_dir(
     settings: Option<&KwsSettings>,
@@ -161,7 +234,14 @@ pub fn resolve(
             "keywords_file" => s.and_then(|s| s.keywords_file.as_deref()),
             _ => None,
         };
-        resolve_file(value, default_name, &cfg.model_dir)
+        // 未显式配置时按模型目录内容探测默认文件名（不同模型包内文件名不同，
+        // 如 wenetspeech 是 epoch-12 系列 + test_wavs/test_keywords.txt）
+        let detected = if value.is_none() {
+            detect_default_name(field, &cfg.model_dir, default_name)
+        } else {
+            default_name.to_string()
+        };
+        resolve_file(value, &detected, &cfg.model_dir)
     };
 
     cfg.encoder = file("encoder", DEFAULT_ENCODER)?;
@@ -452,5 +532,158 @@ mod tests {
     #[test]
     fn test_parse_keywords_file_missing_file_errors() {
         assert!(parse_keywords_file(Path::new("/nonexistent/kw.txt")).is_err());
+    }
+
+    /// 构造 KWS 模型目录（epoch 系列文件名 + tokens + 关键词文件）。
+    fn fake_model_dir(
+        encoder: &str,
+        decoder: &str,
+        joiner: &str,
+        keywords_rel: &str,
+        extra: &[&str],
+    ) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for f in [encoder, decoder, joiner, "tokens.txt"] {
+            std::fs::write(dir.path().join(f), b"m").unwrap();
+        }
+        let kw = dir.path().join(keywords_rel);
+        std::fs::create_dir_all(kw.parent().unwrap()).unwrap();
+        std::fs::write(kw, "n ǐ h ǎo @你好").unwrap();
+        for f in extra {
+            std::fs::write(dir.path().join(f), b"m").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn test_resolve_detects_wenetspeech_layout() {
+        // wenetspeech：epoch-12 三件套 + test_wavs/test_keywords.txt
+        let dir = fake_model_dir(
+            "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "test_wavs/test_keywords.txt",
+            &[],
+        );
+        let settings = KwsSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            ..KwsSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(
+            cfg.encoder,
+            dir.path()
+                .join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.decoder,
+            dir.path()
+                .join("decoder-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.joiner,
+            dir.path()
+                .join("joiner-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(cfg.tokens, dir.path().join("tokens.txt"));
+        assert_eq!(
+            cfg.keywords_file,
+            dir.path().join("test_wavs/test_keywords.txt")
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_layout_prefers_constant_names() {
+        // zh-en 布局：默认常量名存在 → 全部命中常量（既有用户零行为变化）
+        let dir = fake_model_dir(
+            DEFAULT_ENCODER,
+            DEFAULT_DECODER,
+            DEFAULT_JOINER,
+            DEFAULT_KEYWORDS_REL,
+            &[],
+        );
+        let settings = KwsSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            ..KwsSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.encoder, dir.path().join(DEFAULT_ENCODER));
+        assert_eq!(cfg.decoder, dir.path().join(DEFAULT_DECODER));
+        assert_eq!(cfg.joiner, dir.path().join(DEFAULT_JOINER));
+        assert_eq!(cfg.keywords_file, dir.path().join(DEFAULT_KEYWORDS_REL));
+    }
+
+    #[test]
+    fn test_detect_prefers_non_int8_and_earliest_epoch() {
+        // epoch-12 fp32 与 int8、epoch-99 fp32 并存 → 排序后取 epoch-12 fp32
+        let dir = fake_model_dir(
+            "encoder-epoch-99-avg-1-chunk-16-left-64.onnx",
+            DEFAULT_DECODER,
+            DEFAULT_JOINER,
+            DEFAULT_KEYWORDS_REL,
+            &[
+                "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+                "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+                "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+            ],
+        );
+        let enc = detect_default_onnx(dir.path(), "encoder", DEFAULT_ENCODER);
+        assert_eq!(enc, "encoder-epoch-12-avg-2-chunk-16-left-64.onnx");
+    }
+
+    #[test]
+    fn test_detect_int8_only_falls_back_to_constant() {
+        // 目录里只有 int8 变体（非默认布局）→ 回退常量名
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path()
+                .join("encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
+            b"m",
+        )
+        .unwrap();
+        let enc = detect_default_onnx(dir.path(), "encoder", DEFAULT_ENCODER);
+        assert_eq!(enc, DEFAULT_ENCODER);
+    }
+
+    #[test]
+    fn test_detect_missing_dir_falls_back_to_constant() {
+        // 目录不存在 → 回退常量名（与 resolve 既有行为一致，报错路径清晰）
+        let enc = detect_default_onnx(Path::new("/nonexistent-kws"), "encoder", DEFAULT_ENCODER);
+        assert_eq!(enc, DEFAULT_ENCODER);
+        assert_eq!(
+            detect_keywords_rel(Path::new("/nonexistent-kws")),
+            DEFAULT_KEYWORDS_REL
+        );
+    }
+
+    #[test]
+    fn test_detect_keywords_candidate_chain() {
+        // 仅根目录 keywords.txt（部分模型包布局）→ 候选链兜底命中
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keywords.txt"), b"k").unwrap();
+        assert_eq!(detect_keywords_rel(dir.path()), "keywords.txt");
+    }
+
+    #[test]
+    fn test_kws_files_present() {
+        // wenetspeech 完整目录 → true；缺 encoder → false；空目录 → false
+        let dir = fake_model_dir(
+            "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "test_wavs/test_keywords.txt",
+            &[],
+        );
+        assert!(kws_files_present(dir.path()));
+        std::fs::remove_file(
+            dir.path()
+                .join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx"),
+        )
+        .unwrap();
+        assert!(!kws_files_present(dir.path()));
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!kws_files_present(empty.path()));
+        assert!(!kws_files_present(Path::new("/nonexistent-kws")));
     }
 }

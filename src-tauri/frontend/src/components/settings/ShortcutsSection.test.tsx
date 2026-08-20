@@ -36,14 +36,10 @@ describe("ShortcutsSection", () => {
       return Promise.resolve();
     });
     renderSection();
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("get_shortcuts"),
-    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_shortcuts"));
     // 已绑定显示 accelerator（含主键 Z），未绑定显示「未设置」
     expect(screen.getByLabelText("设置 显示/隐藏桌宠 快捷键").textContent).toContain("Z");
-    expect(screen.getByLabelText("设置 语音会话 开/关 快捷键").textContent).toContain(
-      "未设置",
-    );
+    expect(screen.getByLabelText("设置 语音会话 开/关 快捷键").textContent).toContain("未设置");
   });
 
   it("录制：点击后按键组合 → 调 set_shortcut 并更新展示", async () => {
@@ -84,35 +80,28 @@ describe("ShortcutsSection", () => {
 
   it("应用内冲突：同键已绑定其他操作 → 本地拦截提示，不发请求", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "get_shortcuts")
-        return Promise.resolve({ interrupt_reply: "CmdOrCtrl+Shift+V" });
+      if (cmd === "get_shortcuts") return Promise.resolve({ interrupt_reply: "CmdOrCtrl+Shift+V" });
       return Promise.resolve();
     });
     renderSection();
     await screen.findByLabelText("设置 打断播报 快捷键");
     fireEvent.click(screen.getByLabelText("设置 语音会话 开/关 快捷键"));
     keyDown("KeyV", { metaKey: true, shiftKey: true });
-    await waitFor(() =>
-      expect(screen.getByText(/已绑定到「打断播报」/)).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText(/已绑定到「打断播报」/)).toBeTruthy());
     expect(invokeMock).not.toHaveBeenCalledWith("set_shortcut", expect.anything());
   });
 
   it("后端注册失败：显示错误且原绑定不变", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "get_shortcuts")
-        return Promise.resolve({ open_settings: "CmdOrCtrl+Shift+O" });
-      if (cmd === "set_shortcut")
-        return Promise.reject("注册失败，可能已被其他应用占用");
+      if (cmd === "get_shortcuts") return Promise.resolve({ open_settings: "CmdOrCtrl+Shift+O" });
+      if (cmd === "set_shortcut") return Promise.reject("注册失败，可能已被其他应用占用");
       return Promise.resolve();
     });
     renderSection();
     await screen.findByLabelText("设置 打开设置 快捷键");
     fireEvent.click(screen.getByLabelText("设置 打开设置 快捷键"));
     keyDown("KeyP", { metaKey: true, shiftKey: true });
-    await waitFor(() =>
-      expect(screen.getByText(/注册失败/)).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText(/注册失败/)).toBeTruthy());
     expect(screen.getByLabelText("设置 打开设置 快捷键").textContent).toContain("O");
   });
 
@@ -130,9 +119,7 @@ describe("ShortcutsSection", () => {
       }),
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("设置 显示/隐藏桌宠 快捷键").textContent).toContain(
-        "未设置",
-      ),
+      expect(screen.getByLabelText("设置 显示/隐藏桌宠 快捷键").textContent).toContain("未设置"),
     );
   });
 });

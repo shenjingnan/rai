@@ -203,6 +203,12 @@ impl VoiceSession {
         }
     }
 
+    /// 外部打断标志的克隆：宿主（Tauri 全局快捷键）持有并置位后，
+    /// 会话编排循环在 Thinking/Speaking 阶段执行 `do_barge_in`（停生成/合成/播放，回 Armed）。
+    pub fn barge_in_flag(&self) -> Arc<AtomicBool> {
+        self.barge_in.clone()
+    }
+
     /// 运行会话主循环（阻塞直到停止）。
     pub fn run(&mut self) -> Result<(), String> {
         // 共享引擎已加载（Tauri LlmState）则跳过；CLI 自建引擎未加载则阻塞加载

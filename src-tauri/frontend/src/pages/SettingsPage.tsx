@@ -170,7 +170,7 @@ export function SettingsPage() {
   const storageBusy = migrating || storageLoading;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-4">
       <h1 className="text-2xl font-semibold tracking-tight text-text-primary">设置</h1>
 
       <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">

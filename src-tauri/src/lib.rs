@@ -2439,9 +2439,13 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "hide_companion" => hide_companion_window(app),
         "restart" => app.request_restart(),
         "quit" => app.exit(0),
-        // 点击穿透取反当前值（勾选菜单项语义：点一下切换开关）。
-        "click_through" => {
-            let _ = apply_companion_click_through(app, !current_companion_click_through());
+        // 点击穿透：菜单按当前状态显示「启用/禁用」项，点击后应用固定值（幂等，
+        // 不受菜单事件重复派发影响）。
+        "enable_click_through" => {
+            let _ = apply_companion_click_through(app, true);
+        }
+        "disable_click_through" => {
+            let _ = apply_companion_click_through(app, false);
         }
         _ => {
             if let Some(scale) = scale_from_id(id) {
@@ -2540,17 +2544,27 @@ fn current_companion_click_through() -> bool {
     }
 }
 
-/// 构建「点击穿透」勾选项（角色右键菜单与托盘菜单共用）。
+/// 构建「点击穿透」菜单项（角色右键菜单与托盘菜单共用）。
 ///
-/// 构建时读当前 settings 打勾；右键菜单每次弹出前重建、托盘菜单在每次 apply 时
-/// `rebuild_tray_menu`，勾选态与实际状态保持一致。
-fn build_click_through_item(app: &AppHandle) -> tauri::Result<CheckMenuItem<tauri::Wry>> {
-    CheckMenuItem::with_id(
+/// 按当前状态显示「启用点击穿透」或「禁用点击穿透」的普通菜单项，点击后
+/// `handle_menu` 应用固定值（不取反）。不用 CheckMenuItem：其 checked 自动切换
+/// 与取反逻辑叠加，一次点击可能触发正反两个 apply（如 15:21 日志所示），
+/// 净效果为零，表现为「点击无效」。
+fn build_click_through_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let enabled = current_companion_click_through();
+    MenuItem::with_id(
         app,
-        "click_through",
-        "点击穿透",
+        if enabled {
+            "disable_click_through"
+        } else {
+            "enable_click_through"
+        },
+        if enabled {
+            "禁用点击穿透"
+        } else {
+            "启用点击穿透"
+        },
         true,
-        current_companion_click_through(),
         None::<&str>,
     )
 }
@@ -4263,10 +4277,13 @@ pub fn run() {
             let tray_icon =
                 tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
                     .expect("托盘图标加载失败");
+            // 菜单事件统一由 app 级 on_menu_event 处理（见下方 Builder::on_menu_event）。
+            // 不可在 TrayIcon 上再注册 on_menu_event：tauri 会把 TrayIcon 的 handler
+            // 也注册到全局菜单监听器，与 app 级并列，导致每个菜单事件被 handle_menu
+            // 处理两次（CheckMenuItem 取反因此净效果为零，表现为点击无效）。
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .menu(&tray_menu)
-                .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
                 .build(app)?;
 
             // 注册用户自定义全局快捷键（[shortcuts] 分节；单个失败仅告警）

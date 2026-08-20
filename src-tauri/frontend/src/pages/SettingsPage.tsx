@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
 import { formatBytes } from "@/components/library/libraryMeta";
+import { ShortcutsSection } from "@/components/settings/ShortcutsSection";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -402,6 +403,9 @@ export function SettingsPage() {
           )}
         </dl>
       </section>
+
+      {/* 快捷键 */}
+      <ShortcutsSection />
 
       {/* 更改目录确认框 */}
       <LibraryDialog

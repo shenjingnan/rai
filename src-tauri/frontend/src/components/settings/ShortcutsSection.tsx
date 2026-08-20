@@ -31,7 +31,7 @@ export function ShortcutsSection() {
   useEffect(() => {
     void api
       .getShortcuts()
-      .then(setBindings)
+      .then((b) => setBindings(b ?? {}))
       .catch(() => {});
   }, []);
 

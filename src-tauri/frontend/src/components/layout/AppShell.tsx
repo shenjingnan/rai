@@ -5,8 +5,9 @@ import { Sidebar } from "./Sidebar";
 import { WindowControls } from "./WindowControls";
 
 /** 统一 App Shell：无标题栏。
- * macOS 红绿灯由系统绘制（Sidebar 左上留白）；Linux/Windows 顶部透明拖拽条
- * 拉通全宽（整条可拖动窗口），三键靠右。 */
+ * 三平台顶部透明拖拽条拉通全宽（整条可拖动窗口）：Linux/Windows 三键靠右；
+ * macOS 无三键（系统红绿灯为原生控件，层级在 webview 之上不受影响；
+ * Overlay 标题栏下原生拖拽区被 webview 覆盖，拖拽须由 HTML 拖拽区承担）。 */
 export function AppShell() {
   const mac = isMacOs();
   const windows = isWindows();
@@ -22,16 +23,14 @@ export function AppShell() {
         windows && "border border-window-border",
       )}
     >
-      {/* Linux/Windows：透明悬浮顶部条拉通全宽（整条可拖拽窗口），三键靠右，
+      {/* 三平台：透明悬浮顶部条拉通全宽（整条可拖拽窗口），三键靠右（仅非 macOS），
           不占布局、无标题栏背景。 */}
-      {!mac && (
-        <div
-          data-tauri-drag-region
-          className="absolute left-0 right-0 top-0 z-10 flex h-9 items-center justify-end"
-        >
-          <WindowControls />
-        </div>
-      )}
+      <div
+        data-tauri-drag-region
+        className="absolute left-0 right-0 top-0 z-10 flex h-9 items-center justify-end"
+      >
+        {!mac && <WindowControls />}
+      </div>
       <Sidebar />
       <MainPanel />
     </div>

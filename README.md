@@ -6,7 +6,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
-> 📚 中文文档：[文档站](docs/)，含快速开始、KWS、配置、桌面应用与开发指南。
+> 📚 中文文档：[文档站](docs/)，含快速开始、KWS / ASR / TTS / LLM、配置、桌面应用与贡献指南。
 
 <div align="center">
   <img src="docs/public/screenshots/home.png" alt="ZapMomo 桌面应用概览页" width="760" />
@@ -22,16 +22,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **语音会话（Voice）** — 一句话唤醒 → 语音识别 → LLM 句级流式回复 → TTS 实时播报，支持唤醒词打断与免唤醒续聊
 - **Live2D 虚拟角色** — 桌面应用常驻角色窗口（Cubism 2/3/4/5），位置记忆与百分比缩放，拖动不抢焦点
 - **桌面应用** — 基于 Tauri 2 的 GUI（概览 / 对话 / 伙伴 / 模型 / 设置多页面控制面板 + 常驻角色窗口），Windows / macOS / Linux 三平台安装包
-- **音频采集** — 基于 cpal 的麦克风采集 + 自动重采样（设备采样率 → 16k）
-- **CLI 骨架** — 基于 clap 的命令行参数解析，支持子命令和 Shell 补全生成
-- **异步运行时** — 集成 tokio，开箱即用的 async/await 支持
-- **配置管理** — TOML 格式的配置文件读写，支持 `${env.VAR}` 环境变量引用
-- **双层日志** — 基于 tracing 的日志系统，同时输出到文件和 stderr
-- **日期时间工具** — 基于 chrono 的常用时间格式转换函数
-- **测试支持** — 集成 tempfile 的测试隔离辅助工具
-- **代码质量** — cargo fmt / clippy / typos / tarpaulin / codecov 一站式配置
-- **CI/CD** — GitHub Actions 自动化测试、发布、覆盖率报告
-- **Shell 补全** — 支持 bash / zsh / fish / powershell / elvish 自动补全
+- **CLI** — `kws` / `asr` / `tts` / `llm` / `voice` 子命令覆盖全部能力，支持 bash / zsh / fish / powershell / elvish 自动补全
 
 ## 下载桌面应用
 
@@ -59,22 +50,6 @@ xattr -cr "/Applications/Zap Momo.app"
 ```
 
 随后启动即可正常打开。若 App 不在「应用程序」，把命令里的路径换成实际位置；或右键 App →「打开」→ 再次点击「打开」。
-
-## 快速开始
-
-```bash
-# 运行
-cargo run
-cargo run -- config
-cargo run -- greet --name World
-
-# 测试
-cargo test
-
-# 代码质量检查
-cargo fmt --check
-cargo clippy -- -D warnings
-```
 
 ## 关键词唤醒词（KWS）
 
@@ -151,16 +126,6 @@ L AY1 T AH1 P @LIGHT_UP                  # 英文：ARPAbet 音素
 ```
 
 v1 默认使用模型自带的中英混合关键词集（见 `test_wavs/keywords.txt`）。
-
-### 测试
-
-```bash
-# 常规测试（不依赖模型）
-cargo test -- --test-threads=1
-
-# 模型相关测试（需先下载模型）
-./scripts/run-kws-model-tests.sh
-```
 
 ## 语音识别（ASR）
 
@@ -379,31 +344,18 @@ welcome_text = "你好，我在。"  # 唤醒后的欢迎语
 - **常驻角色窗口** — Live2D 虚拟角色独立悬浮，见下文「Live2D 虚拟角色」
 - **语音会话** — 唤醒 → 对话 → 语音回复全链路，见上文「语音会话」
 
-代码在 `src-tauri/`，前端为 React + Vite + TypeScript（Tailwind CSS + shadcn/ui，构建产物打包进应用）。
-
-```bash
-# 安装 Tauri CLI（首次）
-pnpm install
-
-# 开发模式（热重载，需已下载模型：cargo run -- kws install-model）
-pnpm tauri dev
-
-# 构建当前平台的安装包（macOS 产出 .app/.dmg）
-pnpm tauri build
-```
+桌面端代码在 `src-tauri/`（前端为 React + Vite + TypeScript）。开发模式与构建安装包（`pnpm tauri dev` / `pnpm tauri build`）见[贡献指南](docs/content/docs/contributing/index.mdx)。
 
 > 打包版内置「下载模型」按钮：首次使用时若缺模型，在「配置」面板点击即可自动
 > 下载到 `~/.zapmomo/models/<模型名>`（KWS / ASR / TTS 均可，也可用
-> `zapmomo kws|asr|tts install-model`）。
-> macOS 安装包未签名，每次下载后首次启动若被 Gatekeeper 拦截，先拖入「应用程序」后执行
-> `xattr -cr "/Applications/Zap Momo.app"`（或右键 →「打开」）。详见上文「下载桌面应用」。
+> `zapmomo kws|asr|tts install-model`）。macOS 未签名安装包的打开方式见上文「macOS 首次打开」。
 
 ### 一键重启
 
 设置面板「通用」、角色右键菜单与托盘菜单均提供「重启」：退出后自动重新拉起，用于应用需要重启才能生效的配置。
 
 - **打包版（生产）** — 正常：前端资源内置（`asset://`），重启后直接加载。
-- **开发模式（`pnpm tauri dev`）** — 重启后新进程会**白屏**。原因：Tauri 内置重启只重新拉起应用二进制、不重跑 `beforeDevCommand`，而 `tauri dev` 在应用退出时会连同 Vite dev server 一起拆掉（[tauri#6163](https://github.com/tauri-apps/tauri/issues/6163)），新进程连不上 `localhost:1420`。需要重启效果时请手动重跑 `pnpm tauri dev`。
+- **开发模式（`pnpm tauri dev`）** — 重启后新进程会**白屏**（Tauri 已知问题 [tauri#6163](https://github.com/tauri-apps/tauri/issues/6163)），需要重启效果时请手动重跑 `pnpm tauri dev`，详见[贡献指南](docs/content/docs/contributing/index.mdx)。
 
 ### Live2D 虚拟角色
 
@@ -424,119 +376,14 @@ window_position = { x = 100, y = 100 }   # 角色窗口位置记忆
 window_scale = 1.0                       # 窗口缩放（0.25 ~ 2.0）
 ```
 
-## 发布流程
+## 参与贡献
 
-每次发布新版本会自动构建 **Windows / macOS（Intel+Apple Silicon）/ Linux** 安装包并合并到一个 GitHub Release：
+欢迎为 ZapMomo 贡献代码！以下内容面向贡献者，已整理到文档站：
 
-1. 合入 `main` 后，`publish.yml` 中的 release-plz 自动 bump 版本、更新 changelog，打出 `vX.Y.Z` tag 并发布到 crates.io，同时维护「版本发布 PR」。
-2. tag push 触发 `release.yml`：在三个平台的原生 runner 上运行 `tauri-action` 构建安装包（`.dmg` / `.app.tar.gz` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`）。
-3. 构建成功后自动发布为正式 Release（`draft: false`，不再停留在草稿）。
-
-发布产物矩阵：
-
-| 平台 | 安装包 |
-|------|--------|
-| macOS (Apple Silicon) | `.dmg` + `.app.tar.gz` |
-| macOS (Intel) | `.dmg` + `.app.tar.gz` |
-| Windows x64 | `.msi` + `.exe`（NSIS） |
-| Linux x64 | `.deb` + `.rpm` + `.AppImage` |
-
-> 签名：当前为未签名构建，适合内部/测试分发。正式对外发布时在仓库 Secrets 配置
-> Apple Developer ID 证书（`APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID`）
-> 与 Windows 证书后，tauri-action 会自动签名/公证。
-
-## 项目结构
-
-```
-├── Cargo.toml           # 项目配置和依赖（workspace 根）
-├── rust-toolchain.toml  # Rust 工具链版本（1.97.1）
-├── src/
-│   ├── main.rs          # 入口文件
-│   ├── lib.rs           # 库入口 + 测试工具（test_util 临时 HOME 隔离）
-│   ├── cli.rs           # CLI 命令定义（kws / asr / tts / llm / voice）
-│   ├── config/
-│   │   ├── mod.rs       # 配置模块入口
-│   │   └── settings.rs  # TOML 配置管理（含 [kws]/[asr]/[tts]/[llm]/[voice]/[live2d] 段）
-│   ├── kws/             # 关键词唤醒词检测（sherpa-onnx）
-│   │   ├── mod.rs       # KwsEngine + 离线/实时检测
-│   │   ├── config.rs    # KWS 配置解析与默认值
-│   │   ├── model.rs     # 模型下载 / sha256 校验 / 解压安装
-│   │   ├── token.rs     # 汉字 → ppinyin token 转换
-│   │   ├── english.rs   # 英文关键词 → ARPAbet 音素
-│   │   └── reaction.rs  # Reaction 可插拔反应（控制台 / GUI / 测试）
-│   ├── asr/             # 语音识别（sherpa-onnx 流式转写）
-│   │   ├── mod.rs       # AsrEngine + 离线/实时转写
-│   │   ├── config.rs    # ASR 配置解析与默认值
-│   │   └── reaction.rs  # Reaction 可插拔反应
-│   ├── tts/             # 文本转语音（sherpa-onnx ZipVoice）
-│   │   ├── mod.rs       # TtsEngine + 离线合成
-│   │   ├── config.rs    # TTS 配置解析与默认值
-│   │   ├── voice.rs     # 内置音色解析
-│   │   └── reaction.rs  # Reaction 可插拔反应
-│   ├── llm/             # 本地大语言模型（llama.cpp）
-│   │   ├── mod.rs       # LlmEngine 门面 + 事件 channel
-│   │   ├── config.rs    # LLM 配置解析与默认值
-│   │   ├── local/       # LocalLlamaProvider（llama.cpp 后端）
-│   │   ├── http.rs      # OpenAI 兼容 Responses API provider
-│   │   ├── agent.rs     # Agent 循环 + 工具调用
-│   │   ├── provider.rs  # LlmProvider trait
-│   │   └── tools.rs     # 工具运行时
-│   ├── voice/           # 语音会话编排（KWS→ASR→LLM→TTS 全链路）
-│   │   ├── mod.rs       # 会话模块入口 + CLI 运行
-│   │   ├── session.rs   # 会话状态机与事件循环（唤醒/聆听/思考/播报）
-│   │   ├── listen.rs    # 唤醒/聆听监听（KWS + ASR）
-│   │   ├── splitter.rs  # LLM 流式 token 断句
-│   │   ├── synthesizer.rs # TTS 句级合成线程
-│   │   ├── player.rs    # 音频播报（rodio Sink）
-│   │   ├── records.rs   # 对话记录持久化
-│   │   ├── events.rs    # 会话事件
-│   │   ├── state.rs     # 会话状态
-│   │   └── config.rs    # [voice] 配置解析
-│   ├── companion.rs     # 伙伴库（Live2D 模型集合 + 当前使用项）
-│   ├── model_library/   # 模型库核心服务（catalog / 安装 / 下载 / 选择）
-│   ├── live2d/          # Live2D 角色模型定位
-│   │   ├── mod.rs
-│   │   └── config.rs    # [live2d] 配置解析
-│   ├── audio.rs         # cpal 麦克风采集 + 重采样
-│   ├── logging.rs       # tracing 双层日志
-│   └── datetime.rs      # 日期时间工具
-├── models/              # 模型资产（本体不入库，按清单下载）
-│   ├── manifest.json    # 模型清单（source / sha256 / license）
-│   └── THIRD_PARTY_NOTICES.md
-├── src-tauri/           # Tauri 2 桌面应用（workspace 成员）
-│   ├── src/lib.rs       # commands + 监听线程 + TauriReaction
-│   ├── frontend/        # React + Vite + TypeScript 多页面控制面板（Tailwind + shadcn/ui）
-│   ├── tauri.conf.json  # Tauri 配置（打包目标/图标/权限文案）
-│   ├── capabilities/    # 权限声明
-│   └── icons/           # 应用图标
-├── tests/               # 集成测试
-├── package.json         # Tauri CLI（@tauri-apps/cli）
-├── scripts/             # 模型下载 / 模型测试 / 图标生成等脚本
-├── .github/             # CI / 发布流水线 / Issue 模板
-└── .githooks/           # Git hooks
-```
-
-## 依赖说明
-
-| 分类 | Crate | 用途 |
-|------|-------|------|
-| 核心 | clap / clap_complete | CLI 参数解析 / Shell 补全生成 |
-| 核心 | tokio | 异步运行时 |
-| 核心 | serde / serde_json / toml | 序列化 |
-| 核心 | chrono | 日期时间处理 |
-| 核心 | tracing / tracing-subscriber | 日志 |
-| 核心 | thiserror / anyhow | 错误处理 |
-| KWS | sherpa-onnx | 唤醒词检测 / 语音识别 / 文本转语音（预编译库） |
-| KWS | cpal | 麦克风音频采集 |
-| KWS | pinyin | 汉字 → 带声调拼音（自定义关键词自动转换） |
-| LLM | llama-cpp-2 | 本地大语言模型推理（llama.cpp Rust 绑定） |
-| LLM | encoding_rs | token 逐字节解码（llama-cpp-2 UTF-8 decoder） |
-| LLM | reqwest | OpenAI 兼容 HTTP provider（`/v1/responses`） |
-| Voice | rodio | 音频播报（Sink 句级流式播放） |
-| Voice | ctrlc | Ctrl-C 优雅退出（语音会话） |
-| 模型下载 | ureq | HTTP 客户端（模型下载） |
-| 模型下载 | sha2 / hex | 下载模型的 sha256 校验 |
-| 模型下载 | tar / bzip2 | 解压 tar.bz2 模型包 |
+- [参与贡献](docs/content/docs/contributing/index.mdx) — 开发环境搭建、常用命令、测试与 Git 工作流
+- [项目结构](docs/content/docs/development/project-structure.mdx) — 仓库目录树与各模块职责
+- [依赖说明](docs/content/docs/development/dependencies.mdx) — 各 crate 依赖的用途
+- [发布流程](docs/content/docs/contributing/release.mdx) — release-plz + tauri-action 三平台自动构建
 
 ## 许可
 

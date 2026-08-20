@@ -29,6 +29,10 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.1
 
+      - name: Cache cargo build artifacts
+        # cargo publish 的编译验证较重（llama-cpp-2 / sherpa-onnx 等），缓存加速
+        uses: Swatinem/rust-cache@v2
+
       - name: Run release-plz (create tag + publish to crates.io)
         id: release
         uses: release-plz/action@v0.5

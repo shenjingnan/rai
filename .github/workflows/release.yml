@@ -83,11 +83,13 @@ jobs:
         # rustup target add 运行于项目目录，遵循 override 装到激活的工具链上。
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Cache sherpa-onnx prebuilt libs
-        uses: actions/cache@v6
+      - name: Cache cargo build artifacts
+        # 缓存 ~/.cargo + target/（含 sherpa-onnx 预编译库，解压目录名含版本号，
+        # 恢复旧缓存不会版本错配）。macOS 双 target 矩阵用 args 区分缓存线，
+        # 避免两个矩阵条目写同一 key 互相覆盖导致另一半永远冷缓存。
+        uses: Swatinem/rust-cache@v2
         with:
-          path: target/sherpa-onnx-prebuilt
-          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          prefix-key: v0-rust-${{ matrix.args }}
 
       - uses: tauri-apps/tauri-action@v1
         with:

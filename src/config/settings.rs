@@ -520,6 +520,9 @@ pub struct Live2dSettings {
     /// 角色窗口透明度（1.0 = 不透明；缺省视为 1.0）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_opacity: Option<f64>,
+    /// 角色窗口点击穿透（true = 鼠标事件全部穿透到身后窗口；缺省视为 false）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_through: Option<bool>,
 }
 
 /// 本地 LLM 配置。
@@ -1046,21 +1049,25 @@ mod tests {
             window_position: Some(CompanionWindowPosition { x: 120, y: 800 }),
             window_scale: Some(1.5),
             window_opacity: Some(0.6),
+            click_through: Some(true),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
+        assert!(toml_str.contains("click_through = true"));
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(live2d, deserialized);
-        // 未记录位置/比例时字段应被 skip_serializing_if 忽略
+        // 未记录位置/比例/穿透时字段应被 skip_serializing_if 忽略
         let none_pos = Live2dSettings {
             model_dir: Some("/tmp/some-model".to_string()),
             window_position: None,
             window_scale: None,
             window_opacity: None,
+            click_through: None,
         };
         let none_toml = toml::to_string(&none_pos).unwrap();
         assert!(!none_toml.contains("window_position"));
         assert!(!none_toml.contains("window_scale"));
         assert!(!none_toml.contains("window_opacity"));
+        assert!(!none_toml.contains("click_through"));
     }
 
     #[test]
@@ -1070,6 +1077,8 @@ mod tests {
             let result = load_settings().unwrap().unwrap();
             let live2d = result.live2d.unwrap();
             assert_eq!(live2d.model_dir.as_deref(), Some("/tmp/model-dir"));
+            // 旧版配置无 click_through 字段 → 反序列化回退 None（视为关闭）。
+            assert_eq!(live2d.click_through, None);
         });
     }
 

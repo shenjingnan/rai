@@ -183,6 +183,8 @@ export const api = {
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
   setCompanionOpacity: (args: { opacity: number }) => invoke<void>("set_companion_opacity", args),
+  setCompanionClickThrough: (args: { enabled: boolean }) =>
+    invoke<void>("set_companion_click_through", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),

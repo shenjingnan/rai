@@ -8,14 +8,16 @@ import {
   RefreshCw,
   Volume2,
 } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   deriveListenerStatus,
   type ListenerKind,
   type ListenerStatus,
 } from "@/components/models/capabilityStatus";
+import { LlmModelSwitchMenu } from "@/components/models/LlmModelSwitchMenu";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
 
@@ -54,12 +56,14 @@ interface SummaryRowData {
   accent: string;
   icon: LucideIcon;
   name: string;
-  model: string;
-  runtime: string;
-  path: string | null;
+  /** 模型名（字符串）或自定义展示（LLM 行为快速切换下拉）。 */
+  model: ReactNode;
   statusText: string;
   statusTone: StatusTone;
   gearHref?: string;
+  toggled: boolean;
+  onToggle: () => void;
+  toggleDisabled?: boolean;
 }
 
 /** 模型摘要单行：整行可点击进入对应配置页；右侧状态 + chevron 指示。 */
@@ -78,19 +82,24 @@ function SummaryRow({ row }: { row: SummaryRowData }) {
         <p className="truncate text-xs text-text-secondary">{row.model}</p>
       </div>
 
-      <div className="hidden min-w-0 flex-1 flex-col items-end gap-0.5 sm:flex">
-        <p className="text-xs text-text-secondary">{row.runtime}</p>
-        {row.path && (
-          <p
-            className="max-w-[240px] truncate font-mono text-[11px] text-text-muted"
-            title={row.path}
-          >
-            {row.path}
-          </p>
-        )}
-      </div>
-
       <div className="flex shrink-0 items-center gap-3">
+        {/* 行内开关：拦截点击冒泡，避免触发整行 Link 导航到配置页 */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: 静态容器仅拦截鼠标冒泡，交互由内部 Switch 承载 */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: 仅拦截点击冒泡防误触导航，键盘交互由内部 Switch 处理 */}
+        <span
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <Switch
+            checked={row.toggled}
+            onCheckedChange={row.onToggle}
+            disabled={row.toggleDisabled}
+            trackClass="bg-emerald-500"
+            aria-label={`${row.name}开关`}
+          />
+        </span>
         <span
           className={cn(
             "flex items-center gap-1.5 whitespace-nowrap text-xs",
@@ -124,7 +133,7 @@ function SummaryRow({ row }: { row: SummaryRowData }) {
 
 /** 模型摘要：分组 List（macOS Settings 风格），非 DataTable。 */
 export function ModelSummary() {
-  const { kws, asr, llm, tts } = useRuntime();
+  const { kws, asr, llm, tts, device, sessionKeywords } = useRuntime();
   const [refreshing, setRefreshing] = useState(false);
 
   const refreshAll = async () => {
@@ -146,6 +155,32 @@ export function ModelSummary() {
   const kwsConfigured = kws.config?.config?.models_present ?? false;
   const ttsConfigured = tts.config?.models_present ?? false;
   const ttsEnabled = tts.config?.enabled ?? true;
+
+  // KWS/ASR 开关绑定**持久化 enabled**（模型与能力页启用/禁用能力，重启保持）
+  const asrOn = asr.config?.config?.enabled ?? false;
+  const kwsOn = kws.config?.config?.enabled ?? false;
+
+  /** KWS 开关：持久化「启用」+ 立即开始/停止监听（与配置页 KwsRunControl 一致）。 */
+  const handleKwsToggle = () => {
+    if (kwsOn) {
+      if (kws.listening.isListening) void kws.listening.stop();
+      void kws.config.setEnabled(false);
+    } else {
+      void kws.config.setEnabled(true);
+      void kws.listening.start(device || null, sessionKeywords || null);
+    }
+  };
+
+  /** ASR 开关：持久化「启用」+ 立即开始/停止识别（与配置页一致）。 */
+  const handleAsrToggle = () => {
+    if (asrOn) {
+      if (asr.listening.isListening) void asr.listening.stop();
+      void asr.config.setEnabled(false);
+    } else {
+      void asr.config.setEnabled(true);
+      void asr.listening.start(device || null);
+    }
+  };
 
   // KWS/ASR 行状态：共享推导读取持久化 enabled（启用→已就绪，关闭→未启用）。
   const kwsSummary = listenerRow(
@@ -174,30 +209,28 @@ export function ModelSummary() {
       icon: AudioWaveform,
       name: "唤醒词（KWS）",
       model: kwsConfigured ? basename(kws.config?.config?.model_dir ?? "") : "未配置模型",
-      runtime: "sherpa-onnx",
-      path: kwsConfigured ? (kws.config?.config?.model_dir ?? null) : null,
       statusText: kwsSummary.text,
       statusTone: kwsSummary.tone,
       gearHref: "/models/kws",
+      toggled: kwsOn,
+      onToggle: handleKwsToggle,
     },
     {
       accent: "bg-blue-100 text-blue-600",
       icon: Mic,
       name: "语音识别（ASR）",
       model: asrConfigured ? basename(asr.config?.config?.model_dir ?? "") : "未配置模型",
-      runtime: "sherpa-onnx",
-      path: asrConfigured ? (asr.config?.config?.model_dir ?? null) : null,
       statusText: asrSummary.text,
       statusTone: asrSummary.tone,
       gearHref: "/models/asr",
+      toggled: asrOn,
+      onToggle: handleAsrToggle,
     },
     {
       accent: "bg-emerald-100 text-emerald-600",
       icon: Brain,
       name: "AI 大脑（LLM）",
-      model: llmConfigured ? basename(llm.config?.model_path ?? "") : "未配置模型",
-      runtime: "llama.cpp",
-      path: llmConfigured ? (llm.config?.model_path ?? null) : null,
+      model: llmConfigured ? <LlmModelSwitchMenu /> : "未配置模型",
       statusText: llm.error
         ? "错误"
         : llm.loading
@@ -209,14 +242,15 @@ export function ModelSummary() {
               : "未配置模型",
       statusTone: llm.error ? "error" : llm.loading ? "loading" : llm.ready ? "good" : "idle",
       gearHref: "/models/llm",
+      toggled: llm.ready,
+      onToggle: () => (llm.ready ? llm.unload() : llm.load()),
+      toggleDisabled: llm.loading || !llmConfigured,
     },
     {
       accent: "bg-amber-100 text-amber-600",
       icon: Volume2,
       name: "语音合成（TTS）",
       model: ttsConfigured ? basename(tts.config?.model_dir ?? "") : "未配置模型",
-      runtime: "sherpa-onnx",
-      path: ttsConfigured ? (tts.config?.model_dir ?? null) : null,
       statusText: !ttsEnabled
         ? "已关闭"
         : tts.synthesizing
@@ -232,6 +266,8 @@ export function ModelSummary() {
             ? "good"
             : "idle",
       gearHref: "/models/tts",
+      toggled: ttsEnabled,
+      onToggle: () => tts.setEnabled(!ttsEnabled),
     },
   ];
 

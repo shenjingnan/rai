@@ -102,6 +102,8 @@ function makeLlmConfig() {
 let llmConfig: ReturnType<typeof makeLlmConfig>;
 /** `list_model_library` 返回的已注册模型（含 LLM 预设的安装/current 状态）。 */
 let libraryModels: LibraryModel[];
+/** set_current_model 可替换实现（beforeEach 重置；loading 用例覆盖为挂起 promise）。 */
+let switchImpl: (id: string) => Promise<unknown>;
 
 /** 已安装的 managed LLM 预设（LlmPresetDialog 按 id/repoId 匹配）。 */
 function installedPreset(
@@ -163,6 +165,23 @@ beforeEach(() => {
     model_path: "/home/user/.zapmomo/models/Qwen3-0.6B/Qwen3-0.6B-Q4_K_M.gguf",
     applied: true,
   });
+  // set_current_model 默认实现（loading 用例可覆盖为挂起 promise）。
+  switchImpl = (id: string) => {
+    libraryModels = libraryModels.map((m) => ({ ...m, current: m.id === id }));
+    const target = libraryModels.find((m) => m.id === id);
+    if (target) {
+      llmConfig.model_path = target.localPath ?? "";
+      llmConfig.models_present = true;
+    }
+    return Promise.resolve({
+      model_type: "llm",
+      model_id: id,
+      path: target?.localPath ?? "",
+      runtime_action: "none",
+      effective_immediately: false,
+      message: "已设为当前模型",
+    });
+  };
   llmConfig = makeLlmConfig();
   libraryModels = [];
 
@@ -222,23 +241,8 @@ beforeEach(() => {
           });
         case "list_model_library":
           return Promise.resolve(libraryModels);
-        case "set_current_model": {
-          const id = args?.id as string;
-          libraryModels = libraryModels.map((m) => ({ ...m, current: m.id === id }));
-          const target = libraryModels.find((m) => m.id === id);
-          if (target) {
-            llmConfig.model_path = target.localPath ?? "";
-            llmConfig.models_present = true;
-          }
-          return Promise.resolve({
-            model_type: "llm",
-            model_id: id,
-            path: target?.localPath ?? "",
-            runtime_action: "none",
-            effective_immediately: false,
-            message: "已设为当前模型",
-          });
-        }
+        case "set_current_model":
+          return switchImpl(args?.id as string);
         case "delete_model": {
           const id = args?.id as string;
           libraryModels = libraryModels.filter((m) => m.id !== id);
@@ -801,6 +805,38 @@ describe("LlmPage（AI 大脑配置）", () => {
         expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
           id: "qwen3-0.6b-q4-k-m",
         });
+      });
+    });
+
+    it("设为当前等待后端事务期间：按钮转圈禁用（热切换数秒需 loading 反馈）", async () => {
+      libraryModels = [installedPreset("qwen3-0.6b-q4-k-m", "Qwen3 0.6B")];
+      // set_current_model 挂起（模拟后端卸旧载新数秒），直到手动 resolve。
+      const gate = { release: null as null | (() => void) };
+      switchImpl = () =>
+        new Promise((resolve) => {
+          gate.release = () =>
+            resolve({
+              modelType: "llm",
+              modelId: "qwen3-0.6b-q4-k-m",
+              path: "/models/qwen3-0.6b.gguf",
+              runtimeAction: "reloaded",
+              effectiveImmediately: true,
+              message: "已设为当前模型",
+            });
+        });
+      const user = await renderAndOpenPresets();
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "设为当前" })).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole("button", { name: "设为当前" }));
+      const busy = await screen.findByRole("button", { name: "切换中…" });
+      expect(busy).toBeDisabled();
+      expect(screen.getByRole("button", { name: "卸载" })).toBeDisabled();
+
+      gate.release?.();
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "设为当前" })).toBeEnabled();
       });
     });
 

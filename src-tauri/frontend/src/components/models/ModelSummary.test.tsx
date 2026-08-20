@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeState } from "@/providers/RuntimeContext";
@@ -12,6 +13,38 @@ const { state } = vi.hoisted(() => ({
 
 vi.mock("@/providers/RuntimeContext", () => ({
   useRuntime: () => state.runtime,
+}));
+
+// 选择模型弹窗有专属测试与 App 集成覆盖；此处 stub 避免 llm.download 等依赖。
+vi.mock("@/components/llm/LlmPresetDialog", () => ({
+  LlmPresetDialog: () => null,
+}));
+
+// LLM 行快速切换菜单依赖 useLlmPresets（内部用 useToast/invoke）；mock 模块避免依赖 Provider。
+const { presetsState } = vi.hoisted(() => ({
+  presetsState: {
+    models: null as
+      | {
+          id: string;
+          modelType: string;
+          installState: string;
+          current: boolean;
+          localPath: string | null;
+          displayName: string;
+          installId: string | null;
+        }[]
+      | null,
+    loading: false,
+    error: null,
+    refresh: () => Promise.resolve(),
+    download: () => Promise.resolve(),
+    setCurrent: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+  },
+}));
+
+vi.mock("@/hooks/useLlmPresets", () => ({
+  useLlmPresets: () => presetsState,
 }));
 
 // ---- runtime 切片工厂：只填 ModelSummary 读取的字段（其余方法 vi.fn() 兜底）----
@@ -30,12 +63,15 @@ function makeKws(o?: {
         model_dir: "/zap/.zapmomo/models/kws",
       },
       refresh: vi.fn(),
+      setEnabled: vi.fn(),
       error: null,
     },
     listening: {
       isListening: o?.isListening ?? false,
       pending: false,
       error: o?.error ?? null,
+      start: vi.fn(),
+      stop: vi.fn(),
     },
   };
 }
@@ -55,12 +91,15 @@ function makeAsr(o?: {
         model_dir: "/zap/.zapmomo/models/asr",
       },
       refresh: vi.fn(),
+      setEnabled: vi.fn(),
       error: null,
     },
     listening: {
       isListening: o?.isListening ?? false,
       pending: o?.pending ?? false,
       error: o?.error ?? null,
+      start: vi.fn(),
+      stop: vi.fn(),
     },
   };
 }
@@ -80,6 +119,8 @@ function makeLlm(o?: {
     loading: o?.loading ?? false,
     error: o?.error ?? null,
     refreshConfig: vi.fn(),
+    load: vi.fn(),
+    unload: vi.fn(),
   };
 }
 
@@ -93,6 +134,7 @@ function makeTts(o?: { modelsPresent?: boolean; enabled?: boolean; synthesizing?
     configError: null,
     synthesizing: o?.synthesizing ?? false,
     refreshConfig: vi.fn(),
+    setEnabled: vi.fn(),
   };
 }
 
@@ -109,6 +151,8 @@ function makeRuntime(
     asr: overrides?.asr ?? makeAsr(),
     llm: overrides?.llm ?? makeLlm(),
     tts: overrides?.tts ?? makeTts(),
+    device: null,
+    sessionKeywords: null,
   } as unknown as RuntimeState;
 }
 
@@ -240,5 +284,73 @@ describe("ModelSummary 模型摘要状态", () => {
     renderSummary();
     // 每行模型名 `<p>` 也是「未配置模型」，这里只统计状态 span（4 行各 1 个）。
     expect(screen.getAllByText("未配置模型", { selector: "span" })).toHaveLength(4);
+  });
+});
+
+describe("ModelSummary 摘要行开关", () => {
+  it("KWS：开启 → 持久化 enabled + 立即开始监听", async () => {
+    const user = userEvent.setup();
+    const kws = makeKws({ modelsPresent: true, enabled: false });
+    state.runtime = makeRuntime({ kws });
+    renderSummary();
+
+    await user.click(screen.getByRole("switch", { name: "唤醒词（KWS）开关" }));
+
+    expect(kws.config.setEnabled).toHaveBeenCalledWith(true);
+    expect(kws.listening.start).toHaveBeenCalledWith(null, null);
+  });
+
+  it("KWS：关闭 → 停止监听 + 持久化 disabled", async () => {
+    const user = userEvent.setup();
+    const kws = makeKws({ modelsPresent: true, enabled: true, isListening: true });
+    state.runtime = makeRuntime({ kws });
+    renderSummary();
+
+    await user.click(screen.getByRole("switch", { name: "唤醒词（KWS）开关" }));
+
+    expect(kws.listening.stop).toHaveBeenCalled();
+    expect(kws.config.setEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("ASR：开启 → 持久化 enabled + 立即开始识别", async () => {
+    const user = userEvent.setup();
+    const asr = makeAsr({ modelsPresent: true, enabled: false });
+    state.runtime = makeRuntime({ asr });
+    renderSummary();
+
+    await user.click(screen.getByRole("switch", { name: "语音识别（ASR）开关" }));
+
+    expect(asr.config.setEnabled).toHaveBeenCalledWith(true);
+    expect(asr.listening.start).toHaveBeenCalledWith(null);
+  });
+
+  it("LLM：模型未配置时开关禁用", () => {
+    const llm = makeLlm({ modelsPresent: false });
+    state.runtime = makeRuntime({ llm });
+    renderSummary();
+
+    expect(screen.getByRole("switch", { name: "AI 大脑（LLM）开关" })).toBeDisabled();
+  });
+
+  it("LLM：就绪后点击开关触发 unload", async () => {
+    const user = userEvent.setup();
+    const llm = makeLlm({ modelsPresent: true, ready: true });
+    state.runtime = makeRuntime({ llm });
+    renderSummary();
+
+    await user.click(screen.getByRole("switch", { name: "AI 大脑（LLM）开关" }));
+
+    expect(llm.unload).toHaveBeenCalled();
+  });
+
+  it("TTS：点击开关调用 setEnabled(false)", async () => {
+    const user = userEvent.setup();
+    const tts = makeTts({ modelsPresent: true, enabled: true });
+    state.runtime = makeRuntime({ tts });
+    renderSummary();
+
+    await user.click(screen.getByRole("switch", { name: "语音合成（TTS）开关" }));
+
+    expect(tts.setEnabled).toHaveBeenCalledWith(false);
   });
 });

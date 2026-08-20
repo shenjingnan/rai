@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LibraryModel } from "@/types/modelLibrary";
 import App from "./App";
 
 const { invokeMock, listeners } = vi.hoisted(() => ({
@@ -57,6 +58,8 @@ let kwsListening = false;
 let llmConfig: typeof LLM_CONFIG;
 /** 模拟后端拒绝卸载 LLM（如语音会话占用），null = 卸载成功。 */
 let llmUnloadReject: string | null = null;
+/** 模型库快照（list_model_library），摘要 LLM 快速切换菜单的数据源。 */
+let libraryModels: LibraryModel[];
 
 const ASR_CONFIG = {
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer",
@@ -78,6 +81,10 @@ const TTS_CONFIG = {
   model_downloading: false,
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
+
+/** 可变 ASR/TTS 配置（引导卡「全部正常不渲染」用例需置 models_present）。 */
+let asrConfig: typeof ASR_CONFIG;
+let ttsConfig: typeof TTS_CONFIG;
 
 const LLM_CONFIG = {
   enabled: false,
@@ -105,6 +112,37 @@ const LLM_CONFIG = {
   },
 };
 
+/** 已安装 LLM 的模型库条目 fixture（摘要快速切换菜单数据源）。 */
+function installedLlmFixture(o: { id: string; current?: boolean }): LibraryModel {
+  return {
+    id: o.id,
+    name: o.id,
+    displayName: o.id,
+    modelType: "llm",
+    runtime: "llama.cpp",
+    format: "gguf",
+    description: "",
+    languages: ["zh"],
+    tags: [],
+    parameterCount: null,
+    quantization: "Q4_K_M",
+    version: "1",
+    sizeBytes: null,
+    homepage: null,
+    downloadable: true,
+    source: "registry",
+    ownership: "managed",
+    installState: "installed",
+    current: o.current ?? false,
+    runtimeStatus: "inactive",
+    localPath: `/home/user/.zapmomo/models/${o.id}.gguf`,
+    installedAt: null,
+    installId: `install-${o.id}`,
+    repoId: null,
+    compatibility: "verified",
+  };
+}
+
 /** 渲染 App 并定位到指定路由（默认 KWS 详情页）。 */
 function renderApp(initialPath = "/models/kws") {
   return render(
@@ -119,7 +157,10 @@ beforeEach(() => {
   listeners.clear();
   kwsConfig = { ...DEFAULT_CONFIG };
   llmConfig = { ...LLM_CONFIG };
+  asrConfig = { ...ASR_CONFIG };
+  ttsConfig = { ...TTS_CONFIG };
   llmUnloadReject = null;
+  libraryModels = [];
   mic = "";
   devices = ["内置麦克风", "USB 麦克风"];
   kwsListening = false;
@@ -132,6 +173,7 @@ beforeEach(() => {
         mic?: string;
         keywords?: string;
         params?: Partial<typeof DEFAULT_CONFIG>;
+        id?: string;
       },
     ) => {
       switch (cmd) {
@@ -160,9 +202,9 @@ beforeEach(() => {
         case "is_listening":
           return Promise.resolve(kwsListening);
         case "get_asr_config":
-          return Promise.resolve(ASR_CONFIG);
+          return Promise.resolve({ ...asrConfig });
         case "get_tts_config":
-          return Promise.resolve(TTS_CONFIG);
+          return Promise.resolve({ ...ttsConfig });
         case "list_tts_voices":
           return Promise.resolve([]);
         case "get_llm_config":
@@ -173,6 +215,29 @@ beforeEach(() => {
           return Promise.resolve(false);
         case "is_llm_ready":
           return Promise.resolve(false);
+        case "list_model_library":
+          return Promise.resolve(libraryModels);
+        case "set_current_model": {
+          // 兼容 installId 与记录 id 直传（LlmPresetDialog 的 setCurrent 传 installed.id）。
+          const target = libraryModels.find(
+            (m) => m.id === args?.id || (m.installId ?? m.id) === args?.id,
+          );
+          if (target) {
+            llmConfig = { ...llmConfig, model_path: target.localPath ?? llmConfig.model_path };
+          }
+          libraryModels = libraryModels.map((m) => ({
+            ...m,
+            current: target != null && m.id === target.id,
+          }));
+          return Promise.resolve({
+            modelType: "llm",
+            modelId: args?.id ?? "",
+            path: target?.localPath ?? "",
+            runtimeAction: "reloaded",
+            effectiveImmediately: true,
+            message: "已设为当前模型",
+          });
+        }
         case "start_listen":
         case "stop_listen":
         case "download_kws_model":
@@ -185,11 +250,10 @@ beforeEach(() => {
 });
 
 describe("App（KWS 控制面板）", () => {
-  it("渲染 Sidebar 导航与模型概览页（能力链路 + 模型摘要）", async () => {
+  it("渲染 Sidebar 导航与模型概览页（模型摘要）", async () => {
     renderApp("/models");
     expect(screen.getByAltText("ZapMomo")).toBeInTheDocument();
     expect(screen.getByText("概览")).toBeInTheDocument();
-    expect(await screen.findByText("AI 能力链路")).toBeInTheDocument();
     expect(screen.getByText("模型摘要")).toBeInTheDocument();
     expect(screen.getByText("管理模型")).toBeInTheDocument();
   });
@@ -198,7 +262,7 @@ describe("App（KWS 控制面板）", () => {
     const user = userEvent.setup();
     renderApp("/models");
 
-    await user.click(await screen.findByRole("switch", { name: "语音输入开关" }));
+    await user.click(await screen.findByRole("switch", { name: "语音识别（ASR）开关" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
@@ -209,7 +273,7 @@ describe("App（KWS 控制面板）", () => {
     const user = userEvent.setup();
     renderApp("/models");
 
-    const kwsSwitch = await screen.findByRole("switch", { name: "唤醒词开关" });
+    const kwsSwitch = await screen.findByRole("switch", { name: "唤醒词（KWS）开关" });
     expect(kwsSwitch).not.toBeDisabled();
 
     await user.click(kwsSwitch);
@@ -226,7 +290,7 @@ describe("App（KWS 控制面板）", () => {
     const user = userEvent.setup();
     renderApp("/models");
 
-    await user.click(await screen.findByRole("switch", { name: "语音合成开关" }));
+    await user.click(await screen.findByRole("switch", { name: "语音合成（TTS）开关" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_tts_enabled", { enabled: false });
@@ -240,12 +304,65 @@ describe("App（KWS 控制面板）", () => {
     renderApp("/models");
 
     // 开启的 LLM 开关（toggled 绑 ready），点击触发 unload
-    await user.click(await screen.findByRole("switch", { name: "AI 大脑开关" }));
+    await user.click(await screen.findByRole("switch", { name: "AI 大脑（LLM）开关" }));
 
     // 真实错误经右上角 Toast 透出（而非仅红色「错误」）
     expect(
       await screen.findByText("语音会话正在使用 LLM。请先在「对话记录」页停止会话后再卸载。"),
     ).toBeInTheDocument();
+  });
+
+  it("概览页引导卡：默认全未配置 → 去模型库", async () => {
+    renderApp("/models");
+    expect(await screen.findByText("4 项能力尚未配置模型")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "去模型库" })).toHaveAttribute(
+      "href",
+      "/models/library",
+    );
+  });
+
+  it("概览页引导卡：全部配置正常时不渲染", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
+    asrConfig = { ...asrConfig, models_present: true };
+    ttsConfig = { ...ttsConfig, models_present: true };
+    llmConfig = { ...llmConfig, models_present: true };
+    renderApp("/models");
+    // 等待配置加载完成（「未配置模型」span 消失）后再断言无引导卡。
+    await waitFor(() => {
+      expect(screen.queryByText("尚未配置模型")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("LLM 已配置：切换按钮打开选择模型弹窗，「设为当前」完成切换并回显", async () => {
+    llmConfig = { ...llmConfig, models_present: true };
+    // fixture id 必须是 LLM_PRESETS 的 registry id，弹窗按 id/repoId 匹配安装态。
+    libraryModels = [
+      installedLlmFixture({ id: "qwen3-4b-instruct-2507-q4-k-m", current: true }),
+      installedLlmFixture({ id: "qwen3-8b-q4-k-m" }),
+    ];
+    const user = userEvent.setup();
+    renderApp("/models");
+
+    // 模型名区域 = 文本 + 切换按钮（等 llm config 异步加载完成）
+    await screen.findByText("qwen3-4b.gguf");
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
+
+    // 打开与 LLM 配置页同款「选择模型」弹窗：当前预设标记，另一预设可「设为当前」
+    expect(await screen.findByRole("heading", { name: "选择模型" })).toBeInTheDocument();
+    expect(screen.getByText("当前模型")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "设为当前" }));
+
+    // invoke set_current_model（弹窗传记录 id），行内模型名回显新 basename
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+        id: "qwen3-8b-q4-k-m",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("qwen3-8b-q4-k-m.gguf")).toBeInTheDocument();
+    });
+    expect(await screen.findByText("已设为当前模型")).toBeInTheDocument();
   });
 
   it("渲染 KWS 配置项", async () => {

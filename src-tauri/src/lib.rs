@@ -19,6 +19,7 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
@@ -113,6 +114,9 @@ impl Drop for ActiveModelGuard {
 struct VoiceSessionState {
     running: Arc<AtomicBool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 当前会话的打断标志：会话线程创建 session 后写入，线程退出时清空。
+    /// 全局快捷键「打断播报」置位 → 会话循环 `do_barge_in`（停生成/合成/播放，回 Armed）。
+    barge_in: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl VoiceSessionState {
@@ -120,6 +124,7 @@ impl VoiceSessionState {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             handle: Mutex::new(None),
+            barge_in: Mutex::new(None),
         }
     }
 
@@ -1073,9 +1078,8 @@ fn synthesize_tts(
     Ok(())
 }
 
-/// 停止正在进行的合成（等待线程退出）。
-#[tauri::command]
-fn stop_tts(state: State<'_, TtsSynthesizeState>) -> Result<(), String> {
+/// 停止 TTS 合成/播放的内部实现（command 与全局快捷键打断共用）。
+fn stop_tts_inner(state: &TtsSynthesizeState) -> Result<(), String> {
     if !state.is_synthesizing() {
         return Err("当前没有在合成".to_string());
     }
@@ -1089,6 +1093,12 @@ fn stop_tts(state: State<'_, TtsSynthesizeState>) -> Result<(), String> {
         let _ = handle.join();
     }
     Ok(())
+}
+
+/// 停止正在进行的合成（等待线程退出）。
+#[tauri::command]
+fn stop_tts(state: State<'_, TtsSynthesizeState>) -> Result<(), String> {
+    stop_tts_inner(state.inner())
 }
 
 /// 当前是否正在合成。
@@ -1638,8 +1648,17 @@ fn start_voice_session_impl(app: AppHandle, state: &VoiceSessionState) -> Result
                     return;
                 }
             };
+        // 暴露打断标志给宿主（全局快捷键「打断播报」置位用）
+        *app.state::<VoiceSessionState>()
+            .barge_in
+            .lock()
+            .expect("voice barge_in lock poisoned") = Some(session.barge_in_flag());
         let result = session.run();
         running.store(false, Ordering::Relaxed);
+        *app.state::<VoiceSessionState>()
+            .barge_in
+            .lock()
+            .expect("voice barge_in lock poisoned") = None;
         match &result {
             Ok(()) => tracing::info!("语音会话结束"),
             Err(e) => tracing::error!("语音会话异常: {e}"),
@@ -1712,6 +1731,8 @@ fn stop_voice_session_inner(state: &VoiceSessionState) -> Result<(), String> {
     {
         let _ = handle.join();
     }
+    // 会话线程 panic 时可能残留打断标志，这里兜底清空
+    *state.barge_in.lock().expect("voice barge_in lock poisoned") = None;
     Ok(())
 }
 
@@ -2536,6 +2557,158 @@ fn toggle_companion_window(app: &AppHandle) {
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings_window(&app);
+}
+
+/// 打断当前回复：voice 会话运行中置位打断标志（会话线程停生成/合成/播放回 Armed）；
+/// 同时兜底停独立 TTS 播放与 LLM 生成（voice 未运行但测试播放/生成中的场景）。
+fn interrupt_reply(app: &AppHandle) {
+    let voice = app.state::<VoiceSessionState>();
+    if voice.is_running()
+        && let Some(flag) = voice
+            .barge_in
+            .lock()
+            .expect("voice barge_in lock poisoned")
+            .clone()
+    {
+        flag.store(true, Ordering::Relaxed);
+    }
+    // 「没有在合成」不算错误：打断场景下静默跳过
+    let _ = stop_tts_inner(app.state::<TtsSynthesizeState>().inner());
+    if let Some(engine) = app
+        .state::<LlmState>()
+        .engine
+        .lock()
+        .expect("llm lock poisoned")
+        .as_ref()
+    {
+        engine.cancel();
+    }
+}
+
+/// 全局快捷键触发分发（复用托盘/菜单同款内部函数）。
+fn dispatch_shortcut(app: &AppHandle, action: zapmomo::config::shortcuts::ShortcutAction) {
+    use zapmomo::config::shortcuts::ShortcutAction;
+    match action {
+        ShortcutAction::ToggleCompanion => toggle_companion_window(app),
+        ShortcutAction::OpenSettings => show_settings_window(app),
+        ShortcutAction::InterruptReply => interrupt_reply(app),
+        ShortcutAction::ToggleVoiceSession => {
+            // stop 需 join 会话线程（等麦克风轮询退出）、start 有模型预检，
+            // 都可能耗时：放后台线程避免阻塞快捷键回调
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<VoiceSessionState>();
+                let result = if state.is_running() {
+                    stop_voice_session_inner(state.inner())
+                } else {
+                    start_voice_session_impl(app.clone(), state.inner())
+                };
+                if let Err(e) = result {
+                    tracing::warn!("切换语音会话失败: {e}");
+                }
+            });
+        }
+    }
+}
+
+/// 启动时按 `[shortcuts]` 配置注册全局快捷键：单个失败仅告警不阻塞启动
+/// （键位可能已被其他软件占用），其余照常注册。
+fn register_shortcuts_at_startup(app: &AppHandle) {
+    use zapmomo::config::shortcuts::ShortcutAction;
+    let shortcuts = settings::load_settings()
+        .ok()
+        .flatten()
+        .and_then(|s| s.shortcuts)
+        .unwrap_or_default();
+    for action in ShortcutAction::ALL {
+        let Some(acc) = shortcuts.get(action).map(str::to_string) else {
+            continue;
+        };
+        let result = app
+            .global_shortcut()
+            .on_shortcut(acc.as_str(), move |app, _sc, _ev| {
+                dispatch_shortcut(app, action);
+            });
+        match result {
+            Ok(()) => tracing::info!("全局快捷键已注册：{} = {}", action.as_str(), acc),
+            Err(e) => tracing::warn!(
+                "全局快捷键 {} ({}) 注册失败，已跳过: {e}",
+                action.as_str(),
+                acc
+            ),
+        }
+    }
+}
+
+/// 读取用户自定义快捷键（action 标识 → accelerator，仅含已绑定项）。
+#[tauri::command]
+fn get_shortcuts() -> Result<std::collections::HashMap<String, String>, String> {
+    let shortcuts = settings::load_settings()?
+        .unwrap_or_default()
+        .shortcuts
+        .unwrap_or_default();
+    let mut map = std::collections::HashMap::new();
+    for action in zapmomo::config::shortcuts::ShortcutAction::ALL {
+        if let Some(acc) = shortcuts.get(action) {
+            map.insert(action.as_str().to_string(), acc.to_string());
+        }
+    }
+    Ok(map)
+}
+
+/// 绑定快捷键：校验 → 查重 → **先注册成功再落盘**（键位被系统/其他应用占用时
+/// 注册失败，配置保持原值，杜绝「界面已绑定但实际不生效」的假状态）。
+#[tauri::command]
+fn set_shortcut(app: AppHandle, action: String, accelerator: String) -> Result<(), String> {
+    use zapmomo::config::shortcuts::{ShortcutAction, validate_accelerator};
+    let action =
+        ShortcutAction::from_ident(&action).ok_or_else(|| format!("未知的操作：{action}"))?;
+    let accelerator = accelerator.trim().to_string();
+    validate_accelerator(&accelerator)?;
+
+    let mut cfg = settings::load_settings()?.unwrap_or_default();
+    let shortcuts = cfg.shortcuts.get_or_insert_with(Default::default);
+    if let Some(other) = shortcuts.find_conflict(action, &accelerator) {
+        return Err(format!("该快捷键已绑定到「{}」", other.label()));
+    }
+    // 幂等：与当前值相同直接成功
+    if shortcuts.get(action) == Some(accelerator.as_str()) {
+        return Ok(());
+    }
+    let old = shortcuts.get(action).map(str::to_string);
+    app.global_shortcut()
+        .on_shortcut(accelerator.as_str(), move |app, _sc, _ev| {
+            dispatch_shortcut(app, action);
+        })
+        .map_err(|e| format!("注册失败，可能已被其他应用占用：{e}"))?;
+    // 新键注册成功后才解绑旧键
+    if let Some(old) = old
+        && let Err(e) = app.global_shortcut().unregister(old.as_str())
+    {
+        tracing::warn!("解绑旧快捷键 {old} 失败: {e}");
+    }
+    shortcuts.set(action, Some(accelerator));
+    settings::save_settings(&cfg)?;
+    Ok(())
+}
+
+/// 清除操作的快捷键绑定（解绑 + 配置置空）。
+#[tauri::command]
+fn clear_shortcut(app: AppHandle, action: String) -> Result<(), String> {
+    use zapmomo::config::shortcuts::ShortcutAction;
+    let action =
+        ShortcutAction::from_ident(&action).ok_or_else(|| format!("未知的操作：{action}"))?;
+    let mut cfg = settings::load_settings()?.unwrap_or_default();
+    if let Some(shortcuts) = cfg.shortcuts.as_mut() {
+        if let Some(cur) = shortcuts.get(action).map(str::to_string)
+            && let Err(e) = app.global_shortcut().unregister(cur.as_str())
+        {
+            tracing::warn!("解绑快捷键 {cur} 失败: {e}");
+        }
+        shortcuts.set(action, None);
+    }
+    settings::save_settings(&cfg)?;
+    Ok(())
 }
 
 /// 隐藏角色窗口。
@@ -3653,6 +3826,7 @@ pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ListenState::new())
         .manage(DownloadState::default())
         .manage(AsrListenState::new())
@@ -3756,6 +3930,9 @@ pub fn run() {
             get_hide_dock_icon,
             set_hide_dock_icon,
             open_settings,
+            get_shortcuts,
+            set_shortcut,
+            clear_shortcut,
             hide_companion,
             quit_app,
             restart_app
@@ -4015,6 +4192,9 @@ pub fn run() {
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
                 .build(app)?;
+
+            // 注册用户自定义全局快捷键（[shortcuts] 分节；单个失败仅告警）
+            register_shortcuts_at_startup(app.handle());
 
             Ok(())
         })

@@ -63,6 +63,8 @@ beforeEach(() => {
     switch (cmd) {
       case "get_hide_dock_icon":
         return Promise.resolve(false);
+      case "get_shortcuts":
+        return Promise.resolve({});
       case "catalog_get_endpoint":
         return Promise.resolve({ downloadSource: "auto", mirrorUrl: "" });
       case "get_storage_info":

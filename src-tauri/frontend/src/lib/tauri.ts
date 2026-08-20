@@ -41,6 +41,7 @@ import type {
   LlmStatus,
   LlmToken,
   SaveTtsVoiceRequest,
+  ShortcutActionId,
   TtsConfigInfo,
   TtsParamsPatch,
   TtsProgress,
@@ -185,6 +186,11 @@ export const api = {
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
+  getShortcuts: () => invoke<Record<string, string>>("get_shortcuts"),
+  setShortcut: (args: { action: ShortcutActionId; accelerator: string }) =>
+    invoke<void>("set_shortcut", args),
+  clearShortcut: (args: { action: ShortcutActionId }) =>
+    invoke<void>("clear_shortcut", args),
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),

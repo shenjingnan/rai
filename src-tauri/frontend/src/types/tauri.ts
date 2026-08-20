@@ -339,3 +339,12 @@ export interface VoiceError {
 export interface VoiceStopped {
   error: string | null;
 }
+
+// ---- 全局快捷键 ----
+
+/** 可绑定全局快捷键的操作标识（与 Rust `ShortcutAction::as_str` 一致）。 */
+export type ShortcutActionId =
+  | "toggle_companion"
+  | "toggle_voice_session"
+  | "interrupt_reply"
+  | "open_settings";

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
 import { formatBytes } from "@/components/library/libraryMeta";
+import { ShortcutsSection } from "@/components/settings/ShortcutsSection";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -169,7 +170,7 @@ export function SettingsPage() {
   const storageBusy = migrating || storageLoading;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-4">
       <h1 className="text-2xl font-semibold tracking-tight text-text-primary">设置</h1>
 
       <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">
@@ -402,6 +403,9 @@ export function SettingsPage() {
           )}
         </dl>
       </section>
+
+      {/* 快捷键 */}
+      <ShortcutsSection />
 
       {/* 更改目录确认框 */}
       <LibraryDialog

@@ -3931,10 +3931,13 @@ pub fn run() {
                 settings = settings.decorations(false).transparent(true);
             }
             // Windows：去掉系统标题栏即可；无 CSS 圆角处理，无需透明窗口
-            //（不透明窗口性能更好，圆角/阴影由系统 DWM 自带）。三键悬浮右上角。
+            //（不透明窗口性能更好）。同时关 DWM shadow：undecorated+shadow 会被
+            // tao 在 WM_NCCALCSIZE 里左右底三边缩进客户区、由 DWM 画黑色窗框，
+            // 而顶部 inset 在 Win10 强制为 0（否则画出原生标题栏），形成三边黑框；
+            // 四边完整边框改由前端 AppShell 用 CSS 自绘。三键悬浮右上角。
             #[cfg(target_os = "windows")]
             {
-                settings = settings.decorations(false);
+                settings = settings.decorations(false).shadow(false);
             }
             settings.build()?;
 

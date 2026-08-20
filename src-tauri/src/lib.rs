@@ -3553,9 +3553,16 @@ pub fn run() {
                     .hidden_title(true)
                     .shadow(true);
             }
-            #[cfg(not(target_os = "macos"))]
+            // Linux：去掉系统标题栏，保留透明窗口供 CSS 圆角裁出（三键在 Sidebar 左上角）。
+            #[cfg(target_os = "linux")]
             {
                 settings = settings.decorations(false).transparent(true);
+            }
+            // Windows：去掉系统标题栏即可；无 CSS 圆角处理，无需透明窗口
+            //（不透明窗口性能更好，圆角/阴影由系统 DWM 自带）。三键悬浮右上角。
+            #[cfg(target_os = "windows")]
+            {
+                settings = settings.decorations(false);
             }
             settings.build()?;
 

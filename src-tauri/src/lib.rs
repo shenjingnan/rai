@@ -2611,6 +2611,33 @@ fn dispatch_shortcut(app: &AppHandle, action: zapmomo::config::shortcuts::Shortc
     }
 }
 
+/// 启动时按 `[shortcuts]` 配置注册全局快捷键：单个失败仅告警不阻塞启动
+/// （键位可能已被其他软件占用），其余照常注册。
+fn register_shortcuts_at_startup(app: &AppHandle) {
+    use zapmomo::config::shortcuts::ShortcutAction;
+    let shortcuts = settings::load_settings()
+        .ok()
+        .flatten()
+        .and_then(|s| s.shortcuts)
+        .unwrap_or_default();
+    for action in ShortcutAction::ALL {
+        let Some(acc) = shortcuts.get(action).map(str::to_string) else {
+            continue;
+        };
+        let result = app.global_shortcut().on_shortcut(acc.as_str(), move |app, _sc, _ev| {
+            dispatch_shortcut(app, action);
+        });
+        match result {
+            Ok(()) => tracing::info!("全局快捷键已注册：{} = {}", action.as_str(), acc),
+            Err(e) => tracing::warn!(
+                "全局快捷键 {} ({}) 注册失败，已跳过: {e}",
+                action.as_str(),
+                acc
+            ),
+        }
+    }
+}
+
 /// 读取用户自定义快捷键（action 标识 → accelerator，仅含已绑定项）。
 #[tauri::command]
 fn get_shortcuts() -> Result<std::collections::HashMap<String, String>, String> {
@@ -4163,6 +4190,9 @@ pub fn run() {
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
                 .build(app)?;
+
+            // 注册用户自定义全局快捷键（[shortcuts] 分节；单个失败仅告警）
+            register_shortcuts_at_startup(app.handle());
 
             Ok(())
         })

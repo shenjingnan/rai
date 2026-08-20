@@ -63,24 +63,40 @@ pub fn legacy_companions_dir() -> Option<PathBuf> {
 
 /// 剥离路径前缀（Windows 大小写不敏感，容忍 `\`/`/` 混合分隔符）。
 ///
-/// `path` 以 `prefix` 开头（大小写忽略）时返回剩余相对路径，否则 `None`。
+/// `path` 以 `prefix` 开头（大小写忽略）且 `prefix` 结束在组件边界（恰好相等，
+/// 或其后紧跟分隔符）时返回剩余相对路径，否则 `None`——防止 `models2` 被
+/// `models` 误剥导致迁移改写出错路径。
 /// 供迁移时改写 settings/伙伴库中的绝对路径引用使用。
 pub fn strip_prefix_ci<'a>(path: &'a Path, prefix: &Path) -> Option<&'a Path> {
     let p = path.as_os_str().to_str()?;
     let q = prefix.as_os_str().to_str()?;
     if cfg!(windows) {
-        // 归一化分隔符 + 大小写（`/`↔`\` 一一对应，长度不变），再比较前缀
+        // 归一化分隔符 + 大小写（`/`↔`\` 一一对应，长度不变），再比较前缀；
+        // 前缀尾部多余分隔符先去掉，边界判断才不受影响
         let pl = p.replace('/', "\\").to_lowercase();
-        let ql = q.replace('/', "\\").to_lowercase();
-        if !pl.starts_with(&ql) {
+        let ql = q
+            .replace('/', "\\")
+            .to_lowercase()
+            .trim_end_matches('\\')
+            .to_string();
+        // 前缀后必须是分隔符（归一化后）或路径恰好等于前缀
+        let boundary =
+            pl.len() == ql.len() || pl.get(ql.len()..).is_some_and(|r| r.starts_with('\\'));
+        if ql.is_empty() || !pl.starts_with(&ql) || !boundary {
             return None;
         }
         // ql.len() 是归一化后的前缀长度；原始 p 里前缀部分分隔符未变长，get 切安全
         let rest = p.get(ql.len()..)?;
         Some(Path::new(rest.trim_start_matches(['/', '\\'])))
     } else {
-        p.strip_prefix(q)
-            .map(|rest| Path::new(rest.trim_start_matches('/')))
+        let q = q.trim_end_matches('/');
+        p.strip_prefix(q).and_then(|rest| {
+            if rest.is_empty() || rest.starts_with('/') {
+                Some(Path::new(rest.trim_start_matches('/')))
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -1189,20 +1205,48 @@ mod tests {
 
     #[test]
     fn test_strip_prefix_ci() {
-        let prefix = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
-        let path = std::path::Path::new("c:\\users\\admin\\zapdata\\models\\llm\\model.gguf");
-        // 大小写不敏感 + 分隔符宽容：剥离前缀后返回相对路径
-        let rest = strip_prefix_ci(path, prefix).unwrap();
-        assert_eq!(rest, std::path::Path::new("llm\\model.gguf"));
-        // 不在前缀下 → None
-        let other = std::path::Path::new("D:\\other\\x");
-        assert!(strip_prefix_ci(other, prefix).is_none());
-        // 前缀自身 → 返回空
-        let exact = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
-        assert_eq!(
-            strip_prefix_ci(exact, prefix).unwrap(),
-            std::path::Path::new("")
-        );
+        if cfg!(windows) {
+            // Windows：大小写不敏感 + 分隔符宽容，剥离前缀后返回相对路径
+            let prefix = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
+            let path = std::path::Path::new("c:\\users\\admin\\zapdata\\models\\llm\\model.gguf");
+            let rest = strip_prefix_ci(path, prefix).unwrap();
+            assert_eq!(rest, std::path::Path::new("llm\\model.gguf"));
+            // 不在前缀下 → None
+            let other = std::path::Path::new("D:\\other\\x");
+            assert!(strip_prefix_ci(other, prefix).is_none());
+            // 前缀自身 → 返回空
+            let exact = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
+            assert_eq!(
+                strip_prefix_ci(exact, prefix).unwrap(),
+                std::path::Path::new("")
+            );
+            // 部分段重合（models2）不算前缀，防迁移误改写
+            let sibling = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models2\\x.gguf");
+            assert!(strip_prefix_ci(sibling, prefix).is_none());
+        } else {
+            // Unix：大小写敏感、仅 `/` 为分隔符
+            let prefix = std::path::Path::new("/home/user/zapdata/models");
+            let path = std::path::Path::new("/home/user/zapdata/models/llm/model.gguf");
+            assert_eq!(
+                strip_prefix_ci(path, prefix).unwrap(),
+                std::path::Path::new("llm/model.gguf")
+            );
+            // 大小写不同 → None
+            let mixed = std::path::Path::new("/Home/User/zapdata/models/m.gguf");
+            assert!(strip_prefix_ci(mixed, prefix).is_none());
+            // 不在前缀下 → None
+            let other = std::path::Path::new("/opt/other/x");
+            assert!(strip_prefix_ci(other, prefix).is_none());
+            // 前缀自身 → 返回空
+            let exact = std::path::Path::new("/home/user/zapdata/models");
+            assert_eq!(
+                strip_prefix_ci(exact, prefix).unwrap(),
+                std::path::Path::new("")
+            );
+            // 部分段重合（models2）不算前缀，防迁移误改写
+            let sibling = std::path::Path::new("/home/user/zapdata/models2/x.gguf");
+            assert!(strip_prefix_ci(sibling, prefix).is_none());
+        }
     }
 
     #[test]

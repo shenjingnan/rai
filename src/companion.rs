@@ -1219,6 +1219,7 @@ mod tests {
                     imported_at: "t".into(),
                 }],
                 active_model_id: Some(id.to_string()),
+                completed_migrations: Vec::new(),
             };
             std::fs::create_dir_all(&old_root).unwrap();
             let json = serde_json::to_string_pretty(&lib).unwrap();

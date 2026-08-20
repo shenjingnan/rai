@@ -826,6 +826,7 @@ mod tests {
                     imported_at: "t".into(),
                 }],
                 active_model_id: Some(id.to_string()),
+                completed_migrations: Vec::new(),
             };
             std::fs::create_dir_all(&comp_dir).unwrap();
             std::fs::write(

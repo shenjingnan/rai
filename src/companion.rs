@@ -66,6 +66,10 @@ pub struct CompanionLibrary {
     pub models: Vec<CompanionModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<String>,
+    /// 已完成的一次性迁移标记（如 "motion-registration-v1"）；缺失视为均未执行。
+    /// 不 bump SCHEMA_VERSION：新字段对老文件是宽容默认，老代码读新文件忽略未知字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_migrations: Vec<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -78,6 +82,7 @@ impl Default for CompanionLibrary {
             schema_version: SCHEMA_VERSION,
             models: Vec::new(),
             active_model_id: None,
+            completed_migrations: Vec::new(),
         }
     }
 }
@@ -805,6 +810,54 @@ pub fn migrate_legacy_if_empty() -> Result<Option<String>, String> {
     Ok(Some(model.id))
 }
 
+/// 存量伙伴一次性迁移：为库中所有伙伴补注册未登记的动作/表情文件。
+///
+/// 幂等闸门：`completed_migrations` 含本迁移标记即跳过。扫描/回写**不持锁**
+/// （大目录 IO 不进临界区）；标记落库在短锁内重读后只追加标记字段，避免与
+/// 并发导入互相覆盖。返回发生回写的模型数（0 = 无需处理或已迁移）。
+pub fn register_motions_for_existing() -> Result<usize, String> {
+    let models: Vec<CompanionModel> = {
+        let _g = lock();
+        let lib = load_library_inner()?;
+        if lib
+            .completed_migrations
+            .iter()
+            .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+        {
+            return Ok(0);
+        }
+        lib.models
+            .iter()
+            .filter(|m| quick_valid(m))
+            .cloned()
+            .collect()
+    };
+
+    let mut touched = 0usize;
+    for model in &models {
+        match register_missing_motion_files(Path::new(&model.model_file)) {
+            Ok(true) => touched += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!("伙伴 {} 补注册动作/表情失败: {e}", model.id),
+        }
+    }
+
+    {
+        let _g = lock();
+        let mut lib = load_library_inner()?;
+        if !lib
+            .completed_migrations
+            .iter()
+            .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+        {
+            lib.completed_migrations
+                .push(MOTION_REGISTRATION_MIGRATION.to_string());
+            save_library_inner(&lib)?;
+        }
+    }
+    Ok(touched)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,12 +1018,71 @@ mod tests {
                 .unwrap();
             assert_eq!(extra.len(), 2);
             assert_eq!(
-                refs.get("Expressions").and_then(|e| e.as_array()).unwrap().len(),
+                refs.get("Expressions")
+                    .and_then(|e| e.as_array())
+                    .unwrap()
+                    .len(),
                 2
             );
             // 源目录清单保持原样（不污染用户文件）。
             let src_json = read_manifest(&src.join("火花.model3.json"));
-            assert!(src_json.get("FileReferences").unwrap().get("Motions").is_none());
+            assert!(
+                src_json
+                    .get("FileReferences")
+                    .unwrap()
+                    .get("Motions")
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn test_register_motions_for_existing_migrates_and_is_idempotent() {
+        run_with_temp_home(|home| {
+            let src = home.join("存量");
+            make_valid_model(&src, "old.model3.json");
+            add_unregistered_assets(&src);
+            let (model, _) = import_from_dir(&src).unwrap();
+            // 手动还原清单为未注册状态，模拟「老版本导入、还没补注册」的存量。
+            std::fs::write(
+                Path::new(&model.model_file),
+                r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
+            )
+            .unwrap();
+
+            let touched = register_motions_for_existing().unwrap();
+            assert_eq!(touched, 1);
+            let json = read_manifest(Path::new(&model.model_file));
+            assert!(json.get("FileReferences").unwrap().get("Motions").is_some());
+
+            // 标记已写入 → 二次调用直接跳过（即使再手动抹掉注册也不再处理）。
+            let lib = load_library_fast().unwrap();
+            assert!(lib
+                .completed_migrations
+                .iter()
+                .any(|m| m == MOTION_REGISTRATION_MIGRATION));
+            std::fs::write(
+                Path::new(&model.model_file),
+                r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
+            )
+            .unwrap();
+            assert_eq!(register_motions_for_existing().unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn test_library_json_without_migrations_field_still_loads() {
+        run_with_temp_home(|_home| {
+            let dir = get_companions_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            // 老版本 library.json（无 completed_migrations 字段）宽容加载。
+            std::fs::write(
+                dir.join(LIBRARY_FILE),
+                r#"{"schema_version":1,"models":[],"active_model_id":null}"#,
+            )
+            .unwrap();
+            let lib = load_library_fast().unwrap();
+            assert!(lib.completed_migrations.is_empty());
         });
     }
 

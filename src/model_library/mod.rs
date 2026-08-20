@@ -1442,6 +1442,51 @@ mod tests {
         }
     }
 
+    /// LLM 预设安装布局：raw 单文件落在 `<models>/<name>/<file_name>`，带 managed 元数据。
+    /// `download_llm_model` 的幂等预检（managed_install_dir + file_name）依赖该布局。
+    #[test]
+    fn test_install_llm_raw_layout() {
+        use crate::kws::model::tests::{serve_many, sha256_hex};
+
+        run_with_temp_home(|_| {
+            // 与真实预设同构：registry.name = 安装目录名，file_name = manifest archive 文件名
+            let bytes = b"GGUF-test-payload".to_vec();
+            let asset = crate::kws::model::ModelAsset {
+                name: "Qwen3-0.6B".into(),
+                role: "llm-test-raw".into(),
+                version: "test".into(),
+                kind: Some("raw".into()),
+                archive: "Qwen3-0.6B-Q4_K_M.gguf".into(),
+                source: serve_many(bytes.clone()),
+                sha256: sha256_hex(&bytes),
+                size_bytes: bytes.len() as u64,
+                license: "Apache-2.0".into(),
+            };
+            let mut reg = test_reg_model("Qwen3-0.6B", "llm-raw-test");
+            reg.model_type = ModelType::Llm;
+            reg.runtime = "llama.cpp".into();
+            reg.format = "GGUF".into();
+            reg.file_name = Some("Qwen3-0.6B-Q4_K_M.gguf".into());
+            reg.required_assets = vec!["llm-test-raw".into()];
+
+            let final_dir =
+                stage_and_commit(&reg, &[(&asset, &[])], asset.size_bytes, &mut |_| {}, None)
+                    .unwrap();
+            let final_file = final_dir.join("Qwen3-0.6B-Q4_K_M.gguf");
+            assert!(
+                final_file.is_file(),
+                "GGUF 应落在 <models>/<name>/<file_name>"
+            );
+            assert_eq!(std::fs::read(&final_file).unwrap(), bytes);
+            assert!(final_dir.join(".zapmomo-lib.json").is_file());
+            // command 幂等预检用 managed_install_dir(model).join(file_name)，必须与落盘位置一致
+            assert!(paths_equal(
+                &final_file,
+                &managed_install_dir(&reg).join("Qwen3-0.6B-Q4_K_M.gguf")
+            ));
+        });
+    }
+
     /// staging 保证：任一 required asset 失败，正式模型目录不得出现半安装状态。
     #[test]
     fn test_install_staging_failure_leaves_no_partial() {

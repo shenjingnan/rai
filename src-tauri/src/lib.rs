@@ -1136,6 +1136,103 @@ async fn download_tts_model(
     .map_err(|e| format!("下载任务异常: {e}"))?
 }
 
+/// `download_llm_model` 的返回：最终模型文件路径 + 是否写入了 settings 配置。
+#[derive(Serialize)]
+struct LlmDownloadResult {
+    model_path: String,
+    applied: bool,
+}
+
+/// 下载 LLM 预设模型（registry id，如 "qwen3-0.6b-q4-k-m"），完成后按需写入 [llm].model_path。
+///
+/// 复用模型库安装链路（staging → sha256 → 原子 commit → managed 元数据），并与模型库下载
+/// 共用 ModelLibraryState（全应用同时只允许一个 managed 下载）。进度经
+/// `llm-model-download-progress` 事件推送。模型加载不在此做：由前端确认无 voice 会话后
+/// 调 load_llm_model（load_llm_impl 无切换保护，voice 运行中替换引擎会造成双模型）。
+#[tauri::command]
+async fn download_llm_model(
+    app: AppHandle,
+    state: State<'_, ModelLibraryState>,
+    id: String,
+) -> Result<LlmDownloadResult, String> {
+    let flag = state.in_progress.clone();
+    if flag.swap(true, Ordering::SeqCst) {
+        return Err("模型下载已在进行中，请稍候".to_string());
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    *state.current_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+
+    let model =
+        model_library::registry::model_by_id(&id).ok_or_else(|| format!("未知的模型：{id}"))?;
+    // 早退需手动复位（guard 在 spawn_blocking 闭包内，覆盖不到这里）
+    if model.model_type != LibModelType::Llm
+        || model.download.is_none()
+        || model.file_name.is_none()
+    {
+        flag.store(false, Ordering::SeqCst);
+        *state.current_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Err("该模型不是可下载的 LLM 预设".to_string());
+    }
+
+    let app = app.clone();
+    let cancel = state.cancel.clone();
+    let install_cancel = cancel.clone();
+    let current_id = state.current_id.clone();
+    let final_file = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LibraryDownloadGuard {
+            in_progress: flag,
+            cancel,
+            current_id,
+        };
+        let final_file = model_library::managed_install_dir(model)
+            .join(model.file_name.as_deref().unwrap_or_default());
+        // 幂等预检：最终文件已存在（此前经模型库下载过）→ 跳过下载。
+        // install_managed_model 总是先下载到全新 staging 再 commit，不预检会对已存在模型重复全量下载。
+        if final_file.is_file() {
+            let _ = app.emit(
+                "llm-model-download-progress",
+                DownloadProgressPayload {
+                    stage: "done".to_string(),
+                    percent: 100.0,
+                    message: "模型已就绪".to_string(),
+                },
+            );
+            return Ok(final_file);
+        }
+        let mut progress = |p: zapmomo::kws::model::DownloadProgress| {
+            let _ = app.emit(
+                "llm-model-download-progress",
+                DownloadProgressPayload {
+                    stage: download_stage_str(p.stage).to_string(),
+                    percent: p.percent,
+                    message: p.message,
+                },
+            );
+        };
+        model_library::install_managed_model(model, &mut progress, Some(&install_cancel))
+            .map(|_| final_file)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("下载任务异常: {e}"))??;
+
+    // 条件写配置：当前已配置且文件存在（用户手动选择过）则不覆盖；
+    // 未配置 / 配置了缺失路径（models_present=false 的两种情况）都写入新下载的模型。
+    let applied = match llm_resolved_config() {
+        Ok(cfg) if cfg.model_path.is_file() => false,
+        Ok(_) => {
+            model_library::set_selected_model(LibModelType::Llm, &final_file)?;
+            true
+        }
+        // 配置读取失败：不动 settings，仅返回路径（前端只刷新展示，不自动加载）
+        Err(_) => false,
+    };
+    Ok(LlmDownloadResult {
+        model_path: final_file.display().to_string(),
+        applied,
+    })
+}
+
 /// 本地 LLM 引擎状态：懒创建的 worker 线程引擎。
 struct LlmState {
     engine: Arc<Mutex<Option<Arc<LlmEngine>>>>,
@@ -3334,6 +3431,7 @@ pub fn run() {
             stop_tts,
             is_tts_synthesizing,
             download_tts_model,
+            download_llm_model,
             get_llm_config,
             load_llm_model,
             unload_llm_model,

@@ -65,7 +65,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: lts/*
+          # 版本单一来源 .node-version（本地 fnm 与 CI 读同一文件）
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install frontend deps

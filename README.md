@@ -66,7 +66,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 项目未申请 Apple Developer 证书，安装包**未签名**。每次从 Releases 下载后，首次启动都会被系统拦截（提示「无法验证开发者」）。请先将 App 拖入「应用程序」，再执行：
 
 ```bash
-xattr -cr "/Applications/Zap Momo.app"
+xattr -cr "/Applications/ZapMomo.app"
 ```
 
 随后启动即可正常打开。若 App 不在「应用程序」，把命令里的路径换成实际位置；或右键 App →「打开」→ 再次点击「打开」。

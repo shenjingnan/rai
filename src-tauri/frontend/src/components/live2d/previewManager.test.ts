@@ -20,7 +20,7 @@ const { ApplicationMock, appInstances, fromMock, modelInstances, boundsMock, lay
       destroy: ReturnType<typeof vi.fn>;
       internalModel: {
         motionManager: {
-          definitions: Record<string, { File: string }[]>;
+          definitions: Partial<Record<string, { File: string }[]>>;
           startMotion: ReturnType<typeof vi.fn>;
         };
         expressionManager?: {

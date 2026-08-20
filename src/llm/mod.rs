@@ -135,6 +135,14 @@ impl LlmEngine {
         self.ready.load(Ordering::Relaxed)
     }
 
+    /// 当前是否正在生成（生成互斥：voice 与 GUI 不能同时生成）。
+    ///
+    /// 供切换/卸载保护使用：仅当 voice 会话正在用 LLM 生成时才需要阻止切换，
+    /// 空闲（待唤醒）时切换是安全的——voice 会从共享引擎槽感知新引擎。
+    pub fn is_generating(&self) -> bool {
+        self.generating.load(Ordering::Relaxed)
+    }
+
     /// 当前实际加载的模型路径（`None` = 未加载）。
     pub fn loaded_model_path(&self) -> Option<std::path::PathBuf> {
         self.loaded_path.lock().ok().and_then(|g| g.clone())

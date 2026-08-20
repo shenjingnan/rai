@@ -8,6 +8,7 @@ use std::io::Read;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use llama_cpp_2::context::LlamaContext;
@@ -27,9 +28,26 @@ use crate::llm::types::{
     ToolDefinition,
 };
 
+/// llama.cpp 后端只能全局初始化一次（`LlamaBackend::init` 用全局 AtomicBool 保证，
+/// 二次调用返回 `BackendAlreadyInitialized`）。切换/重建引擎时若每个 provider 各自 init
+/// 会冲突，因此用 `OnceLock` 全局单例，所有引擎共享同一 backend。
+/// 初始化失败是致命错误（llama 后端无法继续），直接 expect。
+static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+
+fn llama_backend() -> &'static LlamaBackend {
+    LLAMA_BACKEND.get_or_init(|| {
+        let mut backend =
+            LlamaBackend::init().expect("llama.cpp 后端初始化失败（仅首次初始化一次）");
+        // 静音 llama.cpp 内部日志（graph_reserve / sched_reserve 等加载噪音）。
+        // 真正的错误仍经 provider 返回的 LlmError 传播，不依赖这些日志。
+        backend.void_logs();
+        backend
+    })
+}
+
 /// 本地 llama.cpp provider。
 pub struct LocalLlamaProvider {
-    backend: LlamaBackend,
+    backend: &'static LlamaBackend,
     /// `'static` 引用（由 `Box::leak` 取得，`unload` 时 `Box::from_raw` 释放）。
     model: Option<&'static LlamaModel>,
     context: Option<LlamaContext<'static>>,
@@ -38,13 +56,8 @@ pub struct LocalLlamaProvider {
 
 impl LocalLlamaProvider {
     pub fn new(config: ResolvedLlmConfig) -> Result<Self, LlmError> {
-        let mut backend =
-            LlamaBackend::init().map_err(|e| LlmError::BackendUnavailable(e.to_string()))?;
-        // 静音 llama.cpp 内部日志（graph_reserve / sched_reserve 等加载噪音）。
-        // 真正的错误仍经 provider 返回的 LlmError 传播，不依赖这些日志。
-        backend.void_logs();
         Ok(Self {
-            backend,
+            backend: llama_backend(),
             model: None,
             context: None,
             config,
@@ -116,7 +129,7 @@ impl LlmProvider for LocalLlamaProvider {
             gpu_layers as u32
         };
         let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
-        let model = LlamaModel::load_from_file(&self.backend, path, &model_params)
+        let model = LlamaModel::load_from_file(self.backend, path, &model_params)
             .map_err(|e| LlmError::LoadFailed(e.to_string()))?;
         let model: &'static LlamaModel = Box::leak(Box::new(model));
 
@@ -127,7 +140,7 @@ impl LlmProvider for LocalLlamaProvider {
             .with_n_batch(p.batch_size as u32)
             .with_n_threads(p.threads)
             .with_n_threads_batch(p.threads);
-        let context = match model.new_context(&self.backend, ctx_params) {
+        let context = match model.new_context(self.backend, ctx_params) {
             Ok(ctx) => ctx,
             Err(e) => {
                 // context 创建失败时释放已泄漏的 model，避免内存泄漏

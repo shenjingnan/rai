@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { queryClient } from "@/lib/queryClient";
 import type { CatalogPage, UnifiedModelItem } from "@/types/catalog";
+import type { InstallState, LibraryModel } from "@/types/modelLibrary";
 
 const { invokeMock, listeners } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -33,6 +34,69 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
+
+/** 内置精选（provider=building，走 BuiltinActions 操作区）。 */
+function builtinItem(modelId: string, displayName: string): UnifiedModelItem {
+  return {
+    canonicalKey: `building:${modelId}`,
+    modelId,
+    provider: "building",
+    remote: null,
+    builtin: {
+      displayName,
+      description: `内置描述 ${displayName}`,
+      modelType: "llm",
+      runtime: "llama.cpp",
+      format: "GGUF",
+      languages: ["zh"],
+      tags: ["qwen3"],
+      parameterCount: "0.6B",
+      sizeBytes: 396_705_472,
+    },
+    modelType: "llm",
+    compatibility: "compatible",
+    compatibilityNotes: null,
+    recommendedVariant: null,
+    installs: [],
+    localSummary: { installedArtifactCount: 0, hasCurrentArtifact: false, activeDownloadCount: 0 },
+    confirmed: false,
+  };
+}
+
+/** 已安装的 managed LibraryModel（BuiltinActions 按 id/repoId 匹配）。 */
+function libraryModel(
+  id: string,
+  displayName: string,
+  opts?: { current?: boolean; ownership?: "managed" | "external"; installState?: InstallState },
+): LibraryModel {
+  return {
+    id,
+    name: displayName,
+    displayName,
+    modelType: "llm",
+    runtime: "llama.cpp",
+    format: "GGUF",
+    description: "",
+    languages: [],
+    tags: [],
+    parameterCount: "0.6B",
+    quantization: "Q4_K_M",
+    version: "instruct",
+    sizeBytes: 396_705_472,
+    homepage: null,
+    downloadable: true,
+    source: "registry",
+    ownership: opts?.ownership ?? "managed",
+    installState: opts?.installState ?? "installed",
+    current: opts?.current ?? false,
+    runtimeStatus: "inactive",
+    localPath: "/home/user/.zapmomo/models/Qwen3-0.6B",
+    installedAt: "2026-08-20T00:00:00Z",
+    installId: id,
+    repoId: null,
+    compatibility: "verified",
+  };
+}
 
 function unifiedItem(
   modelId: string,
@@ -74,6 +138,7 @@ function unifiedItem(
 }
 
 let catalogPage: CatalogPage<UnifiedModelItem>;
+let libraryModels: LibraryModel[];
 
 function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
   switch (cmd) {
@@ -103,7 +168,7 @@ function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
         enable_thinking: false,
       });
     case "list_model_library":
-      return Promise.resolve([]);
+      return Promise.resolve(libraryModels);
     case "catalog_search_models": {
       // 支持 category / search 的简单过滤（模拟 HF 服务端）
       const query = args?.query as { category?: string; search?: string };
@@ -161,6 +226,7 @@ beforeEach(() => {
     items: [unifiedItem("Qwen/Qwen3-4B-GGUF"), unifiedItem("Qwen/Qwen3-0.6B-GGUF")],
     hasMore: false,
   };
+  libraryModels = [];
   queryClient.clear(); // 隔离 React Query 缓存（单例跨测试共享）
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) =>
@@ -262,5 +328,130 @@ describe("LibraryPage", () => {
       timeout: 3000,
     });
     expect(screen.getByText("Whisper")).toBeInTheDocument();
+  });
+
+  describe("已安装模型卸载", () => {
+    async function selectBuiltinInstalled(displayName: string) {
+      render(
+        <MemoryRouter initialEntries={["/models/library"]}>
+          <App />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(screen.getByText(displayName)).toBeInTheDocument(), {
+        timeout: 3000,
+      });
+      await userEvent.click(screen.getByText(displayName));
+      await waitFor(() => expect(screen.getByText("已安装")).toBeInTheDocument(), {
+        timeout: 3000,
+      });
+    }
+
+    it("已安装内置精选显示卸载按钮；确认后调 delete_model", async () => {
+      libraryModels = [libraryModel("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")];
+      catalogPage = {
+        items: [builtinItem("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")],
+        hasMore: false,
+      };
+      await selectBuiltinInstalled("Qwen3 0.6B Instruct Q4_K_M");
+
+      await userEvent.click(screen.getByRole("button", { name: "卸载" }));
+      expect(await screen.findByText(/确定要卸载/)).toBeInTheDocument();
+      expect(screen.getByText("模型文件将从本地删除。")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "确认卸载" }));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("delete_model", { id: "qwen3-0.6b-q4-k-m" });
+      });
+    });
+
+    it("确认框取消不调用 delete_model", async () => {
+      libraryModels = [libraryModel("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")];
+      catalogPage = {
+        items: [builtinItem("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")],
+        hasMore: false,
+      };
+      await selectBuiltinInstalled("Qwen3 0.6B Instruct Q4_K_M");
+
+      await userEvent.click(screen.getByRole("button", { name: "卸载" }));
+      await userEvent.click(await screen.findByRole("button", { name: "取消" }));
+
+      // 确认框带退出动画，DOM 延迟移除，用 waitFor 等待
+      await waitFor(() => {
+        expect(screen.queryByText(/确定要卸载/)).not.toBeInTheDocument();
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith("delete_model", expect.anything());
+    });
+
+    it("当前使用中的模型不显示卸载按钮", async () => {
+      libraryModels = [
+        libraryModel("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M", { current: true }),
+      ];
+      catalogPage = {
+        items: [builtinItem("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")],
+        hasMore: false,
+      };
+      await selectBuiltinInstalled("Qwen3 0.6B Instruct Q4_K_M");
+
+      expect(screen.getByText("已安装")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+      // 当前模型也不显示「设为当前模型」（本来就是当前）
+      expect(screen.queryByRole("button", { name: "设为当前模型" })).not.toBeInTheDocument();
+    });
+
+    it("未安装（not_installed 记录）内置精选显示下载而非已安装/卸载", async () => {
+      // 回归：list_model_library 对未安装 registry 模型也返回记录，仅按 id 匹配会误判为已安装
+      libraryModels = [
+        libraryModel("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M", {
+          installState: "not_installed",
+        }),
+      ];
+      catalogPage = {
+        items: [builtinItem("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")],
+        hasMore: false,
+      };
+      render(
+        <MemoryRouter initialEntries={["/models/library"]}>
+          <App />
+        </MemoryRouter>,
+      );
+      await waitFor(
+        () => expect(screen.getByText("Qwen3 0.6B Instruct Q4_K_M")).toBeInTheDocument(),
+        {
+          timeout: 3000,
+        },
+      );
+      await userEvent.click(screen.getByText("Qwen3 0.6B Instruct Q4_K_M"));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "下载" })).toBeInTheDocument();
+      });
+      expect(screen.queryByText("已安装")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+    });
+
+    it("external 本地导入模型显示「移除」语义（不删原始文件）", async () => {
+      libraryModels = [
+        libraryModel("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M", {
+          ownership: "external",
+        }),
+      ];
+      catalogPage = {
+        items: [builtinItem("qwen3-0.6b-q4-k-m", "Qwen3 0.6B Instruct Q4_K_M")],
+        hasMore: false,
+      };
+      await selectBuiltinInstalled("Qwen3 0.6B Instruct Q4_K_M");
+
+      await userEvent.click(screen.getByRole("button", { name: "卸载" }));
+      expect(await screen.findByText(/确定要从模型库移除/)).toBeInTheDocument();
+      expect(
+        screen.getByText("只会取消 ZapMomo 中的登记，不会删除你的原始模型文件。"),
+      ).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "确认移除" }));
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("delete_model", { id: "qwen3-0.6b-q4-k-m" });
+      });
+    });
   });
 });

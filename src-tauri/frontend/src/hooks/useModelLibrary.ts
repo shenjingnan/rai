@@ -191,13 +191,20 @@ export function useModelLibrary(): ModelLibraryState {
         toast.success(
           target?.ownership === "external" ? "✓ 已从模型库移除，不会删除原始文件" : "✓ 模型已卸载",
         );
+        // 同步各能力页（如 LLM 配置页 models_present → 重新出现一键下载区）
+        await Promise.allSettled([
+          kws.config.refresh(),
+          asr.config.refresh(),
+          llm.refreshConfig(),
+          tts.refreshConfig(),
+        ]);
       } catch (e) {
         toast.error(String(e));
       } finally {
         await refresh();
       }
     },
-    [models, toast, refresh],
+    [models, toast, refresh, kws, asr, llm, tts],
   );
 
   const addLocal = useCallback(

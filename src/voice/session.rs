@@ -41,6 +41,7 @@ use crate::voice::synthesizer::{SynthHandle, SynthResult};
 use sherpa_onnx::OnlineStream;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -62,6 +63,10 @@ pub struct VoiceSession {
     llm: Arc<LlmEngine>,
     /// 会话订阅的 LLM 事件流（与 GUI 的 forward 订阅互不抢事件）
     llm_rx: Receiver<LlmEvent>,
+    /// 宿主（Tauri LlmState）共享引擎槽：运行时引擎可能被外部切换（set_current_model /
+    /// load），会话在每次编排循环开头检查槽内引擎是否变化并重新绑定，从而感知新模型。
+    /// `None` = CLI 自建引擎，不感知外部切换。
+    llm_slot: Option<Arc<Mutex<Option<Arc<LlmEngine>>>>>,
     speaker: Box<dyn AudioPlayer>,
     synth: SynthHandle,
     mic: MicLoop,
@@ -111,22 +116,31 @@ impl VoiceSession {
     ///
     /// 校验并创建各引擎 + 打开麦克风与音频输出，任一失败返回带安装提示的错误。
     ///
-    /// - `llm`：`Some` 复用宿主（Tauri `LlmState`）共享的引擎（**只加载一份模型**）；
-    ///   `None` 自建（CLI `voice run`）。
+    /// - `llm_slot`：`Some` 复用宿主（Tauri `LlmState`）的共享引擎槽（**只加载一份模型**），
+    ///   运行时引擎被外部切换时会动态感知并重新绑定；`None` 自建（CLI `voice run`）。
     /// - **说完判定由 session 内 RMS 静音统一控制**，因此这里强制禁用 sherpa endpoint
     ///   （避免其 rule1/rule2 的 1.2s/2.4s 尾静音在期望的 3s 前提前断句并 reset 流）。
     pub fn new_with_parts(
         mut cfg: ResolvedSessionConfig,
         emit: Box<dyn Fn(VoiceEvent) + Send>,
         running: Arc<AtomicBool>,
-        llm: Option<Arc<LlmEngine>>,
+        llm_slot: Option<Arc<Mutex<Option<Arc<LlmEngine>>>>>,
     ) -> Result<Self, String> {
         cfg.asr.enable_endpoint = false;
         let kws = KwsEngine::new(cfg.kws.clone())?;
         let asr = AsrEngine::new(cfg.asr.clone())?;
-        let llm = match llm {
-            Some(e) => e,
-            None => Arc::new(LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?),
+        let llm = if let Some(slot) = &llm_slot {
+            // 宿主共享引擎：槽内应有引擎（start_voice_session_impl 已确保）；为空则自建兜底
+            match slot
+                .lock()
+                .map_err(|_| "llm lock poisoned".to_string())?
+                .clone()
+            {
+                Some(e) => e,
+                None => Arc::new(LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?),
+            }
+        } else {
+            Arc::new(LlmEngine::new(cfg.llm.clone()).map_err(|e| e.to_string())?)
         };
         let llm_rx = llm.subscribe();
         let tts = TtsEngine::new(cfg.tts.clone())?;
@@ -149,6 +163,7 @@ impl VoiceSession {
             asr,
             llm,
             llm_rx,
+            llm_slot,
             speaker,
             synth,
             mic,
@@ -201,6 +216,9 @@ impl VoiceSession {
             if !self.running.load(Ordering::Relaxed) {
                 break;
             }
+            // 共享引擎可能被外部切换（set_current_model / load）：每轮开头检查并重新绑定，
+            // 使 voice 在空闲（待唤醒）时也能跟随用户切换的模型
+            self.refresh_llm_if_switched()?;
             // 打断优先于状态推进
             if self.barge_in.load(Ordering::Relaxed)
                 && matches!(self.state, SessionState::Thinking | SessionState::Speaking)
@@ -222,6 +240,31 @@ impl VoiceSession {
             reason: StoppedReason::Manual,
             turns: self.turns,
         });
+        Ok(())
+    }
+
+    /// 检查共享引擎槽内引擎是否已被外部切换（`set_current_model` / `load`），是则重新
+    /// 绑定当前引擎与事件订阅。空闲（待唤醒）时切换是安全的；生成中由宿主侧保护阻止切换。
+    fn refresh_llm_if_switched(&mut self) -> Result<(), String> {
+        let Some(slot) = &self.llm_slot else {
+            return Ok(()); // CLI 自建引擎：无外部切换
+        };
+        let current = slot
+            .lock()
+            .map_err(|_| "llm lock poisoned".to_string())?
+            .clone();
+        let Some(new_llm) = current else {
+            return Ok(()); // 槽被清空（unload）：维持当前引擎，下次生成仍可用
+        };
+        if Arc::ptr_eq(&new_llm, &self.llm) {
+            return Ok(()); // 引擎未变
+        }
+        self.llm = new_llm;
+        self.llm_rx = self.llm.subscribe();
+        if !self.llm.is_ready() {
+            self.llm.load_blocking(LLM_LOAD_TIMEOUT)?;
+        }
+        tracing::info!("语音会话已切换到新 LLM 引擎");
         Ok(())
     }
 

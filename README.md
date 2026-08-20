@@ -33,6 +33,21 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **CI/CD** — GitHub Actions 自动化测试、发布、覆盖率报告
 - **Shell 补全** — 支持 bash / zsh / fish / powershell / elvish 自动补全
 
+## 下载桌面应用
+
+前往 [Releases](https://github.com/shenjingnan/zapmomo/releases/latest) 下载最新版安装包，Release 说明顶部有各平台的选择表格与下载按钮：
+
+| 系统 | 芯片 / 架构 | 下载 |
+| --- | --- | --- |
+| Windows 10 / 11 | x64 | `ZapMomo_<版本>_Windows_x64.exe`（`.msi` 供企业批量部署） |
+| macOS 13+ | Apple Silicon（M1/M2/M3/M4） | `ZapMomo_<版本>_macOS_arm64.dmg` |
+| macOS 13+ | Intel | `ZapMomo_<版本>_macOS_x64.dmg` |
+| Ubuntu / Debian | amd64 | `ZapMomo_<版本>_Linux_amd64.deb`（或 `.AppImage` 免安装） |
+| Fedora / RHEL | x86_64 | `ZapMomo_<版本>_Linux_x86_64.rpm`（或 `.AppImage` 免安装） |
+
+> 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
+> KWS / ASR / TTS 模型资产不随安装包分发，首次使用请在应用「模型」页或用 CLI `install-model` 下载。
+
 ## 快速开始
 
 ```bash

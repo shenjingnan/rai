@@ -7,7 +7,7 @@ const windowButtonClass =
 
 /** 非 macOS 平台的自绘窗口三键（最小化/最大化/关闭）。
  *
- * 宿主容器决定摆放位置：Linux 在 Sidebar 左上角，Windows 在右上角悬浮条。
+ * 宿主容器决定摆放位置：Linux/Windows 均在 AppShell 右上角悬浮条。
  */
 export function WindowControls() {
   return (

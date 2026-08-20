@@ -441,10 +441,10 @@ describe("PreviewManager 动作/表情目录与播放", () => {
     expect(model.internalModel.motionManager.startMotion).toHaveBeenCalledWith("Extra", 1, 3);
 
     expect(await handle.applyExpression(0)).toBe(true);
-    expect(model.internalModel.expressionManager!.setExpression).toHaveBeenCalledWith(0);
+    expect(model.internalModel.expressionManager?.setExpression).toHaveBeenCalledWith(0);
 
     handle.resetExpression();
-    expect(model.internalModel.expressionManager!.resetExpression).toHaveBeenCalled();
+    expect(model.internalModel.expressionManager?.resetExpression).toHaveBeenCalled();
 
     // 释放后（不再是当前占用者）播放安全 no-op。
     handle.release();

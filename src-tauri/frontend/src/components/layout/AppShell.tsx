@@ -5,8 +5,8 @@ import { Sidebar } from "./Sidebar";
 import { WindowControls } from "./WindowControls";
 
 /** 统一 App Shell：无全宽标题栏。
- * macOS 红绿灯由系统绘制（Sidebar 左上留白）；Linux 在 Sidebar 左上角自绘三键；
- * Windows 三键悬浮右上角（透明拖拽条，无标题栏）。 */
+ * macOS 红绿灯由系统绘制（Sidebar 左上留白）；Linux/Windows 三键悬浮右上角
+ * （透明拖拽条，无标题栏）。 */
 export function AppShell() {
   const mac = isMacOs();
   const windows = isWindows();
@@ -22,8 +22,8 @@ export function AppShell() {
         windows && "border border-window-border",
       )}
     >
-      {/* Windows：右上角透明悬浮三键条（可拖拽窗口），不占布局、无标题栏背景。 */}
-      {windows && (
+      {/* Linux/Windows：右上角透明悬浮三键条（可拖拽窗口），不占布局、无标题栏背景。 */}
+      {!mac && (
         <div
           data-tauri-drag-region
           className="absolute right-0 top-0 z-10 flex h-9 items-center justify-end"

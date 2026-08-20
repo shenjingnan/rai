@@ -9,9 +9,9 @@ import {
   useState,
 } from "react";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
-import { SharedLive2dStage } from "@/components/live2d/SharedLive2dStage";
-import type { SharedLive2dStageHandle } from "@/components/live2d/SharedLive2dStage";
 import type { Live2dCatalog } from "@/components/live2d/previewManager";
+import type { SharedLive2dStageHandle } from "@/components/live2d/SharedLive2dStage";
+import { SharedLive2dStage } from "@/components/live2d/SharedLive2dStage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -331,7 +331,6 @@ export function CompanionPage() {
   /** 最近一次待移除目标：关闭动画期间 removeTarget 已置空，用它兜底保持正文不闪空。 */
   const lastRemoveTarget = useRef<CompanionModelInfo | null>(null);
 
-
   useEffect(() => {
     if (removeTarget) lastRemoveTarget.current = removeTarget;
   }, [removeTarget]);
@@ -581,7 +580,9 @@ export function CompanionPage() {
             {showStage && catalog && (
               <MotionCatalogPanel
                 catalog={catalog}
-                onPlayMotion={(group, index) => void stageHandleRef.current?.playMotion(group, index)}
+                onPlayMotion={(group, index) =>
+                  void stageHandleRef.current?.playMotion(group, index)
+                }
                 onApplyExpression={(index) => void stageHandleRef.current?.applyExpression(index)}
                 onResetExpression={() => stageHandleRef.current?.resetExpression()}
               />
@@ -604,7 +605,7 @@ export function CompanionPage() {
         open={removeTarget != null}
         onClose={() => setRemoveTarget(null)}
         title="移除伙伴"
-        maxWidth="max-w-md"
+        width="md"
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRemoveTarget(null)}>

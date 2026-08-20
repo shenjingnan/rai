@@ -1,7 +1,6 @@
 import { Home, Layers, MessageCircle, Package, Settings, Users } from "lucide-react";
-import { isMacOs, isWindows } from "@/lib/platform";
+import { isMacOs } from "@/lib/platform";
 import { NavItem } from "./NavItem";
-import { WindowControls } from "./WindowControls";
 
 const PRIMARY_NAV = [
   { to: "/home", icon: Home, label: "概览", end: true },
@@ -21,14 +20,12 @@ export function Sidebar() {
       data-tauri-drag-region="deep"
       className="flex w-[248px] shrink-0 flex-col bg-sidebar-background"
     >
-      {/* 顶部条：macOS 系统红绿灯留白；Linux 自绘三键；
-          Windows 纯留白（三键由 AppShell 右上角悬浮条承担）。 */}
+      {/* 顶部条：macOS 系统红绿灯留白；其余平台纯留白
+          （三键由 AppShell 右上角悬浮条承担）。 */}
       <div
         className="flex h-8 shrink-0 items-center pl-3"
         style={mac ? { paddingLeft: "78px" } : undefined}
-      >
-        {!mac && !isWindows() && <WindowControls />}
-      </div>
+      />
 
       <div className="flex items-center justify-center px-6 pt-1">
         <img src="/logo.svg" alt="ZapMomo" className="h-24 w-24" />

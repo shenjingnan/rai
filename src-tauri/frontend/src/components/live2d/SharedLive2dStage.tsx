@@ -1,5 +1,5 @@
-import { useEffect, useImperativeHandle, useRef } from "react";
 import type { Ref } from "react";
+import { useEffect, useImperativeHandle, useRef } from "react";
 import type { ClaimHandle, Live2dCatalog, PreviewSlotCallbacks } from "./previewManager";
 import { getPreviewManager } from "./previewManager";
 

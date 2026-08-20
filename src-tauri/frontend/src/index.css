@@ -122,13 +122,3 @@ body,
 #root {
   background: transparent;
 }
-
-/* 无边框窗口拖拽区：整条标题栏可拖拽，内部交互元素不参与拖拽 */
-[data-tauri-drag-region] {
-  -webkit-app-region: drag;
-}
-[data-tauri-drag-region] button,
-[data-tauri-drag-region] input,
-[data-tauri-drag-region] select {
-  -webkit-app-region: no-drag;
-}

@@ -138,6 +138,26 @@ describe("AppShell 窗口控件的平台布局", () => {
     }
   });
 
+  it("macOS：顶部拖拽条同样拉通全宽（整条可拖动窗口），不自绘三键，主面板顶部让位", () => {
+    const { container } = renderShellWithUserAgent(MAC_UA);
+    const root = shellRoot(container);
+
+    // 不自绘三键：系统红绿灯为原生控件，层级在 webview 之上，不受拖拽条影响
+    const buttons = queryWindowButtons();
+    expect(buttons.minimize).toBeNull();
+    expect(buttons.maximize).toBeNull();
+    expect(buttons.close).toBeNull();
+
+    // 顶部拖拽条存在且拉通全宽（Overlay 标题栏下原生拖拽区被 webview 覆盖，须由 HTML 拖拽区承担）
+    const bar = floatingControlsBar(root);
+    expect(bar).toBeDefined();
+    expect(bar?.className).toContain("left-0");
+    expect(bar?.className).toContain("right-0");
+
+    // 主面板顶部让出拖拽条高度，避免内容被拖拽区覆盖
+    expect(mainPanelOuter(root).className).toContain("pt-9");
+  });
+
   it("macOS：不自绘三键（系统红绿灯），无 CSS 圆角", () => {
     const { container } = renderShellWithUserAgent(MAC_UA);
     const root = shellRoot(container);

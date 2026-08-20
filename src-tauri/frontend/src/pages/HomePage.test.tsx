@@ -26,10 +26,10 @@ vi.mock("@/providers/RuntimeContext", () => ({
   useRuntime: () => state.runtime,
 }));
 
-// Live2dStage 依赖 pixi / WebGL，jsdom 无法运行；且 ResizeObserver 在 jsdom 是空桩、
+// SharedLive2dStage 依赖 pixi / WebGL，jsdom 无法运行；且 ResizeObserver 在 jsdom 是空桩、
 // 预览容器尺寸保持 0，组件不会真正渲染 stage，这里 mock 掉避免模块加载副作用。
-vi.mock("@/components/live2d/Live2dStage", () => ({
-  Live2dStage: () => <div data-testid="live2d-stage" />,
+vi.mock("@/components/live2d/SharedLive2dStage", () => ({
+  SharedLive2dStage: () => <div data-testid="live2d-stage" />,
 }));
 
 function model(id: string, name: string, valid = true): CompanionModelInfo {

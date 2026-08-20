@@ -22,10 +22,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: openMock,
 }));
 
-// Live2dStage 依赖 pixi / WebGL，jsdom 无法运行；预览容器量测（ResizeObserver）在 jsdom
-// 是空桩、尺寸保持 0，本组件不会真正渲染 Live2dStage，这里仍 mock 掉避免模块加载副作用。
-vi.mock("@/components/live2d/Live2dStage", () => ({
-  Live2dStage: () => <div data-testid="live2d-stage" />,
+// SharedLive2dStage 依赖 pixi / WebGL，jsdom 无法运行；预览容器量测（ResizeObserver）在
+// jsdom 是空桩、尺寸保持 0，本组件不会真正渲染 stage，这里仍 mock 掉避免模块加载副作用。
+vi.mock("@/components/live2d/SharedLive2dStage", () => ({
+  SharedLive2dStage: () => <div data-testid="live2d-stage" />,
 }));
 
 function model(id: string, name: string, valid = true): CompanionModelInfo {

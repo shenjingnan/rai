@@ -251,12 +251,13 @@ debug = false
 
 基于 llama.cpp（Rust 绑定 `llama-cpp-2`）的本地大语言模型，支持流式对话与 Agent 工具调用；也可通过 OpenAI 兼容的 `/v1/responses` 接口接入远程 API 或 `llama-server`。
 
-LLM 模型为 **GGUF 文件（用户自备，不走清单下载）**：放入 `~/.zapmomo/models/<任意目录>/` 后由 CLI 自动发现，或用 `[llm] model_path` 指定路径。
+LLM 模型为 **GGUF 文件**：内置清单提供多个可一键下载的预设（应用内「AI 大脑（LLM）配置」页 / 模型库），也支持自备 GGUF 放入 `~/.zapmomo/models/<任意目录>/` 自动发现，或用 `[llm] model_path` 指定路径。
 
 ### 快速开始
 
 ```bash
-# 1. 下载推荐模型（Qwen3-4B-Instruct-2507，Q4_K_M 量化约 2.5GB，自行放到 ~/.zapmomo/models/）
+# 1. 获取模型：桌面应用「AI 大脑（LLM）配置」页一键下载（Qwen3-0.6B / 4B 预设），
+#    或自行下载推荐模型 Qwen3-4B-Instruct-2507（Q4_K_M 量化约 2.5GB）放到 ~/.zapmomo/models/
 # 2. 验证模型可加载
 cargo run -- llm load
 

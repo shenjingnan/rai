@@ -2,6 +2,7 @@ import { ArrowLeft, Info } from "lucide-react";
 import { Link } from "react-router-dom";
 import { LlmAdvancedParams } from "@/components/llm/LlmAdvancedParams";
 import { LlmCoreConfig } from "@/components/llm/LlmCoreConfig";
+import { LlmPresetDownload } from "@/components/llm/LlmPresetDownload";
 import { LlmRunControl } from "@/components/llm/LlmRunControl";
 import { LlmSystemPrompt } from "@/components/llm/LlmSystemPrompt";
 import { isHttpProvider } from "@/components/llm/llmMeta";
@@ -30,6 +31,9 @@ export function LlmPage() {
         </h1>
         <LlmRunControl />
       </header>
+
+      {/* 未配置模型时显示一键下载区；下载完成 models_present=true 后自动消失 */}
+      {!isHttp && llm.config !== null && !llm.config.models_present && <LlmPresetDownload />}
 
       <LlmCoreConfig pick={pick} pickError={pickError} />
 

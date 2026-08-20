@@ -9,6 +9,7 @@ import { useDevices } from "@/hooks/useDevices";
 import { useKwsConfig } from "@/hooks/useKwsConfig";
 import { useListening } from "@/hooks/useListening";
 import { useLlm } from "@/hooks/useLlm";
+import { useLlmModelDownload } from "@/hooks/useLlmModelDownload";
 import { useModelDownload } from "@/hooks/useModelDownload";
 import { useResults } from "@/hooks/useResults";
 import { useTts } from "@/hooks/useTts";
@@ -36,6 +37,7 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
   const llm = useLlm();
   const tts = useTts();
   const voice = useVoiceSession();
+  const llmDownload = useLlmModelDownload(llm, voice);
   // 麦克风选择：跨页面全局共享（KWS/ASR/概览均消费），持久化到 backend settings.toml（顶层 microphone）。
   // 启动时回读后端；旧版本遗留的 localStorage 记忆做一次性迁移（读后即清，仅在读成功后才清理）。
   const [device, setDeviceState] = useState("");
@@ -117,7 +119,7 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
       listening: asrListening,
       results: asrResults,
     },
-    llm,
+    llm: { ...llm, download: llmDownload },
     tts,
     voice,
     device,

@@ -85,12 +85,31 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Cache cargo build artifacts
-        # 缓存 ~/.cargo + target/（含 sherpa-onnx 预编译库，解压目录名含版本号，
-        # 恢复旧缓存不会版本错配）。macOS 双 target 矩阵用 args 区分缓存线，
+        # 缓存 ~/.cargo + target/。macOS 双 target 矩阵用 args 区分缓存线，
         # 避免两个矩阵条目写同一 key 互相覆盖导致另一半永远冷缓存。
+        # 注意：rust-cache 保存前会清空 target/ 下非 cargo 构建目录里的文件，
+        # sherpa-onnx 预编译库会被清成空目录，因此需单独缓存并校验（下一步）。
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v0-rust-${{ matrix.args }}
+
+      - name: Cache sherpa-onnx prebuilt libs
+        # 同 ci.yml check job：rust-cache 恢复出的 sherpa-onnx-prebuilt 可能只剩
+        # 空目录，而 build.rs 只判断目录存在就跳过下载，链接时才报缺库。
+        # macOS 双 target 各自的解压目录名含 arch，共用一个 key 不会互相错配。
+        uses: actions/cache@v6
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rehydrate sherpa-onnx prebuilt libs
+        shell: bash
+        run: |
+          if [ -d target/sherpa-onnx-prebuilt ] \
+            && [ -z "$(find target/sherpa-onnx-prebuilt -type f -print -quit)" ]; then
+            echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
+            rm -rf target/sherpa-onnx-prebuilt
+          fi
 
       - uses: tauri-apps/tauri-action@v1
         with:

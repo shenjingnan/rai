@@ -3,10 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json']
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json', '.github/workflows/**']
   pull_request:
     branches: [main]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json']
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**/*.rs', 'tests/**', 'src-tauri/**', 'package.json', 'package-lock.json', '.github/workflows/**']
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,6 +39,29 @@ jobs:
         # 生成；Cargo.lock 变化时自动回退恢复最近一份缓存，未变依赖仍命中。
         # 保存前自动剔除 workspace 自身 crate 的产物，避免缓存随每次提交膨胀。
         uses: Swatinem/rust-cache@v2
+
+      - name: Cache sherpa-onnx prebuilt libs
+        # rust-cache 保存前会把 target/ 下非 cargo 构建目录里的文件全部清空，
+        # 恢复出的 target/sherpa-onnx-prebuilt 只剩空目录；sherpa-onnx-sys 的
+        # build.rs 却只判断 lib/ 目录是否存在——存在即跳过下载，到链接阶段才报
+        # 「could not find native static library sherpa-onnx-c-api」。因此预编译
+        # 库不能只依赖 rust-cache 缓存 target/ 的副作用，单独缓存一份，并由
+        # 下一步校验文件是否真的存在。
+        uses: actions/cache@v6
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rehydrate sherpa-onnx prebuilt libs
+        # rust-cache 恢复出空目录（目录在、文件全无）时整目录删除，强制
+        # build.rs 重新下载解压；上方缓存命中时本步骤为空操作。
+        shell: bash
+        run: |
+          if [ -d target/sherpa-onnx-prebuilt ] \
+            && [ -z "$(find target/sherpa-onnx-prebuilt -type f -print -quit)" ]; then
+            echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
+            rm -rf target/sherpa-onnx-prebuilt
+          fi
 
       - name: Format check
         run: cargo fmt --check
@@ -95,6 +118,23 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Cache sherpa-onnx prebuilt libs
+        # 同 check job：rust-cache 会清空 target/ 下非构建目录的文件，预编译库
+        # 需单独缓存并在下一步校验（见 check job 注释）。
+        uses: actions/cache@v6
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rehydrate sherpa-onnx prebuilt libs
+        shell: bash
+        run: |
+          if [ -d target/sherpa-onnx-prebuilt ] \
+            && [ -z "$(find target/sherpa-onnx-prebuilt -type f -print -quit)" ]; then
+            echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
+            rm -rf target/sherpa-onnx-prebuilt
+          fi
+
       - name: Lint (app crate)
         run: cargo clippy -p zapmomo-app -- -D warnings
 
@@ -121,6 +161,23 @@ jobs:
       - name: Cache cargo build artifacts
         # 按 OS 自动区分缓存线（key 含 rustc 版本与 job 标识）
         uses: Swatinem/rust-cache@v2
+
+      - name: Cache sherpa-onnx prebuilt libs
+        # 同 check job：rust-cache 会清空 target/ 下非构建目录的文件，预编译库
+        # 需单独缓存并在下一步校验（见 check job 注释）。
+        uses: actions/cache@v6
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rehydrate sherpa-onnx prebuilt libs
+        shell: bash
+        run: |
+          if [ -d target/sherpa-onnx-prebuilt ] \
+            && [ -z "$(find target/sherpa-onnx-prebuilt -type f -print -quit)" ]; then
+            echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
+            rm -rf target/sherpa-onnx-prebuilt
+          fi
 
       - name: Tests
         shell: bash

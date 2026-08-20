@@ -97,12 +97,14 @@ fn repo_models_dir() -> PathBuf {
         .join(&crate::kws::model::tts_asset().name)
 }
 
-/// 默认模型目录选择：用户已安装 > 源码仓库已下载（开发便利）> 用户默认。
+/// 默认模型目录选择：用户已安装 > 旧默认根存量（data_dir 切换后）> 源码仓库已下载（开发便利）> 用户默认。
 ///
 /// 纯决策函数（不访问真实文件系统），便于测试注入路径。
-fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
+fn choose_default_model_dir(user: &Path, legacy: Option<&Path>, repo: &Path) -> PathBuf {
     if user.join(DEFAULT_TOKENS).is_file() {
         user.to_path_buf()
+    } else if legacy.is_some_and(|l| l.join(DEFAULT_TOKENS).is_file()) {
+        legacy.unwrap().to_path_buf()
     } else if repo.join(DEFAULT_TOKENS).is_file() {
         repo.to_path_buf()
     } else {
@@ -110,9 +112,16 @@ fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
     }
 }
 
-/// 默认模型目录（运行时解析：优先用户目录，源码开发时回退到仓库 `./models/`）。
+/// 默认模型目录（运行时解析：优先用户目录，旧根存量兜底，源码开发时回退到仓库 `./models/`）。
 pub fn default_model_dir() -> PathBuf {
-    choose_default_model_dir(&user_default_model_dir(), &repo_models_dir())
+    // legacy 与 user 层次对等：旧根下对应模型的子目录（user 是 `models/<模型名>`）
+    let legacy = crate::config::settings::legacy_models_dir()
+        .map(|l| l.join(&crate::kws::model::tts_asset().name));
+    choose_default_model_dir(
+        &user_default_model_dir(),
+        legacy.as_deref(),
+        &repo_models_dir(),
+    )
 }
 
 /// 展开 settings 中的路径字符串（支持 `${env.VAR}`），未配置时用默认文件名。
@@ -263,6 +272,30 @@ mod tests {
     use crate::test_util::run_with_temp_home;
 
     #[test]
+    fn test_default_model_dir_dual_root_fallback() {
+        run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            let new_dir = user_default_model_dir();
+            let legacy_dir = home
+                .join(".zapmomo")
+                .join("models")
+                .join(new_dir.file_name().unwrap());
+
+            for d in [&new_dir, &legacy_dir] {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join(DEFAULT_TOKENS), b"t").unwrap();
+            }
+            assert_eq!(default_model_dir(), new_dir);
+
+            std::fs::remove_dir_all(&new_dir).unwrap();
+            assert_eq!(default_model_dir(), legacy_dir);
+
+            std::fs::remove_dir_all(&legacy_dir).unwrap();
+            assert_ne!(default_model_dir(), legacy_dir);
+        });
+    }
+
+    #[test]
     fn test_default_config_points_to_default_model_dir() {
         let cfg = ResolvedTtsConfig::default();
         assert_eq!(
@@ -302,15 +335,24 @@ mod tests {
         let user = base.path().join("user-model");
         let repo = base.path().join("repo-model");
 
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
 
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), repo);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), repo);
 
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
+
+        std::fs::remove_file(user.join(DEFAULT_TOKENS)).unwrap();
+        let legacy = base.path().join("legacy-model");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(DEFAULT_TOKENS), b"t").unwrap();
+        assert_eq!(
+            choose_default_model_dir(&user, Some(&legacy), &repo),
+            legacy
+        );
     }
 
     #[test]

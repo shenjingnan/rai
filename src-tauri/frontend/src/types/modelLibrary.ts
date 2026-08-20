@@ -54,6 +54,40 @@ export interface SystemResources {
   cpuUsage: number;
 }
 
+/** 存储信息（`get_storage_info`），与 Rust `StorageInfoView` camelCase 对应。 */
+export interface StorageInfo {
+  /** 已解析的 data_dir（null = 使用默认 ~/.zapmomo） */
+  dataDir: string | null;
+  modelsDir: string;
+  companionsDir: string;
+  legacyModelsDir: string | null;
+  legacyCompanionsDir: string | null;
+  legacyModelsBytes: number;
+  legacyCompanionsBytes: number;
+  migrationAvailable: boolean;
+  migrating: boolean;
+  sameVolume: boolean;
+  diskTotal: number;
+  diskAvailable: number;
+}
+
+export interface MigrateFailedItem {
+  name: string;
+  reason: string;
+}
+
+/** 迁移进度（`storage-migrate-progress`）。 */
+export interface StorageMigrateProgress {
+  state: "scanning" | "moving" | "finishing" | "done" | "cancelled" | "failed";
+  currentItem: string | null;
+  itemsDone: number;
+  itemsTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
+  message: string;
+  failedItems: MigrateFailedItem[];
+}
+
 export interface SetCurrentResult {
   modelType: ModelType;
   modelId: string;

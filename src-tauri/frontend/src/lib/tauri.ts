@@ -15,6 +15,8 @@ import type {
   ModelLibraryProgress,
   ModelType,
   SetCurrentResult,
+  StorageInfo,
+  StorageMigrateProgress,
   SystemResources,
 } from "@/types/modelLibrary";
 import type {
@@ -132,6 +134,12 @@ export const api = {
   // ---- 模型库 ----
   listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
   getSystemResources: () => invoke<SystemResources>("get_system_resources"),
+  // ---- 存储位置（数据目录）----
+  getStorageInfo: () => invoke<StorageInfo>("get_storage_info"),
+  setStorageDir: (args: { path: string | null }) => invoke<StorageInfo>("set_data_dir", args),
+  migrateStorage: () => invoke<void>("migrate_storage"),
+  cancelStorageMigration: () => invoke<void>("cancel_storage_migration"),
+  openStorageDir: () => invoke<void>("open_storage_dir"),
   downloadLibraryModel: (args: { id: string }) => invoke<void>("download_library_model", args),
   cancelModelDownload: () => invoke<void>("cancel_model_download"),
   setCurrentModel: (args: { id: string }) => invoke<SetCurrentResult>("set_current_model", args),
@@ -254,6 +262,13 @@ export function onModelLibraryDownloadProgress(
   handler: (p: ModelLibraryProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<ModelLibraryProgress>("model-library-download-progress", (e) => handler(e.payload));
+}
+
+/** 存储迁移进度（`storage-migrate-progress`）。 */
+export function onStorageMigrateProgress(
+  handler: (p: StorageMigrateProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<StorageMigrateProgress>("storage-migrate-progress", (e) => handler(e.payload));
 }
 
 /** 统一下载队列进度（`download-progress`；独立 taskId）。 */

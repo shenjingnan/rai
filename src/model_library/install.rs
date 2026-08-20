@@ -178,12 +178,28 @@ impl ModelStorage {
         std::fs::rename(&tmp, ModelStorage::meta_path(dir)).map_err(|e| e.to_string())
     }
 
+    /// 扫描根集合：主根（安装目标，永远新根）+ 旧默认根（自定义 `data_dir` 后的存量位置）。
+    ///
+    /// 顺序即优先级：去重时保留先出现者。
+    pub fn roots() -> Vec<PathBuf> {
+        let mut roots = vec![ModelStorage::root()];
+        if let Some(legacy) = crate::config::settings::legacy_models_dir()
+            && !roots.contains(&legacy)
+        {
+            roots.push(legacy);
+        }
+        roots
+    }
+
     /// 扫描所有已安装模型（`.zapmomo-lib.json`）。
     /// 返回 (install_dir, meta)。这是 installed inventory 的唯一事实来源。
     ///
     /// 支持两种布局：
     /// - HF 布局：`<category>/<storageKey>/<artifact_id>/.zapmomo-lib.json`
     /// - legacy 布局：`<reg.name>/.zapmomo-lib.json`（内置模型，无分类子目录）
+    ///
+    /// 自定义 `data_dir` 后扫描双根，按 install_id 去重（新根优先）；
+    /// v1 legacy meta 的 install_id 为空时用规范化目录路径作 key。
     pub fn scan_installs() -> Vec<(PathBuf, InstallMeta)> {
         let mut out = Vec::new();
         fn walk(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, InstallMeta)>) {
@@ -211,8 +227,28 @@ impl ModelStorage {
                 }
             }
         }
-        walk(&ModelStorage::root(), 0, &mut out);
+        for root in ModelStorage::roots() {
+            walk(&root, 0, &mut out);
+        }
+        // 双根去重：同 install_id 只保留先出现者（roots 顺序 = 新根优先）
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        out.retain(|(dir, meta)| seen.insert(install_scan_key(dir, meta)));
         out
+    }
+}
+
+/// 扫描去重 key：优先 install_id；v1 legacy meta（install_id 为空）退化用目录路径。
+///
+/// Windows 路径大小写不敏感，统一小写比较，避免同一路径两种大小写被当作两份。
+fn install_scan_key(dir: &Path, meta: &InstallMeta) -> String {
+    if !meta.install_id.is_empty() {
+        return meta.install_id.clone();
+    }
+    let s = dir.to_string_lossy();
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.into_owned()
     }
 }
 

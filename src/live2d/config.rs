@@ -47,8 +47,20 @@ impl Default for ResolvedLive2dConfig {
 }
 
 /// 用户默认 Live2D 模型目录：`~/.zapmomo/models/live2d`。
+///
+/// data_dir 切换后主根尚无而旧根有存量时，回退旧根 `live2d` 子目录。
 pub fn default_model_dir() -> PathBuf {
-    crate::config::settings::get_models_dir().join("live2d")
+    let new = crate::config::settings::get_models_dir().join("live2d");
+    if new.join("model.json").exists() || scan_for_model(&new).is_some() {
+        return new;
+    }
+    if let Some(legacy) = crate::config::settings::legacy_models_dir() {
+        let legacy_dir = legacy.join("live2d");
+        if scan_for_model(&legacy_dir).is_some() {
+            return legacy_dir;
+        }
+    }
+    new
 }
 
 /// 在指定目录中定位模型清单文件。
@@ -264,6 +276,23 @@ mod tests {
         let manifest = dir.join(manifest_name);
         std::fs::write(&manifest, "{}").unwrap();
         manifest
+    }
+
+    #[test]
+    fn test_default_model_dir_dual_root_fallback() {
+        run_with_temp_home(|home| {
+            let data = crate::test_util::set_custom_data_dir(home);
+            let legacy_dir = home.join(".zapmomo/models/live2d");
+            let new_dir = data.join("models/live2d");
+
+            // 只有旧根有模型 → 默认目录回退旧根
+            make_model(&legacy_dir, "cat.model3.json");
+            assert_eq!(default_model_dir(), legacy_dir);
+
+            // 新根有 → 新根优先
+            make_model(&new_dir, "cat.model3.json");
+            assert_eq!(default_model_dir(), new_dir);
+        });
     }
 
     #[test]

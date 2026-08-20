@@ -3,7 +3,10 @@
 /// 提供通用的配置读写功能，支持 ${env.VAR} 环境变量引用。
 /// 配置文件存储在 `~/.zapmomo/settings.toml`。
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::sync::RwLock;
+use std::time::SystemTime;
 
 const PROJECT_DIR: &str = ".zapmomo";
 const SETTINGS_FILE: &str = "settings.toml";
@@ -26,9 +29,128 @@ pub fn get_settings_path() -> PathBuf {
     get_settings_dir().join(SETTINGS_FILE)
 }
 
-/// 获取模型目录路径：`~/.zapmomo/models`（模型统一安装到用户目录，不随仓库/安装包分发）
+/// 获取模型目录路径：`<data_dir>/models`（data_dir 未设置时为 `~/.zapmomo/models`）。
+///
+/// 模型统一安装到用户目录，不随仓库/安装包分发。
 pub fn get_models_dir() -> PathBuf {
-    get_settings_dir().join("models")
+    get_data_dir()
+        .unwrap_or_else(get_settings_dir)
+        .join("models")
+}
+
+/// 旧版默认模型根 `~/.zapmomo/models`：`data_dir` 指向别处时返回 `Some`，
+/// 供双根扫描/默认目录回退/迁移定位存量安装；未自定义时返回 `None`。
+pub fn legacy_models_dir() -> Option<PathBuf> {
+    let default = get_settings_dir().join("models");
+    (get_models_dir() != default).then_some(default)
+}
+
+/// 伙伴模型载荷存储目录：`<data_dir>/companions`（未设置时为 `~/.zapmomo/companions`）。
+///
+/// 注意：`library.json` 清单永远留在 `~/.zapmomo/companions`（见 `companion::get_companions_dir`），
+/// 只有模型载荷目录跟随 `data_dir`。
+pub fn get_companions_store_dir() -> PathBuf {
+    get_data_dir()
+        .unwrap_or_else(get_settings_dir)
+        .join("companions")
+}
+
+/// 旧版默认伙伴载荷目录 `~/.zapmomo/companions`：`data_dir` 指向别处时返回 `Some`。
+pub fn legacy_companions_dir() -> Option<PathBuf> {
+    let default = get_settings_dir().join("companions");
+    (get_companions_store_dir() != default).then_some(default)
+}
+
+/// 剥离路径前缀（Windows 大小写不敏感，容忍 `\`/`/` 混合分隔符）。
+///
+/// `path` 以 `prefix` 开头（大小写忽略）时返回剩余相对路径，否则 `None`。
+/// 供迁移时改写 settings/伙伴库中的绝对路径引用使用。
+pub fn strip_prefix_ci<'a>(path: &'a Path, prefix: &Path) -> Option<&'a Path> {
+    let p = path.as_os_str().to_str()?;
+    let q = prefix.as_os_str().to_str()?;
+    if cfg!(windows) {
+        // 归一化分隔符 + 大小写（`/`↔`\` 一一对应，长度不变），再比较前缀
+        let pl = p.replace('/', "\\").to_lowercase();
+        let ql = q.replace('/', "\\").to_lowercase();
+        if !pl.starts_with(&ql) {
+            return None;
+        }
+        // ql.len() 是归一化后的前缀长度；原始 p 里前缀部分分隔符未变长，get 切安全
+        let rest = p.get(ql.len()..)?;
+        Some(Path::new(rest.trim_start_matches(['/', '\\'])))
+    } else {
+        p.strip_prefix(q)
+            .map(|rest| Path::new(rest.trim_start_matches('/')))
+    }
+}
+
+/// `data_dir` 解析缓存：`(settings 路径, mtime, len, 解析结果)`。
+///
+/// `get_models_dir` 调用高频（系统资源 30s 轮询 / 模型列表 / 每次下载安装），
+/// 不能每次读 TOML；以 settings.toml 的 mtime + 文件大小为键，手改文件也会自动失效
+/// （mtime 同秒精度不足时，大小变化兜底）。应用内写入经 `save_settings` 主动刷新缓存。
+type DataDirCacheValue = Option<(PathBuf, Option<SystemTime>, Option<u64>, Option<PathBuf>)>;
+static DATA_DIR_CACHE: LazyLock<RwLock<DataDirCacheValue>> = LazyLock::new(|| RwLock::new(None));
+
+/// 读 settings.toml 的 (mtime, len)（文件不存在/读取失败 → `None`）。
+fn settings_mtime_len() -> (Option<SystemTime>, Option<u64>) {
+    match std::fs::metadata(get_settings_path()) {
+        Ok(m) => (m.modified().ok(), Some(m.len())),
+        Err(_) => (None, None),
+    }
+}
+
+/// 解析 `data_dir` 设置（支持 `${env.VAR}` 引用）。
+///
+/// 未设置 / 空串 / 相对路径 / env 解析失败 → `None`（回退默认根 `~/.zapmomo`，
+/// 调用方拿 `PathBuf` 的签名不能 Err，降级并 `warn`）。
+pub fn get_data_dir() -> Option<PathBuf> {
+    let path = get_settings_path();
+    let (mtime, len) = settings_mtime_len();
+    // 快路径：路径 + mtime + 大小都未变，直接用缓存
+    if let Some((cached_path, cached_mtime, cached_len, cached_value)) =
+        &*DATA_DIR_CACHE.read().unwrap_or_else(|e| e.into_inner())
+        && *cached_path == path
+        && *cached_mtime == mtime
+        && *cached_len == len
+    {
+        return cached_value.clone();
+    }
+    // 慢路径：读 settings 解析（失败一律回退默认根）
+    let resolved = load_settings()
+        .ok()
+        .flatten()
+        .and_then(|cfg| cfg.data_dir)
+        .and_then(|raw| match resolve_env_ref(&raw) {
+            Ok(dir) if dir.trim().is_empty() => None,
+            Ok(dir) => {
+                let p = PathBuf::from(&dir);
+                if p.is_absolute() {
+                    Some(p)
+                } else {
+                    tracing::warn!("data_dir 需为绝对路径，当前值 {dir:?}，回退默认目录");
+                    None
+                }
+            }
+            Err(e) => {
+                tracing::warn!("data_dir 解析失败，回退默认目录：{e}");
+                None
+            }
+        });
+    *DATA_DIR_CACHE.write().unwrap_or_else(|e| e.into_inner()) =
+        Some((path, mtime, len, resolved.clone()));
+    resolved
+}
+
+/// 清空 `data_dir` 缓存：写入 data_dir 后调用，确保后续读取立即可见（不等 mtime）。
+pub fn refresh_data_dir_cache() {
+    *DATA_DIR_CACHE.write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// 测试专用：重置 data_dir 缓存，避免跨用例污染。
+#[cfg(test)]
+pub(crate) fn reset_data_dir_cache_for_test() {
+    refresh_data_dir_cache();
 }
 
 /// 获取 TTS 合成音频输出目录：`~/.zapmomo/tts`（供前端 asset 协议播放）。
@@ -78,6 +200,11 @@ pub struct AppConfig {
     /// 全局默认麦克风输入设备名（空 = 系统默认），KWS / ASR 共用；重启后免重选
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
+    /// 自定义数据目录（绝对路径，支持 ${env.VAR}）：模型与伙伴载荷存放在
+    /// `<data_dir>/models` 与 `<data_dir>/companions`；settings/日志等小文件
+    /// 仍留在 `~/.zapmomo`。缺省 = `~/.zapmomo`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
     /// 唤醒词检测（KWS）配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kws: Option<KwsSettings>,
@@ -500,6 +627,7 @@ impl Default for AppConfig {
             hide_dock_icon: false,
             custom: None,
             microphone: None,
+            data_dir: None,
             kws: None,
             asr: None,
             tts: None,
@@ -542,7 +670,7 @@ pub fn save_settings(config: &AppConfig) -> Result<(), String> {
     let content = toml::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
     let tmp = file_path.with_file_name(format!("settings.toml.tmp.{}", std::process::id()));
     std::fs::write(&tmp, &content).map_err(|e| format!("写入临时配置失败: {e}"))?;
-    match std::fs::rename(&tmp, &file_path) {
+    let renamed = match std::fs::rename(&tmp, &file_path) {
         Ok(()) => Ok(()),
         Err(_) => {
             // Windows：目标存在时 rename 可能失败，先移除再重试；失败则保留 tmp 便于恢复。
@@ -551,7 +679,12 @@ pub fn save_settings(config: &AppConfig) -> Result<(), String> {
             }
             std::fs::rename(&tmp, &file_path).map_err(|e| format!("替换配置失败: {e}"))
         }
+    };
+    if renamed.is_ok() {
+        // 应用内写入立即刷新 data_dir 缓存（mtime 同秒精度不足，不能只靠文件时间戳）
+        refresh_data_dir_cache();
     }
+    renamed
 }
 
 #[cfg(test)]
@@ -682,6 +815,7 @@ mod tests {
             hide_dock_icon: true,
             custom: Some(std::collections::HashMap::new()),
             microphone: Some("内置麦克风".to_string()),
+            data_dir: None,
             kws: None,
             asr: None,
             tts: None,
@@ -926,6 +1060,7 @@ mod tests {
                 hide_dock_icon: false,
                 custom: None,
                 microphone: None,
+                data_dir: None,
                 kws: None,
                 asr: None,
                 tts: None,
@@ -974,6 +1109,124 @@ mod tests {
             };
             let toml_str = toml::to_string(&empty).unwrap();
             assert!(!toml_str.contains("local_models"));
+        });
+    }
+
+    // ---- data_dir（自定义数据目录）----
+
+    /// 用 AppConfig + save_settings 写 data_dir（TOML 序列化器正确转义 Windows 反斜杠）。
+    fn write_data_dir_settings(data_dir: Option<&str>) {
+        let mut config = AppConfig::default();
+        config.data_dir = data_dir.map(|s| s.to_string());
+        save_settings(&config).unwrap();
+    }
+
+    #[test]
+    fn test_data_dir_serde_roundtrip() {
+        run_with_temp_home(|home| {
+            write_data_dir_settings(Some("D:\\zapdata"));
+            let loaded = load_settings().unwrap().unwrap();
+            assert_eq!(loaded.data_dir.as_deref(), Some("D:\\zapdata"));
+            // 未设置时字段不序列化
+            let toml_str = toml::to_string(&AppConfig::default()).unwrap();
+            assert!(!toml_str.contains("data_dir"));
+            assert!(home.join(".zapmomo/settings.toml").is_file());
+        });
+    }
+
+    #[test]
+    fn test_get_models_dir_default_unchanged() {
+        run_with_temp_home(|home| {
+            assert_eq!(get_models_dir(), home.join(".zapmomo/models"));
+            assert_eq!(legacy_models_dir(), None);
+            assert_eq!(get_companions_store_dir(), home.join(".zapmomo/companions"));
+            assert_eq!(legacy_companions_dir(), None);
+        });
+    }
+
+    #[test]
+    fn test_get_models_dir_custom_data_dir() {
+        run_with_temp_home(|home| {
+            let data = home.join("zapdata");
+            write_data_dir_settings(Some(&data.display().to_string()));
+            assert_eq!(get_data_dir(), Some(data.clone()));
+            assert_eq!(get_models_dir(), data.join("models"));
+            assert_eq!(get_companions_store_dir(), data.join("companions"));
+            // 旧根指向默认位置（供双根扫描/迁移定位存量）
+            assert_eq!(legacy_models_dir(), Some(home.join(".zapmomo/models")));
+            assert_eq!(
+                legacy_companions_dir(),
+                Some(home.join(".zapmomo/companions"))
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_data_dir_env_ref_resolution() {
+        run_with_temp_home(|home| {
+            let env_dir = home.join("envdata");
+            unsafe {
+                std::env::set_var("TEST_ZM_DATA_DIR", &env_dir);
+            }
+            write_data_dir_settings(Some("${env.TEST_ZM_DATA_DIR}"));
+            assert_eq!(get_data_dir(), Some(env_dir.clone()));
+            assert_eq!(get_models_dir(), env_dir.join("models"));
+            unsafe {
+                std::env::remove_var("TEST_ZM_DATA_DIR");
+            }
+        });
+    }
+
+    #[test]
+    fn test_get_data_dir_invalid_env_falls_back() {
+        run_with_temp_home(|home| {
+            write_data_dir_settings(Some("${env.NONEXISTENT_DATA_DIR_XYZ}"));
+            assert_eq!(get_data_dir(), None);
+            assert_eq!(get_models_dir(), home.join(".zapmomo/models"));
+            assert_eq!(legacy_models_dir(), None);
+        });
+    }
+
+    #[test]
+    fn test_strip_prefix_ci() {
+        let prefix = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
+        let path = std::path::Path::new("c:\\users\\admin\\zapdata\\models\\llm\\model.gguf");
+        // 大小写不敏感 + 分隔符宽容：剥离前缀后返回相对路径
+        let rest = strip_prefix_ci(path, prefix).unwrap();
+        assert_eq!(rest, std::path::Path::new("llm\\model.gguf"));
+        // 不在前缀下 → None
+        let other = std::path::Path::new("D:\\other\\x");
+        assert!(strip_prefix_ci(other, prefix).is_none());
+        // 前缀自身 → 返回空
+        let exact = std::path::Path::new("C:\\Users\\Admin\\zapdata\\models");
+        assert_eq!(
+            strip_prefix_ci(exact, prefix).unwrap(),
+            std::path::Path::new("")
+        );
+    }
+
+    #[test]
+    fn test_get_data_dir_relative_falls_back() {
+        run_with_temp_home(|_| {
+            write_data_dir_settings(Some("relative/dir"));
+            assert_eq!(get_data_dir(), None);
+        });
+    }
+
+    #[test]
+    fn test_data_dir_cache_mtime_invalidation() {
+        run_with_temp_home(|home| {
+            let d1 = home.join("d1");
+            let d2 = home.join("d2");
+            write_data_dir_settings(Some(&d1.display().to_string()));
+            assert_eq!(get_data_dir(), Some(d1.clone()));
+            // 直接改文件（不经 refresh_data_dir_cache）：mtime 变化应自动失效缓存
+            write_data_dir_settings(Some(&d2.display().to_string()));
+            assert_eq!(get_data_dir(), Some(d2.clone()));
+            // 显式刷新后同样正确
+            write_data_dir_settings(Some(&d1.display().to_string()));
+            refresh_data_dir_cache();
+            assert_eq!(get_data_dir(), Some(d1));
         });
     }
 

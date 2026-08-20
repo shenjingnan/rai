@@ -88,8 +88,26 @@ impl Default for CompanionLibrary {
 }
 
 /// 伙伴库根目录：`~/.zapmomo/companions`。
+///
+/// 这是**清单目录**（library.json 所在地），永远不跟随 `data_dir`；
+/// 模型**载荷目录**见 `get_companions_store_dir`（可自定义）。
 pub fn get_companions_dir() -> PathBuf {
     settings::get_settings_dir().join("companions")
+}
+
+/// 伙伴载荷存储根集合：当前 store 目录 + 旧默认根（去重）。
+///
+/// 供「拒绝导入已托管目录」检查与临时目录清理遍历——自定义 `data_dir` 后
+/// 旧默认根 `~/.zapmomo/companions` 下的存量载荷仍属托管范围。
+pub fn companion_store_roots() -> Vec<PathBuf> {
+    let store = settings::get_companions_store_dir();
+    let mut roots = vec![store];
+    if let Some(legacy) = settings::legacy_companions_dir()
+        && !roots.contains(&legacy)
+    {
+        roots.push(legacy);
+    }
+    roots
 }
 
 fn library_path() -> PathBuf {
@@ -313,21 +331,23 @@ fn cleanup_stale_tmp_dirs() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(u64::MAX);
-    let Ok(entries) = std::fs::read_dir(get_companions_dir()) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(millis) = tmp_dir_created_millis(&name) else {
+    for root in companion_store_roots() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
-        if now.saturating_sub(millis) > MAX_AGE_MS {
-            let path = entry.path();
-            if let Err(e) = std::fs::remove_dir_all(&path)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!("清理残留临时目录失败: {e}");
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(millis) = tmp_dir_created_millis(&name) else {
+                continue;
+            };
+            if now.saturating_sub(millis) > MAX_AGE_MS {
+                let path = entry.path();
+                if let Err(e) = std::fs::remove_dir_all(&path)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!("清理残留临时目录失败: {e}");
+                }
             }
         }
     }
@@ -367,10 +387,12 @@ fn prepare_import(source: &Path) -> Result<Prepared, String> {
     // 拒绝导入应用已托管的伙伴目录（防自我复制递归）。
     // 根目录也做 canonicalize：避免 macOS 上 /var → /private/var 这类符号链接
     // 使 canonicalize 后的源路径与未规范化根路径比较失配。
-    let root = get_companions_dir();
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
-    if source_abs.starts_with(&root_canon) {
-        return Err("不能导入 ZapMomo 已托管的伙伴目录".to_string());
+    // 自定义 data_dir 后旧默认根下的存量载荷仍属托管范围，两个根都查。
+    for root in companion_store_roots() {
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if source_abs.starts_with(&root_canon) {
+            return Err("不能导入 ZapMomo 已托管的伙伴目录".to_string());
+        }
     }
 
     let id = derive_id(&source_abs);
@@ -398,8 +420,9 @@ fn prepare_import(source: &Path) -> Result<Prepared, String> {
         );
     }
 
-    let tmp_dir = get_companions_dir().join(new_tmp_dir_name(&id));
-    let final_dir = get_companions_dir().join(&id);
+    let store_dir = settings::get_companions_store_dir();
+    let tmp_dir = store_dir.join(new_tmp_dir_name(&id));
+    let final_dir = store_dir.join(&id);
     copy_dir_recursive(&source_abs, &tmp_dir)?;
 
     // 托管副本深度校验：Moc + Textures 必须存在。
@@ -784,6 +807,39 @@ pub fn rename(id: &str, name: &str) -> Result<CompanionLibrary, String> {
     Ok(lib)
 }
 
+/// 迁移后改写伙伴库中某条目的载荷路径（`model_dir`/`model_file` 指向新 store 目录）。
+///
+/// 旧载荷根 = 条目当前路径所在的管理根（`companion_store_roots()` 中能剥离的那个）。
+/// 幂等：`id` 不存在时返回 `Ok(None)`。持 `COMPANION_LOCK`，锁不跨大文件复制。
+pub fn relocate_payload(id: &str, new_dir: &Path) -> Result<Option<CompanionModel>, String> {
+    let _g = lock();
+    let mut lib = load_library_inner()?;
+    let relocated = {
+        let Some(model) = lib.models.iter_mut().find(|m| m.id == id) else {
+            return Ok(None);
+        };
+        // 旧载荷根：条目当前路径能剥离的那个管理根
+        let old_root = companion_store_roots()
+            .into_iter()
+            .find(|r| settings::strip_prefix_ci(Path::new(&model.model_dir), r).is_some())
+            .unwrap_or_else(get_companions_dir);
+        model.model_dir = relocate_in_root(&model.model_dir, &old_root, new_dir);
+        model.model_file = relocate_in_root(&model.model_file, &old_root, new_dir);
+        model.clone()
+    }; // 可变借用在此结束
+    save_library_inner(&lib)?;
+    Ok(Some(relocated))
+}
+
+/// 把 `path` 从 `old_root` 前缀改写为 `new_root`（不在 old_root 下则原样返回）。
+fn relocate_in_root(path: &str, old_root: &Path, new_root: &Path) -> String {
+    let p = Path::new(path);
+    match settings::strip_prefix_ci(p, old_root) {
+        Some(rest) => new_root.join(rest).display().to_string(),
+        None => path.to_string(),
+    }
+}
+
 /// 旧版迁移：库为空且 `[live2d].model_dir` 指向合法模型时，复用安全导入流程复制进
 /// 托管目录并设为 active。返回新伙伴 id；无需迁移返回 `None`。
 ///
@@ -1111,6 +1167,95 @@ mod tests {
         run_with_temp_home(|_home| {
             let lib = load_library_fast().unwrap();
             assert!(lib.models.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_import_goes_to_custom_store_dir() {
+        run_with_temp_home(|home| {
+            // 设置自定义数据目录
+            let data = home.join("zapdata");
+            let mut config = settings::AppConfig::default();
+            config.data_dir = Some(data.display().to_string());
+            settings::save_settings(&config).unwrap();
+
+            let src = home.join("srcmodel");
+            make_valid_model(&src, "srcmodel.model3.json");
+            let (model, _already) = import_from_dir(&src).unwrap();
+
+            // 载荷目录在 <data_dir>/companions 下
+            let store = data.join("companions");
+            assert!(model.model_dir.starts_with(&store.display().to_string()));
+            assert!(Path::new(&model.model_dir).is_dir());
+            assert!(Path::new(&model.model_file).is_file());
+            // 清单 library.json 仍留在 ~/.zapmomo/companions（不跟随 data_dir）
+            assert!(home.join(".zapmomo/companions/library.json").is_file());
+            // 旧默认载荷根目录下没有该载荷
+            assert!(!home.join(".zapmomo/companions").join(&model.id).exists());
+        });
+    }
+
+    #[test]
+    fn test_relocate_payload_rewrites_paths() {
+        run_with_temp_home(|home| {
+            let data = crate::test_util::set_custom_data_dir(home);
+            let old_root = home.join(".zapmomo/companions");
+            let id = "companion-abc";
+            // 造一个已导入的伙伴：旧根目录 + library.json
+            make_valid_model(&old_root.join(id), "cat.model3.json");
+            let lib = CompanionLibrary {
+                schema_version: SCHEMA_VERSION,
+                models: vec![CompanionModel {
+                    id: id.to_string(),
+                    name: "cat".into(),
+                    source_path: None,
+                    model_dir: old_root.join(id).display().to_string(),
+                    model_file: old_root
+                        .join(id)
+                        .join("cat.model3.json")
+                        .display()
+                        .to_string(),
+                    format: "Cubism3".into(),
+                    imported_at: "t".into(),
+                }],
+                active_model_id: Some(id.to_string()),
+                completed_migrations: Vec::new(),
+            };
+            std::fs::create_dir_all(&old_root).unwrap();
+            let json = serde_json::to_string_pretty(&lib).unwrap();
+            std::fs::write(old_root.join(LIBRARY_FILE), json).unwrap();
+
+            let new_store = data.join("companions");
+            let updated = relocate_payload(id, &new_store).unwrap().unwrap();
+            assert_eq!(updated.model_dir, new_store.join(id).display().to_string());
+            assert_eq!(
+                updated.model_file,
+                new_store
+                    .join(id)
+                    .join("cat.model3.json")
+                    .display()
+                    .to_string()
+            );
+            // 已持久化到 library.json
+            let reloaded = load_library_fast().unwrap();
+            let m = reloaded.models.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(m.model_dir, new_store.join(id).display().to_string());
+        });
+    }
+
+    #[test]
+    fn test_import_rejects_legacy_default_root_when_custom() {
+        run_with_temp_home(|home| {
+            let data = home.join("zapdata");
+            let mut config = settings::AppConfig::default();
+            config.data_dir = Some(data.display().to_string());
+            settings::save_settings(&config).unwrap();
+
+            // 源目录在旧默认根下（迁移前的载荷位置）：同样视为已托管，拒绝导入
+            let inside_legacy = home.join(".zapmomo/companions/companion-abc");
+            make_valid_model(&inside_legacy, "m.model3.json");
+            let err = import_from_dir(&inside_legacy).unwrap_err();
+            assert!(err.contains("已托管"));
         });
     }
 

@@ -72,12 +72,14 @@ fn repo_models_dir() -> PathBuf {
         .join(&crate::kws::model::default_asset().name)
 }
 
-/// 默认模型目录选择：用户已安装 > 源码仓库已下载（开发便利）> 用户默认。
+/// 默认模型目录选择：用户已安装 > 旧默认根存量（data_dir 切换后）> 源码仓库已下载（开发便利）> 用户默认。
 ///
 /// 纯决策函数（不访问真实文件系统），便于测试注入路径。
-fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
+fn choose_default_model_dir(user: &Path, legacy: Option<&Path>, repo: &Path) -> PathBuf {
     if user.join(DEFAULT_TOKENS).is_file() {
         user.to_path_buf()
+    } else if legacy.is_some_and(|l| l.join(DEFAULT_TOKENS).is_file()) {
+        legacy.unwrap().to_path_buf()
     } else if repo.join(DEFAULT_TOKENS).is_file() {
         repo.to_path_buf()
     } else {
@@ -85,9 +87,16 @@ fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
     }
 }
 
-/// 默认模型目录（运行时解析：优先用户目录，源码开发时回退到仓库 `./models/`）。
+/// 默认模型目录（运行时解析：优先用户目录，旧根存量兜底，源码开发时回退到仓库 `./models/`）。
 pub fn default_model_dir() -> PathBuf {
-    choose_default_model_dir(&user_default_model_dir(), &repo_models_dir())
+    // legacy 与 user 层次对等：旧根下对应模型的子目录（user 是 `models/<模型名>`）
+    let legacy = crate::config::settings::legacy_models_dir()
+        .map(|l| l.join(&crate::kws::model::default_asset().name));
+    choose_default_model_dir(
+        &user_default_model_dir(),
+        legacy.as_deref(),
+        &repo_models_dir(),
+    )
 }
 
 /// 展开 settings 中的路径字符串（支持 `${env.VAR}`），未配置时用默认文件名。
@@ -210,6 +219,33 @@ mod tests {
     }
 
     #[test]
+    fn test_default_model_dir_dual_root_fallback() {
+        run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            let new_dir = user_default_model_dir();
+            let legacy_dir = home
+                .join(".zapmomo")
+                .join("models")
+                .join(new_dir.file_name().unwrap());
+
+            // 双方都有 → 新根优先
+            for d in [&new_dir, &legacy_dir] {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join(DEFAULT_TOKENS), b"t").unwrap();
+            }
+            assert_eq!(default_model_dir(), new_dir);
+
+            // 新根清空 → 回退旧根（data_dir 切换后存量模型保持可用）
+            std::fs::remove_dir_all(&new_dir).unwrap();
+            assert_eq!(default_model_dir(), legacy_dir);
+
+            // 双方都没有 → 不落旧根
+            std::fs::remove_dir_all(&legacy_dir).unwrap();
+            assert_ne!(default_model_dir(), legacy_dir);
+        });
+    }
+
+    #[test]
     fn test_default_config_points_to_default_model_dir() {
         // 不依赖本机仓库/用户目录状态：只校验目录名来自内嵌清单、文件名为常量
         let cfg = ResolvedKwsConfig::default();
@@ -247,17 +283,27 @@ mod tests {
         let repo = base.path().join("repo-model");
 
         // 都未安装 → 用户目录
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
 
         // 仅仓库有 → 仓库（开发回退）
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), repo);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), repo);
 
         // 用户也有 → 用户优先
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
+
+        // legacy（data_dir 切换后旧根存量）在 user 无 tokens 时兜底
+        std::fs::remove_file(user.join(DEFAULT_TOKENS)).unwrap();
+        let legacy = base.path().join("legacy-model");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(DEFAULT_TOKENS), b"t").unwrap();
+        assert_eq!(
+            choose_default_model_dir(&user, Some(&legacy), &repo),
+            legacy
+        );
     }
 
     #[test]

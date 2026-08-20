@@ -4,7 +4,7 @@
 /// 模型路径**不硬编码**：用户可配置任意 GGUF 路径；默认值仅作为推荐提示。
 use std::path::{Path, PathBuf};
 
-use crate::config::settings::{LlmSettings, get_models_dir, resolve_env_ref};
+use crate::config::settings::{LlmSettings, get_models_dir, legacy_models_dir, resolve_env_ref};
 use crate::llm::types::GenParams;
 
 /// 默认推荐模型（仅作提示，非唯一允许的模型）。
@@ -41,18 +41,45 @@ pub fn default_system_prompt() -> String {
 }
 
 /// 默认模型路径（推荐提示，指向 `~/.zapmomo/models/<模型名>/<文件名>`）。
+///
+/// 优先主根（新根）；data_dir 切换后主根尚无而旧根有存量时，回退旧根路径
+/// （存量模型无需迁移即可被 resolve 到）。
 pub fn default_model_path() -> PathBuf {
-    get_models_dir()
+    let new = get_models_dir()
         .join(DEFAULT_MODEL_NAME)
-        .join(DEFAULT_MODEL_FILE)
+        .join(DEFAULT_MODEL_FILE);
+    if new.is_file() {
+        return new;
+    }
+    if let Some(legacy) = legacy_models_dir() {
+        let legacy_path = legacy.join(DEFAULT_MODEL_NAME).join(DEFAULT_MODEL_FILE);
+        if legacy_path.is_file() {
+            return legacy_path;
+        }
+    }
+    new
 }
 
-/// 扫描 `~/.zapmomo/models/` 目录（含一层子目录），发现第一个 `.gguf` 文件。
+/// 扫描模型根目录（主根 + 旧根，含一层子目录），发现第一个 `.gguf` 文件。
 ///
 /// 用于默认推荐模型路径不存在时，自动发现用户已下载的任意 GGUF 模型，
-/// 让「下载模型 → 直接使用」无需手动配置路径。
+/// 让「下载模型 → 直接使用」无需手动配置路径。双根都扫，旧根存量同样被发现。
 fn discover_gguf() -> Option<PathBuf> {
-    let dir = get_models_dir();
+    let mut dirs = vec![get_models_dir()];
+    if let Some(legacy) = legacy_models_dir()
+        && !dirs.contains(&legacy)
+    {
+        dirs.push(legacy);
+    }
+    for dir in dirs {
+        if let Some(found) = discover_gguf_in(&dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn discover_gguf_in(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -81,14 +108,25 @@ fn default_threads() -> i32 {
 }
 
 /// 解析 `model_path`：展开 `${env.VAR}`，相对路径锚定 `~/.zapmomo/models`。
+///
+/// data_dir 切换后主根尚无而旧根有存量时，相对路径回退锚定旧根（存量兼容）。
 fn resolve_model_path(value: &str) -> Result<PathBuf, String> {
     let resolved = resolve_env_ref(value)?;
     let path = PathBuf::from(resolved);
-    Ok(if path.is_absolute() {
-        path
-    } else {
-        get_models_dir().join(path)
-    })
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let new = get_models_dir().join(&path);
+    if new.is_file() {
+        return Ok(new);
+    }
+    if let Some(legacy) = legacy_models_dir() {
+        let legacy_path = legacy.join(&path);
+        if legacy_path.is_file() {
+            return Ok(legacy_path);
+        }
+    }
+    Ok(new)
 }
 
 /// 合并 settings 与 CLI 覆盖得到最终配置。
@@ -173,6 +211,47 @@ mod tests {
             assert!(cfg.model_path.ends_with(DEFAULT_MODEL_FILE));
             assert_eq!(cfg.params.context_size, 8192);
             assert_eq!(cfg.params.gpu_layers, 0);
+        });
+    }
+
+    #[test]
+    fn test_default_path_dual_root_fallback() {
+        crate::test_util::run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            let legacy_models = home.join(".zapmomo/models");
+            // 旧根有推荐默认模型 → resolve 落旧根
+            let legacy_default = legacy_models
+                .join(DEFAULT_MODEL_NAME)
+                .join(DEFAULT_MODEL_FILE);
+            std::fs::create_dir_all(legacy_default.parent().unwrap()).unwrap();
+            std::fs::write(&legacy_default, b"GGUF").unwrap();
+            let cfg = resolve(None, None).unwrap();
+            assert_eq!(cfg.model_path, legacy_default);
+
+            // 默认不在 → discover 扫旧根找到其它 gguf
+            std::fs::remove_file(&legacy_default).unwrap();
+            let other = legacy_models.join("my-model/x.gguf");
+            std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+            std::fs::write(&other, b"G").unwrap();
+            let cfg2 = resolve(None, None).unwrap();
+            assert_eq!(cfg2.model_path, other);
+        });
+    }
+
+    #[test]
+    fn test_resolve_relative_model_path_legacy_fallback() {
+        crate::test_util::run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            // 相对路径在旧根命中 → 锚定旧根（存量兼容）
+            let p = home.join(".zapmomo/models/rel/model.gguf");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"G").unwrap();
+            let settings = LlmSettings {
+                model_path: Some("rel/model.gguf".into()),
+                ..Default::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(cfg.model_path, p);
         });
     }
 

@@ -17,6 +17,7 @@ pub mod gguf;
 pub mod huggingface;
 pub mod install;
 pub mod registry;
+pub mod storage;
 pub mod sysinfo;
 pub mod verified;
 
@@ -613,7 +614,12 @@ fn build_registry_model(
         let binding = locals
             .iter()
             .find(|l| l.registry_id.as_deref() == Some(reg.id.as_str()));
-        let canonical = reg.file_name.as_ref().map(|f| root.join(&reg.name).join(f));
+        // 双根定位：模型可能装在新根或旧默认根（双根兼容），都不在时保持主根路径展示
+        let managed_dir = locate_managed_dir(&reg.name);
+        let canonical = match (&managed_dir, reg.file_name.as_ref()) {
+            (Some(dir), Some(f)) => Some(dir.join(f)),
+            _ => None,
+        };
         let (local_path, ownership, install_state) = if let Some(b) = binding {
             let p = PathBuf::from(&b.path);
             let state = if p.is_file() && crate::llm::local::llama::is_gguf_file(&p) {
@@ -694,8 +700,8 @@ fn build_registry_model(
         };
     }
 
-    // sherpa managed 模型
-    let dest = root.join(&reg.name);
+    // sherpa managed 模型：双根定位（旧根存量仍识别为已安装）
+    let dest = locate_managed_dir(&reg.name).unwrap_or_else(|| root.join(&reg.name));
     let required: Vec<&str> = reg
         .required_assets
         .iter()
@@ -995,14 +1001,34 @@ pub fn managed_install_dir(model: &RegistryModel) -> PathBuf {
     crate::config::settings::get_models_dir().join(&model.name)
 }
 
-/// 删除前路径安全校验并删除（目标必须在 `~/.zapmomo/models` 内）。
+/// 定位 managed 模型目录：主根（新根）优先，旧默认根兜底（双根兼容）。
+///
+/// 都不存在时返回 `None`（调用方回退主根路径，用于 NotInstalled 展示/安装目标）。
+pub fn locate_managed_dir(name: &str) -> Option<PathBuf> {
+    crate::model_library::install::ModelStorage::roots()
+        .into_iter()
+        .map(|root| root.join(name))
+        .find(|dir| dir.exists())
+}
+
+/// 删除前路径安全校验并删除（目标必须在模型根之一内，且不能是根目录本身）。
+///
+/// 自定义 `data_dir` 后旧默认根 `~/.zapmomo/models` 下的存量安装同样可删。
 pub fn delete_managed_dir(dir: &Path) -> Result<(), String> {
-    let root = crate::config::settings::get_models_dir();
-    let real_root = root.canonicalize().unwrap_or(root);
     let real = dir
         .canonicalize()
         .map_err(|e| format!("无法访问模型目录：{e}"))?;
-    if !real.starts_with(&real_root) {
+    let mut allowed = false;
+    for root in crate::model_library::install::ModelStorage::roots() {
+        let real_root = root.canonicalize().unwrap_or(root);
+        if real == real_root {
+            return Err("拒绝删除：不能删除模型根目录本身".to_string());
+        }
+        if real.starts_with(&real_root) {
+            allowed = true;
+        }
+    }
+    if !allowed {
         return Err("拒绝删除：模型目录不在 ZapMomo 管理目录内".to_string());
     }
     if dir.is_dir() {
@@ -1016,6 +1042,19 @@ pub fn delete_managed_dir(dir: &Path) -> Result<(), String> {
 /// 按目录删除（供 CLI/测试复用）。
 pub fn remove_dir_tree_checked(dir: &Path) -> Result<(), String> {
     delete_managed_dir(dir)
+}
+
+/// 由运行时路径推导安装目录：文件（LLM gguf）取父目录，目录（sherpa 模型目录）原样。
+///
+/// 供删除等命令把 `local_path`（双根定位后的实际位置）换算成安装目录。
+pub fn runtime_to_install_dir(p: &Path) -> PathBuf {
+    if p.is_dir() {
+        p.to_path_buf()
+    } else {
+        p.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| p.to_path_buf())
+    }
 }
 
 /// 删除 HF 安装目录（**只删该 artifact 的文件**），并清理空父目录（不误删同 repo 其他 variant）。
@@ -1578,6 +1617,165 @@ mod tests {
             );
             // 补写 metadata 成功（best-effort）
             assert!(dest.join(".zapmomo-lib.json").is_file());
+        });
+    }
+
+    // ---- 双根兼容（data_dir 自定义后旧根存量可见可删）----
+
+    /// 设置自定义 data_dir，返回数据目录。
+    fn set_custom_data_dir(home: &Path) -> PathBuf {
+        let data = home.join("zapdata");
+        let mut config = crate::config::settings::AppConfig::default();
+        config.data_dir = Some(data.display().to_string());
+        crate::config::settings::save_settings(&config).unwrap();
+        data
+    }
+
+    /// 在指定目录造一个带 meta 的 HF 安装（install_id 可控）。
+    fn make_hf_install_at(dir: &Path, install_id: &str, model_id: &str) -> PathBuf {
+        use crate::model_library::install::{InstallMeta, META_SCHEMA_VERSION, ModelStorage};
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("model.gguf"), b"GGUFxxxxx").unwrap();
+        let meta = InstallMeta {
+            schema_version: META_SCHEMA_VERSION,
+            install_id: install_id.into(),
+            source: "hf".into(),
+            model_id: model_id.into(),
+            repo_id: Some(model_id.into()),
+            revision: Some("main".into()),
+            model_type: "llm".into(),
+            artifact_id: "a".into(),
+            variant: None,
+            architecture: Some("llama-cpp-gguf".into()),
+            installed_at: "2026-08-17T00:00:00Z".into(),
+            registry_id: None,
+            version: None,
+            managed: Some(true),
+        };
+        ModelStorage::write_meta(dir, &meta).unwrap();
+        dir.to_path_buf()
+    }
+
+    #[test]
+    fn test_scan_dual_root_dedup_prefers_new_root() {
+        run_with_temp_home(|home| {
+            let data = set_custom_data_dir(home);
+            // 双根同 install_id（用户手动复制场景）：只显示新根一份
+            let legacy = home.join(".zapmomo/models/llm/k--m/a");
+            make_hf_install_at(&legacy, "install-dup", "m1");
+            let new = data.join("models/llm/k--m/a");
+            make_hf_install_at(&new, "install-dup", "m1");
+            let installs = crate::model_library::install::ModelStorage::scan_installs();
+            assert_eq!(installs.len(), 1, "同 install_id 双根只保留一份");
+            assert_eq!(installs[0].0, new, "新根优先");
+        });
+    }
+
+    #[test]
+    fn test_scan_finds_legacy_root_only_installs() {
+        run_with_temp_home(|home| {
+            set_custom_data_dir(home);
+            let legacy = home.join(".zapmomo/models/llm/k--m/b");
+            make_hf_install_at(&legacy, "install-legacy-only", "m2");
+            let installs = crate::model_library::install::ModelStorage::scan_installs();
+            assert_eq!(installs.len(), 1, "旧根存量应被扫描到");
+            assert_eq!(installs[0].0, legacy);
+        });
+    }
+
+    #[test]
+    fn test_delete_accepts_legacy_root_when_custom() {
+        run_with_temp_home(|home| {
+            set_custom_data_dir(home);
+            let legacy = home.join(".zapmomo/models/legacy-model");
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("f.onnx"), b"x").unwrap();
+            delete_managed_dir(&legacy).unwrap();
+            assert!(!legacy.exists());
+        });
+    }
+
+    #[test]
+    fn test_delete_rejects_models_root_itself() {
+        run_with_temp_home(|home| {
+            std::fs::create_dir_all(home.join(".zapmomo/models")).unwrap();
+            let root = crate::config::settings::get_models_dir();
+            let err = delete_managed_dir(&root).unwrap_err();
+            assert!(err.contains("拒绝"), "删除根目录本身必须被拒绝：{err}");
+        });
+    }
+
+    #[test]
+    fn test_locate_managed_dir_prefers_new_root_then_legacy() {
+        run_with_temp_home(|home| {
+            let data = set_custom_data_dir(home);
+            // 只在旧根 → 定位到旧根
+            let legacy_dir = home.join(".zapmomo/models/reg-model-a");
+            std::fs::create_dir_all(&legacy_dir).unwrap();
+            assert_eq!(locate_managed_dir("reg-model-a"), Some(legacy_dir.clone()));
+            // 新根出现 → 定位切到新根
+            let new_dir = data.join("models/reg-model-a");
+            std::fs::create_dir_all(&new_dir).unwrap();
+            assert_eq!(locate_managed_dir("reg-model-a"), Some(new_dir));
+            // 都没有 → None
+            assert_eq!(locate_managed_dir("reg-model-none"), None);
+        });
+    }
+
+    #[test]
+    fn test_runtime_to_install_dir() {
+        run_with_temp_home(|home| {
+            let dir = home.join("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            // 文件 → 父目录（LLM gguf 场景）
+            let f = dir.join("model.gguf");
+            std::fs::write(&f, b"x").unwrap();
+            assert_eq!(runtime_to_install_dir(&f), dir.clone());
+            // 目录 → 原样（sherpa 模型目录场景）
+            assert_eq!(runtime_to_install_dir(&dir), dir.clone());
+            // 不存在的文件 → 按文件分支取父目录
+            let nf = dir.join("none.gguf");
+            assert_eq!(runtime_to_install_dir(&nf), dir);
+        });
+    }
+
+    #[test]
+    fn test_registry_model_in_legacy_root_listed_installed() {
+        run_with_temp_home(|home| {
+            set_custom_data_dir(home);
+            // 旧版默认根下摆一个完整 KWS 目录（同 legacy 识别测试的摆法）
+            use crate::kws::config::{
+                DEFAULT_DECODER, DEFAULT_ENCODER, DEFAULT_JOINER, DEFAULT_KEYWORDS_REL,
+                DEFAULT_TOKENS,
+            };
+            let dest = home.join(".zapmomo/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20");
+            std::fs::create_dir_all(dest.join("test_wavs")).unwrap();
+            for f in [
+                DEFAULT_ENCODER,
+                DEFAULT_DECODER,
+                DEFAULT_JOINER,
+                DEFAULT_TOKENS,
+            ] {
+                std::fs::write(dest.join(f), b"x").unwrap();
+            }
+            std::fs::write(dest.join(DEFAULT_KEYWORDS_REL), b"k").unwrap();
+
+            let models_list = list_models();
+            let m = models_list
+                .iter()
+                .find(|m| m.id == "kws-zipformer-zh-en-3m")
+                .unwrap();
+            assert_eq!(
+                m.install_state,
+                InstallState::Installed,
+                "旧根存量应识别为已安装"
+            );
+            assert!(
+                m.local_path
+                    .as_deref()
+                    .is_some_and(|p| p.contains(".zapmomo")),
+                "local_path 应指向旧根实际位置"
+            );
         });
     }
 

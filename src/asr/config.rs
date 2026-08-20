@@ -85,8 +85,7 @@ impl Default for ResolvedAsrConfig {
             blank_penalty: 0.0,
             hotwords: None,
             enable_punctuation: true,
-            punctuation_model: crate::kws::model::punctuation_user_model_dir()
-                .join(DEFAULT_PUNCT_MODEL),
+            punctuation_model: punctuation_default_dir().join(DEFAULT_PUNCT_MODEL),
             debug: false,
         }
     }
@@ -104,12 +103,14 @@ fn repo_models_dir() -> PathBuf {
         .join(&crate::kws::model::asr_asset().name)
 }
 
-/// 默认模型目录选择：用户已安装 > 源码仓库已下载（开发便利）> 用户默认。
+/// 默认模型目录选择：用户已安装 > 旧默认根存量（data_dir 切换后）> 源码仓库已下载（开发便利）> 用户默认。
 ///
 /// 纯决策函数（不访问真实文件系统），便于测试注入路径。
-fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
+fn choose_default_model_dir(user: &Path, legacy: Option<&Path>, repo: &Path) -> PathBuf {
     if user.join(DEFAULT_TOKENS).is_file() {
         user.to_path_buf()
+    } else if legacy.is_some_and(|l| l.join(DEFAULT_TOKENS).is_file()) {
+        legacy.unwrap().to_path_buf()
     } else if repo.join(DEFAULT_TOKENS).is_file() {
         repo.to_path_buf()
     } else {
@@ -117,9 +118,31 @@ fn choose_default_model_dir(user: &Path, repo: &Path) -> PathBuf {
     }
 }
 
-/// 默认模型目录（运行时解析：优先用户目录，源码开发时回退到仓库 `./models/`）。
+/// 默认模型目录（运行时解析：优先用户目录，旧根存量兜底，源码开发时回退到仓库 `./models/`）。
 pub fn default_model_dir() -> PathBuf {
-    choose_default_model_dir(&user_default_model_dir(), &repo_models_dir())
+    // legacy 与 user 层次对等：旧根下对应模型的子目录（user 是 `models/<模型名>`）
+    let legacy = crate::config::settings::legacy_models_dir()
+        .map(|l| l.join(&crate::kws::model::asr_asset().name));
+    choose_default_model_dir(
+        &user_default_model_dir(),
+        legacy.as_deref(),
+        &repo_models_dir(),
+    )
+}
+
+/// 标点模型默认目录：用户目录（`~/.zapmomo/models/<标点名>`）优先，旧根存量兜底。
+fn punctuation_default_dir() -> PathBuf {
+    let new = crate::kws::model::punctuation_user_model_dir();
+    if new.join(DEFAULT_PUNCT_MODEL).is_file() {
+        return new;
+    }
+    if let Some(legacy) = crate::config::settings::legacy_models_dir() {
+        let legacy_dir = legacy.join(new.file_name().unwrap_or_default());
+        if legacy_dir.join(DEFAULT_PUNCT_MODEL).is_file() {
+            return legacy_dir;
+        }
+    }
+    new
 }
 
 /// 展开 settings 中的路径字符串（支持 `${env.VAR}`），未配置时用默认文件名。
@@ -214,11 +237,11 @@ pub fn resolve(
             if p.is_absolute() {
                 p
             } else {
-                // 相对路径锚定到标点模型目录
-                crate::kws::model::punctuation_user_model_dir().join(p)
+                // 相对路径锚定到标点模型目录（含旧根兜底）
+                punctuation_default_dir().join(p)
             }
         }
-        None => crate::kws::model::punctuation_user_model_dir().join(DEFAULT_PUNCT_MODEL),
+        None => punctuation_default_dir().join(DEFAULT_PUNCT_MODEL),
     };
     cfg.debug = s.and_then(|s| s.debug).unwrap_or(false);
 
@@ -322,6 +345,57 @@ mod tests {
     use crate::test_util::run_with_temp_home;
 
     #[test]
+    fn test_default_model_dir_dual_root_fallback() {
+        run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            let new_dir = user_default_model_dir();
+            let legacy_dir = home
+                .join(".zapmomo")
+                .join("models")
+                .join(new_dir.file_name().unwrap());
+
+            for d in [&new_dir, &legacy_dir] {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join(DEFAULT_TOKENS), b"t").unwrap();
+            }
+            assert_eq!(default_model_dir(), new_dir);
+
+            std::fs::remove_dir_all(&new_dir).unwrap();
+            assert_eq!(default_model_dir(), legacy_dir);
+
+            std::fs::remove_dir_all(&legacy_dir).unwrap();
+            assert_ne!(default_model_dir(), legacy_dir);
+        });
+    }
+
+    #[test]
+    fn test_punctuation_default_dir_dual_root_fallback() {
+        run_with_temp_home(|home| {
+            crate::test_util::set_custom_data_dir(home);
+            let new_punct = crate::kws::model::punctuation_user_model_dir();
+            let legacy_punct = home
+                .join(".zapmomo")
+                .join("models")
+                .join(new_punct.file_name().unwrap());
+
+            // 只有旧根 → 默认标点模型指向旧根
+            std::fs::create_dir_all(&legacy_punct).unwrap();
+            std::fs::write(legacy_punct.join(DEFAULT_PUNCT_MODEL), b"x").unwrap();
+            let cfg = resolve(None, None).unwrap();
+            assert_eq!(
+                cfg.punctuation_model,
+                legacy_punct.join(DEFAULT_PUNCT_MODEL)
+            );
+
+            // 新根装好后切到新根
+            std::fs::create_dir_all(&new_punct).unwrap();
+            std::fs::write(new_punct.join(DEFAULT_PUNCT_MODEL), b"x").unwrap();
+            let cfg2 = resolve(None, None).unwrap();
+            assert_eq!(cfg2.punctuation_model, new_punct.join(DEFAULT_PUNCT_MODEL));
+        });
+    }
+
+    #[test]
     fn test_default_config_points_to_default_model_dir() {
         let cfg = ResolvedAsrConfig::default();
         assert_eq!(
@@ -358,15 +432,24 @@ mod tests {
         let user = base.path().join("user-model");
         let repo = base.path().join("repo-model");
 
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
 
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), repo);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), repo);
 
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join(DEFAULT_TOKENS), b"t").unwrap();
-        assert_eq!(choose_default_model_dir(&user, &repo), user);
+        assert_eq!(choose_default_model_dir(&user, None, &repo), user);
+
+        std::fs::remove_file(user.join(DEFAULT_TOKENS)).unwrap();
+        let legacy = base.path().join("legacy-model");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(DEFAULT_TOKENS), b"t").unwrap();
+        assert_eq!(
+            choose_default_model_dir(&user, Some(&legacy), &repo),
+            legacy
+        );
     }
 
     #[test]

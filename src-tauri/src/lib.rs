@@ -39,6 +39,7 @@ use zapmomo::model_library::huggingface::HfApiClient;
 use zapmomo::model_library::{
     InstallState as LibInstallState, LibraryModel, RuntimeAction as LibRuntimeAction,
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
+    storage::StorageInfoView,
 };
 use zapmomo::tts::config::TtsParamsPatch;
 use zapmomo::voice::VoiceSession;
@@ -2991,25 +2992,252 @@ fn delete_model(
     // HF 安装：删除具体 artifact 目录（只删该 variant），并清理空父目录
     if model.source == model_library::ModelSource::Hf {
         if let Some(lp) = &model.local_path {
-            let p = Path::new(lp);
-            let dir = if p.is_dir() {
-                p.to_path_buf()
-            } else {
-                p.parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| p.to_path_buf())
-            };
+            let dir = model_library::runtime_to_install_dir(Path::new(lp));
             model_library::delete_hf_install_dir(&dir)?;
         }
         return Ok(());
     }
     let reg = model_library::registry::model_by_id(&id)
         .ok_or_else(|| format!("未知的 Registry 模型：{id}"))?;
-    let dir = model_library::managed_install_dir(reg);
+    // 优先按 local_path（双根定位后的实际位置）推导目录；无 local_path（NotInstalled）
+    // 再回退主根标准目录——旧根存量也能删到，而不是对着新根路径误判/漏删。
+    let dir = model
+        .local_path
+        .map(|lp| model_library::runtime_to_install_dir(Path::new(&lp)))
+        .filter(|d| d.exists())
+        .unwrap_or_else(|| model_library::managed_install_dir(reg));
     if dir.exists() {
         model_library::delete_managed_dir(&dir)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 自定义数据目录（存储位置）
+// ---------------------------------------------------------------------------
+
+/// 存储迁移状态：防重入 + 取消标志。
+#[derive(Default)]
+struct StorageMigrateState {
+    running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl StorageMigrateState {
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
+/// 迁移 guard：所有出口（成功/失败/取消/panic）复位 running 与 cancel。
+struct StorageMigrateGuard {
+    running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for StorageMigrateGuard {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        self.cancel.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 检查「设置/迁移数据目录」是否被占用（下载中 / 语音会话 / 监听 / 迁移中）。
+///
+/// 命中返回具体错误。`migrate_storage` 额外检查 LLM 已加载（mmap 持有文件句柄）。
+#[allow(clippy::too_many_arguments)]
+fn check_storage_busy(
+    dl_kws: &DownloadState,
+    dl_asr: &AsrDownloadState,
+    dl_tts: &TtsDownloadState,
+    lib_dl: &ModelLibraryState,
+    dl_mgr: &DownloadManager,
+    voice: &VoiceSessionState,
+    kws: &ListenState,
+    asr: &AsrListenState,
+) -> Result<(), String> {
+    if dl_kws.in_progress.load(Ordering::Relaxed)
+        || dl_asr.in_progress.load(Ordering::Relaxed)
+        || dl_tts.in_progress.load(Ordering::Relaxed)
+        || lib_dl.in_progress.load(Ordering::Relaxed)
+    {
+        return Err("有模型正在下载，请先等待下载完成或取消后再操作".to_string());
+    }
+    if dl_mgr
+        .snapshot()
+        .iter()
+        .any(|t| matches!(t.state.as_str(), "queued" | "downloading" | "verifying"))
+    {
+        return Err("有模型正在下载，请先等待下载完成或取消后再操作".to_string());
+    }
+    if voice.is_running() {
+        return Err("语音会话正在运行，请先停止会话后再操作".to_string());
+    }
+    if kws.is_listening() || asr.is_listening() {
+        return Err("有监听任务正在运行，请先停止后再操作".to_string());
+    }
+    Ok(())
+}
+
+/// 读取存储信息（当前/旧根、占用大小、迁移可用性、磁盘空间）。
+#[tauri::command]
+async fn get_storage_info(mig: State<'_, StorageMigrateState>) -> Result<StorageInfoView, String> {
+    let mut info =
+        tauri::async_runtime::spawn_blocking(zapmomo::model_library::storage::collect_storage_info)
+            .await
+            .map_err(|e| e.to_string())??;
+    info.migrating = mig.is_running();
+    Ok(info)
+}
+
+/// 设置（或清除）自定义数据目录。切换立即生效：新下载走新目录，存量模型保持可见可用。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn set_data_dir(
+    app: AppHandle,
+    path: Option<String>,
+    dl_kws: State<'_, DownloadState>,
+    dl_asr: State<'_, AsrDownloadState>,
+    dl_tts: State<'_, TtsDownloadState>,
+    lib_dl: State<'_, ModelLibraryState>,
+    dl_mgr: State<'_, Arc<DownloadManager>>,
+    voice: State<'_, VoiceSessionState>,
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    mig: State<'_, StorageMigrateState>,
+) -> Result<StorageInfoView, String> {
+    if mig.is_running() {
+        return Err("正在迁移模型，请稍候".to_string());
+    }
+    check_storage_busy(
+        dl_kws.inner(),
+        dl_asr.inner(),
+        dl_tts.inner(),
+        lib_dl.inner(),
+        &dl_mgr,
+        voice.inner(),
+        kws.inner(),
+        asr.inner(),
+    )?;
+
+    let data_dir_value = match &path {
+        Some(p) if !p.trim().is_empty() => Some(
+            zapmomo::model_library::storage::validate_data_dir(Path::new(p))?
+                .display()
+                .to_string(),
+        ),
+        _ => None,
+    };
+    zapmomo::model_library::update_settings(|cfg| {
+        cfg.data_dir = data_dir_value.clone();
+    })?;
+    zapmomo::config::settings::refresh_data_dir_cache();
+    let _ = app.emit("storage-dir-changed", ());
+
+    tauri::async_runtime::spawn_blocking(zapmomo::model_library::storage::collect_storage_info)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 迁移旧根存量到新数据目录（后台执行，进度经 `storage-migrate-progress` 事件推送）。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn migrate_storage(
+    app: AppHandle,
+    mig: State<'_, StorageMigrateState>,
+    dl_kws: State<'_, DownloadState>,
+    dl_asr: State<'_, AsrDownloadState>,
+    dl_tts: State<'_, TtsDownloadState>,
+    lib_dl: State<'_, ModelLibraryState>,
+    dl_mgr: State<'_, Arc<DownloadManager>>,
+    voice: State<'_, VoiceSessionState>,
+    kws: State<'_, ListenState>,
+    asr: State<'_, AsrListenState>,
+    llm: State<'_, LlmState>,
+) -> Result<(), String> {
+    if mig.is_running() {
+        return Err("迁移已在进行中".to_string());
+    }
+    check_storage_busy(
+        dl_kws.inner(),
+        dl_asr.inner(),
+        dl_tts.inner(),
+        lib_dl.inner(),
+        &dl_mgr,
+        voice.inner(),
+        kws.inner(),
+        asr.inner(),
+    )?;
+    if llm.loaded_model_path().is_some() {
+        return Err("LLM 模型已加载（文件被占用），请先卸载模型后再迁移".to_string());
+    }
+
+    mig.running.store(true, Ordering::SeqCst);
+    mig.cancel.store(false, Ordering::SeqCst);
+    let running = mig.running.clone();
+    let cancel = mig.cancel.clone();
+    let emit_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = StorageMigrateGuard {
+            running: running.clone(),
+            cancel: cancel.clone(),
+        };
+        let outcome = zapmomo::model_library::storage::run_migration(
+            false,
+            &mut |p| {
+                let _ = emit_app.emit("storage-migrate-progress", &p);
+            },
+            Some(&cancel),
+        );
+        match &outcome {
+            Ok(o) => {
+                if o.failed.is_empty() {
+                    tracing::info!(
+                        "存储迁移完成（moved={} skipped={}）",
+                        o.moved.len(),
+                        o.skipped.len()
+                    );
+                } else {
+                    tracing::warn!("存储迁移部分失败：{:?}", o.failed);
+                }
+            }
+            Err(e) => tracing::error!("存储迁移异常: {e}"),
+        }
+        outcome
+    })
+    .await
+    .map_err(|e| format!("迁移任务异常: {e}"))??;
+
+    // 迁移完成后：伙伴 active 已 relocate，重新 reconcile（allow_directory + 桌宠重载）
+    if let Ok(lib) = zapmomo::companion::load_library_fast() {
+        let active = zapmomo::companion::active_model(&lib);
+        let _ = reconcile_active(&app, active);
+        for model in &lib.models {
+            if zapmomo::companion::quick_valid(model) {
+                let _ = app
+                    .asset_protocol_scope()
+                    .allow_directory(Path::new(&model.model_dir), true);
+            }
+        }
+    }
+    let _ = app.emit("storage-dir-changed", ());
+    Ok(())
+}
+
+/// 取消进行中的存储迁移（条目间/拷贝块间生效；已迁移条目保留）。
+#[tauri::command]
+fn cancel_storage_migration(mig: State<'_, StorageMigrateState>) -> Result<(), String> {
+    if !mig.is_running() {
+        return Err("当前没有迁移在运行".to_string());
+    }
+    mig.cancel.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// 在文件管理器中打开当前模型目录。
+#[tauri::command]
+fn open_storage_dir() -> Result<(), String> {
+    open_path(&zapmomo::config::settings::get_models_dir())
 }
 
 /// 移除 external 模型注册（不删文件）。current / runtime-loaded / switching 时拒绝。
@@ -3436,6 +3664,7 @@ pub fn run() {
         .manage(ModelLibraryState::default())
         .manage(CatalogState::from_settings())
         .manage(Arc::new(DownloadManager::new(current_downloader())))
+        .manage(StorageMigrateState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             list_devices,
@@ -3508,6 +3737,11 @@ pub fn run() {
             catalog_get_endpoint,
             catalog_set_endpoint,
             catalog_set_token,
+            get_storage_info,
+            set_data_dir,
+            migrate_storage,
+            cancel_storage_migration,
+            open_storage_dir,
             get_live2d_config,
             list_companions,
             import_companion,

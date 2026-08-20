@@ -1,3 +1,9 @@
+<div align="right">
+
+**简体中文** | [English](README.en.md)
+
+</div>
+
 <div align="center">
   <img src="docs/public/logo.svg" alt="ZapMomo Logo" width="300" />
 

@@ -48,7 +48,7 @@ export function buildCatalog(model: Live2DModel): Live2dCatalog {
     .filter(([, defs]) => (defs?.length ?? 0) > 0)
     .map(([group, defs]) => ({
       group,
-      motions: defs!.map((d, index) => ({ index, name: motionDisplayName(d.File) })),
+      motions: (defs ?? []).map((d, index) => ({ index, name: motionDisplayName(d.File) })),
     }));
   const expressions = (rt.expressionManager?.definitions ?? []).map((d, index) => ({
     index,

@@ -183,14 +183,15 @@ export const api = {
     invoke<void>("save_companion_position", args),
   setCompanionScale: (args: { scale: number }) => invoke<void>("set_companion_scale", args),
   setCompanionOpacity: (args: { opacity: number }) => invoke<void>("set_companion_opacity", args),
+  setCompanionClickThrough: (args: { enabled: boolean }) =>
+    invoke<void>("set_companion_click_through", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
   getShortcuts: () => invoke<Record<string, string>>("get_shortcuts"),
   setShortcut: (args: { action: ShortcutActionId; accelerator: string }) =>
     invoke<void>("set_shortcut", args),
-  clearShortcut: (args: { action: ShortcutActionId }) =>
-    invoke<void>("clear_shortcut", args),
+  clearShortcut: (args: { action: ShortcutActionId }) => invoke<void>("clear_shortcut", args),
   openSettings: () => invoke<void>("open_settings"),
   hideCompanion: () => invoke<void>("hide_companion"),
   quitApp: () => invoke<void>("quit_app"),

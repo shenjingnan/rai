@@ -1983,6 +1983,7 @@ struct Live2dConfigInfo {
     models_present: bool,
     window_scale: Option<f64>,
     window_opacity: Option<f64>,
+    click_through: Option<bool>,
     settings_path: String,
 }
 
@@ -2005,6 +2006,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
 
     let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
     let window_opacity = live2d_settings.as_ref().and_then(|l| l.window_opacity);
+    let click_through = live2d_settings.as_ref().and_then(|l| l.click_through);
 
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
@@ -2013,6 +2015,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         models_present,
         window_scale,
         window_opacity,
+        click_through,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2314,6 +2317,24 @@ fn apply_companion_opacity(app: &AppHandle, opacity: f64) -> Result<(), String> 
     Ok(())
 }
 
+/// 保存并应用角色窗口点击穿透（内部实现，供 command 与原生菜单事件共用）。
+///
+/// 开启后 companion 窗口对所有鼠标事件透明（拖动/滚轮缩放/右键菜单随之失效），
+/// 关闭入口只剩设置页与托盘菜单。不发事件：穿透不影响角色窗口渲染，其前端无消费者。
+fn apply_companion_click_through(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.click_through = Some(enabled);
+    settings::save_settings(&settings)?;
+    if let Some(window) = app.get_webview_window("companion") {
+        window
+            .set_ignore_cursor_events(enabled)
+            .map_err(|e| format!("切换点击穿透失败: {e}"))?;
+    }
+    rebuild_tray_menu(app);
+    Ok(())
+}
+
 /// 把原生菜单项 id 解析为缩放比例。
 fn scale_from_id(id: &str) -> Option<f64> {
     match id {
@@ -2367,6 +2388,16 @@ fn set_companion_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
     apply_companion_opacity(&app, opacity)
 }
 
+/// 设置并持久化角色窗口点击穿透（true = 鼠标事件全部穿透到身后窗口）。
+///
+/// 由设置面板或原生菜单调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].click_through`，
+/// 并立即对 companion 窗口生效。开启后窗口收不到任何鼠标事件（拖动/缩放/右键菜单失效），
+/// 只能从设置页或托盘菜单关闭。
+#[tauri::command]
+fn set_companion_click_through(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_companion_click_through(&app, enabled)
+}
+
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
 #[tauri::command]
 fn get_hide_dock_icon() -> Result<bool, String> {
@@ -2408,6 +2439,10 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "hide_companion" => hide_companion_window(app),
         "restart" => app.request_restart(),
         "quit" => app.exit(0),
+        // 点击穿透取反当前值（勾选菜单项语义：点一下切换开关）。
+        "click_through" => {
+            let _ = apply_companion_click_through(app, !current_companion_click_through());
+        }
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
@@ -2421,6 +2456,7 @@ fn handle_menu(app: &AppHandle, id: &str) {
 /// 构建角色窗口的右键菜单（窗口尺寸/透明度子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
+    let click_through = build_click_through_item(app)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
@@ -2430,6 +2466,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &scale_submenu,
             &opacity_submenu,
+            &click_through,
             &open_settings,
             &hide,
             &restart,
@@ -2444,6 +2481,7 @@ const TRAY_ID: &str = "zapmomo-tray";
 /// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
+    let click_through = build_click_through_item(app)?;
     let toggle_companion =
         MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
@@ -2455,6 +2493,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &toggle_companion,
             &tray_scale,
             &tray_opacity,
+            &click_through,
             &open_settings,
             &restart,
             &quit,
@@ -2486,6 +2525,34 @@ fn current_companion_metrics() -> (f64, f64) {
         }
         _ => (1.0, 1.0),
     }
+}
+
+/// 解析点击穿透开关：缺省（未配置 / 旧版配置）视为关闭。
+fn resolve_click_through(live2d: Option<&Live2dSettings>) -> bool {
+    live2d.and_then(|l| l.click_through).unwrap_or(false)
+}
+
+/// 读当前点击穿透开关（读失败或缺省回退 false）。
+fn current_companion_click_through() -> bool {
+    match settings::load_settings() {
+        Ok(Some(s)) => resolve_click_through(s.live2d.as_ref()),
+        _ => false,
+    }
+}
+
+/// 构建「点击穿透」勾选项（角色右键菜单与托盘菜单共用）。
+///
+/// 构建时读当前 settings 打勾；右键菜单每次弹出前重建、托盘菜单在每次 apply 时
+/// `rebuild_tray_menu`，勾选态与实际状态保持一致。
+fn build_click_through_item(app: &AppHandle) -> tauri::Result<CheckMenuItem<tauri::Wry>> {
+    CheckMenuItem::with_id(
+        app,
+        "click_through",
+        "点击穿透",
+        true,
+        current_companion_click_through(),
+        None::<&str>,
+    )
 }
 
 /// 构建「窗口尺寸」「透明度」两个档位子菜单（角色右键菜单与托盘菜单共用）。
@@ -3926,6 +3993,7 @@ pub fn run() {
             save_companion_position,
             set_companion_scale,
             set_companion_opacity,
+            set_companion_click_through,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,
@@ -4076,6 +4144,14 @@ pub fn run() {
                 }
             }
 
+            // 恢复点击穿透：持久化开启时建窗后立即应用（缺省关闭无需设置；窗口
+            // hide/show 不销毁窗口对象，穿透状态跨显隐自然保留）。
+            if resolve_click_through(live2d.as_ref())
+                && let Some(window) = app.get_webview_window("companion")
+            {
+                let _ = window.set_ignore_cursor_events(true);
+            }
+
             // 后台旧版迁移：库为空且旧 [live2d].model_dir 存在时，把模型复制进托管目录并
             // 设为 active（完成后 reconcile，桌宠从旧目录无缝切到托管副本）。不阻塞启动。
             migrate_legacy_in_background(app.handle().clone());
@@ -4210,6 +4286,32 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod companion_click_through_tests {
+    use super::resolve_click_through;
+    use zapmomo::config::settings::Live2dSettings;
+
+    #[test]
+    fn test_resolve_click_through_missing_defaults_false() {
+        assert!(!resolve_click_through(None));
+        assert!(!resolve_click_through(Some(&Live2dSettings::default())));
+    }
+
+    #[test]
+    fn test_resolve_click_through_reads_flag() {
+        let on = Live2dSettings {
+            click_through: Some(true),
+            ..Default::default()
+        };
+        let off = Live2dSettings {
+            click_through: Some(false),
+            ..Default::default()
+        };
+        assert!(resolve_click_through(Some(&on)));
+        assert!(!resolve_click_through(Some(&off)));
+    }
 }
 
 #[cfg(test)]

@@ -117,6 +117,7 @@ export interface Live2dConfigInfo {
   models_present: boolean;
   window_scale: number | null;
   window_opacity: number | null;
+  click_through: boolean | null;
   settings_path: string;
 }
 

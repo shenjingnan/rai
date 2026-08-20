@@ -6,7 +6,7 @@ import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
 import { CompanionPage } from "./CompanionPage";
 
 type StageCatalog = import("@/components/live2d/previewManager").Live2dCatalog;
-const { invokeMock, openMock, stageHandleMock, stageState } = vi.hoisted(() => ({
+const { invokeMock, openMock, stageHandleMock, stageState, configState } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openMock: vi.fn(),
   stageHandleMock: {
@@ -16,6 +16,8 @@ const { invokeMock, openMock, stageHandleMock, stageState } = vi.hoisted(() => (
   },
   /** 供 mock 替身注入目录的可变容器（vi.mock 工厂只可靠引用 hoisted 变量）。 */
   stageState: { catalog: null as StageCatalog | null },
+  /** get_live2d_config 的 click_through 覆盖值（null = 后端未返回该字段）。 */
+  configState: { clickThrough: null as boolean | null },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -81,6 +83,7 @@ beforeEach(() => {
   stageHandleMock.applyExpression.mockReset();
   stageHandleMock.resetExpression.mockReset();
   stageState.catalog = null;
+  configState.clickThrough = null;
   library = { models: [], active_model_id: null };
   importSeq = 0;
 
@@ -97,6 +100,7 @@ beforeEach(() => {
             models_present: false,
             window_scale: 1.0,
             window_opacity: 1.0,
+            click_through: configState.clickThrough,
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
@@ -507,5 +511,42 @@ describe("CompanionPage 伙伴模型管理器", () => {
     expect(await screen.findByTestId("live2d-stage")).toBeInTheDocument();
     expect(await screen.findByText("此模型未提供动作或表情")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "动作" })).not.toBeInTheDocument();
+  });
+
+  it("点击穿透开关默认关闭，点击后调用 set_companion_click_through 开启", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "点击穿透" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_click_through", { enabled: true });
+    });
+  });
+
+  it("点击穿透开关从配置恢复为开启，再点击则关闭", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    configState.clickThrough = true;
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "点击穿透" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_click_through", { enabled: false });
+    });
+  });
+
+  it("未选中伙伴时点击穿透开关仍然可见（窗口级行为）", async () => {
+    library = { models: [], active_model_id: null };
+    renderPage();
+
+    expect(await screen.findByRole("switch", { name: "点击穿透" })).toBeInTheDocument();
+    expect(screen.queryByText("尺寸")).not.toBeInTheDocument();
   });
 });

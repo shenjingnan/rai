@@ -1,4 +1,4 @@
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { VoiceStatusDot } from "@/components/voice/VoiceStatusDot";
@@ -11,6 +11,7 @@ import {
   onLive2dModelChanged,
   toAssetUrl,
 } from "@/lib/tauri";
+import { centeredResizeTarget } from "@/lib/windowResize";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
 const BASE_HEIGHT = 480;
@@ -66,11 +67,32 @@ export function CompanionRoot() {
     return { width, height };
   }, []);
 
-  /** 统一设置窗口尺寸并同步本地 state。 */
+  /** 统一设置窗口尺寸并同步本地 state；以窗口中心为锚点，角色缩放时保持原位。 */
   const resizeTo = useCallback(
     async (ratio: number, s: number) => {
+      const win = getCurrentWindow();
       const { width, height } = computeSize(ratio, s);
-      await getCurrentWindow().setSize(new LogicalSize(width, height));
+      // setSize 默认固定左上角（向右下生长），会使居中的角色表现为从左上角缩放。
+      // 读取当前物理位置/尺寸并换算，把左上角移到「保持窗口中心不变」的位置。
+      const factor = await win.scaleFactor();
+      const pos = await win.outerPosition();
+      const cur = await win.outerSize();
+      const target = centeredResizeTarget(
+        { x: pos.x, y: pos.y, width: cur.width, height: cur.height },
+        Math.round(width * factor),
+        Math.round(height * factor),
+      );
+      // 同时发送尺寸+位置（不逐个 await）：避免「先变尺寸、再瞬移归位」的中间态，减少缩放抖动。
+      const sizeOp = win.setSize(new LogicalSize(width, height));
+      const posOp = win
+        .setPosition(
+          new LogicalPosition(Math.round(target.x / factor), Math.round(target.y / factor)),
+        )
+        .catch((e) => {
+          // 中心锚定失败（如权限缺失）时降级为默认锚定；尺寸已生效，仍要更新布局避免模型被裁。
+          console.warn("中心锚定 setPosition 失败，已降级为默认锚定:", e);
+        });
+      await Promise.allSettled([sizeOp, posOp]);
       setSize({ width, height });
     },
     [computeSize],
@@ -80,6 +102,7 @@ export function CompanionRoot() {
   const applyScale = useCallback(
     async (s: number) => {
       const clamped = Math.max(SCALE_MIN, Math.min(SCALE_MAX, s));
+      scaleRef.current = clamped; // 立即同步，连续滚轮基于最新值计算下一步
       setScale(clamped);
       await resizeTo(aspectRatioRef.current, clamped);
       await api.setCompanionScale({ scale: clamped });
@@ -118,6 +141,9 @@ export function CompanionRoot() {
   // 设置面板改比例时同步（只 resize，不再写回后端避免循环）。
   useEffect(() => {
     const unlisten = onCompanionScaleChanged((s) => {
+      // 本窗口滚轮缩放后也会收到这条回显（applyScale → setCompanionScale），值相同则跳过，
+      // 避免每次滚轮触发两轮 resize/重布局造成抖动。
+      if (s === scaleRef.current) return;
       setScale(s);
       void resizeTo(aspectRatioRef.current, s);
     });
@@ -170,7 +196,7 @@ export function CompanionRoot() {
     };
   }, []);
 
-  // cmd/ctrl + 滚轮：连续缩放（节流约 100ms，阻止默认滚动）。
+  // cmd/ctrl + 滚轮：连续缩放（节流约 60ms，阻止默认滚动）。
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -179,12 +205,12 @@ export function CompanionRoot() {
       if (!(e.metaKey || e.ctrlKey)) return;
       e.preventDefault();
       if (timer) return;
-      const step = e.deltaY < 0 ? WHEEL_SCALE_STEP : 1 / WHEEL_SCALE_STEP;
-      const next = scaleRef.current * step;
+      // 步长随滚轮实际位移变化：鼠标一格 deltaY≈100 → 1.1×；小幅位移 = 微调，缩放更平滑。
+      const next = scaleRef.current * WHEEL_SCALE_STEP ** (e.deltaY / 100);
       if (next < SCALE_MIN || next > SCALE_MAX) return;
       timer = setTimeout(() => {
         timer = undefined;
-      }, 100);
+      }, 60);
       void applyScaleRef.current(next);
     };
     el.addEventListener("wheel", onWheel, { passive: false });

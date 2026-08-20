@@ -35,18 +35,20 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 ## 下载桌面应用
 
-前往 [Releases](https://github.com/shenjingnan/zapmomo/releases/latest) 下载最新版安装包，Release 说明顶部有各平台的选择表格与下载按钮：
+点击下方按钮直接下载对应系统的最新版安装包（无需登录 GitHub，自动指向最新 Release）：
 
-| 系统 | 芯片 / 架构 | 下载 |
+| 系统 | 芯片 / 架构 | 立即下载 |
 | --- | --- | --- |
-| Windows 10 / 11 | x64 | `ZapMomo_<版本>_Windows_x64.exe`（`.msi` 供企业批量部署） |
-| macOS 13+ | Apple Silicon（M1/M2/M3/M4） | `ZapMomo_<版本>_macOS_arm64.dmg` |
-| macOS 13+ | Intel | `ZapMomo_<版本>_macOS_x64.dmg` |
-| Ubuntu / Debian | amd64 | `ZapMomo_<版本>_Linux_amd64.deb`（或 `.AppImage` 免安装） |
-| Fedora / RHEL | x86_64 | `ZapMomo_<版本>_Linux_x86_64.rpm`（或 `.AppImage` 免安装） |
+| Windows 10 / 11 | x64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Windows_x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Windows_x64.exe) |
+| macOS 13+ | Apple Silicon（M1/M2/M3/M4） | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-macOS_arm64-8E8E93?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_macOS_arm64.dmg) |
+| macOS 13+ | Intel | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-macOS_x64-8E8E93?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_macOS_x64.dmg) |
+| Ubuntu / Debian | amd64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Linux_amd64-A80030?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_amd64.deb) |
+| Fedora / RHEL | x86_64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Linux_x86_64-294172?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_x86_64.rpm) |
 
-> 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
-> KWS / ASR / TTS 模型资产不随安装包分发，首次使用请在应用「模型」页或用 CLI `install-model` 下载。
+- Windows 企业批量部署可选 [MSI 版](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Windows_x64.msi)；Linux 可选 [AppImage](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_amd64.AppImage) 免安装直接运行。
+- 完整版本与更新日志见 [Releases](https://github.com/shenjingnan/zapmomo/releases)。
+- 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
+- KWS / ASR / TTS 模型资产不随安装包分发，首次使用请在应用「模型」页或用 CLI `install-model` 下载。
 
 ## 快速开始
 

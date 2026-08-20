@@ -93,6 +93,13 @@ describe("AppShell 窗口控件的平台布局", () => {
     expect(mainPanelOuter(root).className).toContain("pt-9");
   });
 
+  it("Windows：自绘四边完整窗口边框（后端关 DWM shadow 后由 CSS 补边框）", () => {
+    const { container } = renderShellWithUserAgent(WINDOWS_UA);
+    const root = shellRoot(container);
+
+    expect(root.className).toContain("border-window-border");
+  });
+
   it("Linux：三键仍在侧边栏左上角，保留 CSS 圆角与主面板原布局", () => {
     const { container } = renderShellWithUserAgent(LINUX_UA);
     const root = shellRoot(container);
@@ -105,6 +112,8 @@ describe("AppShell 窗口控件的平台布局", () => {
 
     // 透明窗口圆角仍由 CSS 裁出
     expect(root.className).toContain("rounded-xl");
+    // Linux 窗口边框场景由系统/圆角承担，不加 Windows 专用边框类
+    expect(root.className).not.toContain("border-window-border");
     expect(mainPanelOuter(root).className).not.toContain("pt-9");
   });
 
@@ -118,5 +127,7 @@ describe("AppShell 窗口控件的平台布局", () => {
     expect(buttons.close).toBeNull();
 
     expect(root.className).not.toContain("rounded-xl");
+    // macOS 窗口边框由系统绘制，不加 Windows 专用边框类
+    expect(root.className).not.toContain("border-window-border");
   });
 });

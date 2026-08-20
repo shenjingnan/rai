@@ -17,6 +17,9 @@ export function AppShell() {
         "relative flex h-screen overflow-hidden bg-app-background text-foreground",
         // 圆角：macOS 由系统绘制；Linux 透明窗口需 CSS 圆角裁出；Windows 不透明方角无需处理。
         !mac && !windows && "rounded-xl",
+        // Windows：后端已关 DWM shadow（undecorated+shadow 在 Win10 会被 DWM 画成
+        // 左右底三边黑框、顶部强制无边），四边完整边框由 CSS 自绘。
+        windows && "border border-window-border",
       )}
     >
       {/* Windows：右上角透明悬浮三键条（可拖拽窗口），不占布局、无标题栏背景。 */}

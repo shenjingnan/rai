@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.15](https://github.com/shenjingnan/zapmomo/compare/v0.1.14...v0.1.15) - 2026-08-20
+
+### Added
+
+- *(ui)* 弹窗外壳迁移 shadcn/ui Dialog（Radix）并修复宽度回归 ([#110](https://github.com/shenjingnan/zapmomo/pull/110))
+- *(storage)* 支持自定义模型数据目录（data_dir） ([#108](https://github.com/shenjingnan/zapmomo/pull/108))
+- *(companion)* 伙伴页 Live2D 动作/表情展示与预览 ([#109](https://github.com/shenjingnan/zapmomo/pull/109))
+- *(release)* 资产名去除版本号，README 提供一键下载最新版按钮 ([#106](https://github.com/shenjingnan/zapmomo/pull/106))
+- *(llm)* 内置 LLM 预设一键下载，Release 制品自动上传百度网盘 ([#105](https://github.com/shenjingnan/zapmomo/pull/105))
+- *(release)* 安装包资产重命名为平台友好命名并在 Release 说明提供下载引导表格 ([#104](https://github.com/shenjingnan/zapmomo/pull/104))
+
+### Fixed
+
+- *(tauri)* Windows 下角色窗口不再显示应用菜单栏 ([#102](https://github.com/shenjingnan/zapmomo/pull/102))
+
+### Other
+
+- *(readme)* README 重写为用户视角，开发向内容迁移至 CONTRIBUTING.md ([#116](https://github.com/shenjingnan/zapmomo/pull/116))
+- *(ci)* 拆分覆盖率 job 并修复 rust-cache 缓存失效 ([#114](https://github.com/shenjingnan/zapmomo/pull/114))
+- *(readme)* 头部新增居中徽标（版本/CI/覆盖率/许可/平台） ([#115](https://github.com/shenjingnan/zapmomo/pull/115))
+- *(readme)* 开发向内容迁移文档站，新增贡献指南 ([#112](https://github.com/shenjingnan/zapmomo/pull/112))
+- *(llm)* 补充 LLM 预设一键下载测试用例 ([#107](https://github.com/shenjingnan/zapmomo/pull/107))
+- *(ci)* Node 版本升级 22 → 24，.nvmrc 替换为 .node-version ([#101](https://github.com/shenjingnan/zapmomo/pull/101))
+- *(ci)* 用 rust-cache 缓存 cargo 构建产物 ([#99](https://github.com/shenjingnan/zapmomo/pull/99))
+
 ## [0.1.14](https://github.com/shenjingnan/zapmomo/compare/v0.1.13...v0.1.14) - 2026-08-19
 
 ### Added

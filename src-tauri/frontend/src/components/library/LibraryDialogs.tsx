@@ -31,7 +31,7 @@ export function ModelConfirmDialog({ open, onClose, model, onConfirm }: ModelCon
       open={open}
       onClose={onClose}
       title={external ? "移除模型" : "卸载模型"}
-      maxWidth="max-w-md"
+      width="md"
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
@@ -82,7 +82,7 @@ export function ModelDetailDialog({ open, onClose, model }: ModelDetailDialogPro
   if (!model) return null;
   const meta = TYPE_META[model.modelType];
   return (
-    <LibraryDialog open={open} onClose={onClose} title="模型详情" maxWidth="max-w-lg">
+    <LibraryDialog open={open} onClose={onClose} title="模型详情" width="lg">
       <div className="flex items-center gap-3">
         <span
           className={cn("flex h-10 w-10 items-center justify-center rounded-full", meta.iconClass)}
@@ -219,7 +219,7 @@ export function AddLocalModelDialog({
       open={open}
       onClose={onClose}
       title={isLlmImport ? "导入 GGUF" : "添加本地模型"}
-      maxWidth="max-w-md"
+      width="md"
     >
       <p className="text-sm text-text-secondary">
         {isLlmImport

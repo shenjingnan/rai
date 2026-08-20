@@ -13,6 +13,12 @@ export interface ModelBounds {
  *
  * `getDrawableBounds` 返回原始画布空间（originalWidth×originalHeight），
  * 乘以 layout 缩放因子（internalModel.width / originalWidth）映射到模型局部坐标。
+ *
+ * 跳过顶点未填充的 drawable（bounds 含 undefined/NaN）：Cubism 5（moc3 v5）模型中
+ * 存在初始隐藏、core 惰性填充顶点的 mesh（如水印类部件），其 bounds 为
+ * `{x: undefined, y: undefined, width: NaN, height: NaN}`；不跳过会让合并包围盒
+ * 变成 NaN，`layoutModel` 判定非法后跳过布局，模型卡在 2500×2500 画布原点，
+ * 窗口内只露出画布角落一小块（表现为「模型不显示」）。
  */
 export function computeModelBounds(model: Live2DModel): ModelBounds {
   const im = model.internalModel;
@@ -24,6 +30,14 @@ export function computeModelBounds(model: Live2DModel): ModelBounds {
   let maxY = -Infinity;
   for (const id of im.getDrawableIDs()) {
     const b = im.getDrawableBounds(im.getDrawableIndex(id));
+    if (
+      !Number.isFinite(b.x) ||
+      !Number.isFinite(b.y) ||
+      !Number.isFinite(b.width) ||
+      !Number.isFinite(b.height)
+    ) {
+      continue;
+    }
     minX = Math.min(minX, b.x);
     minY = Math.min(minY, b.y);
     maxX = Math.max(maxX, b.x + b.width);

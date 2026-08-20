@@ -1,6 +1,14 @@
-import { useEffect, useRef } from "react";
-import type { ClaimHandle, PreviewSlotCallbacks } from "./previewManager";
+import { useEffect, useImperativeHandle, useRef } from "react";
+import type { Ref } from "react";
+import type { ClaimHandle, Live2dCatalog, PreviewSlotCallbacks } from "./previewManager";
 import { getPreviewManager } from "./previewManager";
+
+/** SharedLive2dStage 的命令式句柄：动作/表情播放（卸载后调用安全 no-op）。 */
+export type SharedLive2dStageHandle = {
+  playMotion: (group: string, index: number) => Promise<boolean>;
+  applyExpression: (index: number) => Promise<boolean>;
+  resetExpression: () => void;
+};
 
 interface SharedLive2dStageProps {
   /** 模型清单文件的 asset:// URL，null 时清屏。 */
@@ -18,6 +26,10 @@ interface SharedLive2dStageProps {
   onModelMetrics?: (metrics: { aspectRatio: number }) => void;
   /** 模型上舞台、画布可用时回调（缓存命中也会触发，上层需自行去重）。 */
   onModelReady?: (canvas: HTMLCanvasElement) => void;
+  /** 模型动作/表情目录就绪回调（缓存命中也会触发，全量覆盖语义）。 */
+  onModelCatalog?: (catalog: Live2dCatalog | null) => void;
+  /** 命令式句柄（React 19 ref as prop）：播放动作/表情与重置。 */
+  ref?: Ref<SharedLive2dStageHandle>;
 }
 
 /**
@@ -38,6 +50,8 @@ export function SharedLive2dStage({
   onError,
   onModelMetrics,
   onModelReady,
+  onModelCatalog,
+  ref,
 }: SharedLive2dStageProps) {
   const slotRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<ClaimHandle | null>(null);
@@ -52,6 +66,7 @@ export function SharedLive2dStage({
   callbacksRef.current.onError = onError;
   callbacksRef.current.onModelMetrics = onModelMetrics;
   callbacksRef.current.onModelReady = onModelReady;
+  callbacksRef.current.onModelCatalog = onModelCatalog;
 
   // 占用 / 释放共享舞台（仅随组件挂载/卸载，StrictMode 双挂载由 Manager 幂等处理）。
   useEffect(() => {
@@ -69,6 +84,19 @@ export function SharedLive2dStage({
       handleRef.current = null;
     };
   }, []);
+
+  // 命令式句柄：转发到当前 claim 的 handle；释放后（handleRef.current 为 null）安全 no-op。
+  useImperativeHandle(
+    ref,
+    () => ({
+      playMotion: (group, index) =>
+        handleRef.current?.playMotion(group, index) ?? Promise.resolve(false),
+      applyExpression: (index) =>
+        handleRef.current?.applyExpression(index) ?? Promise.resolve(false),
+      resetExpression: () => handleRef.current?.resetExpression(),
+    }),
+    [],
+  );
 
   // 尺寸/缩放变化：只 resize 并重新布局，不重载模型。
   useEffect(() => {

@@ -2,6 +2,7 @@ import { cleanup, render } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SharedLive2dStage } from "./SharedLive2dStage";
+import type { SharedLive2dStageHandle } from "./SharedLive2dStage";
 
 /**
  * 只验证组件与 previewManager 的接线契约（claim/release/updateLayout/showModel 的
@@ -13,6 +14,9 @@ const { getManagerMock, claimMock, handleStub } = vi.hoisted(() => {
     updateLayout: vi.fn(),
     showModel: vi.fn(),
     release: vi.fn(),
+    playMotion: vi.fn(async () => true),
+    applyExpression: vi.fn(async () => true),
+    resetExpression: vi.fn(),
   };
   // 参数类型对齐 ClaimOptions，使 mock.calls[0][0] 可直接断言。
   const claimMock = vi.fn(
@@ -45,6 +49,9 @@ beforeEach(() => {
   handleStub.updateLayout.mockClear();
   handleStub.showModel.mockClear();
   handleStub.release.mockClear();
+  handleStub.playMotion.mockClear();
+  handleStub.applyExpression.mockClear();
+  handleStub.resetExpression.mockClear();
 });
 
 afterEach(cleanup);
@@ -114,5 +121,21 @@ describe("SharedLive2dStage", () => {
 
     expect(claimMock).toHaveBeenCalledTimes(2);
     expect(handleStub.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("透传 onModelCatalog 回调，并通过 ref 暴露播放/重置方法", async () => {
+    const ref = { current: null as SharedLive2dStageHandle | null };
+    const onModelCatalog = vi.fn();
+    render(<SharedLive2dStage {...baseProps()} ref={ref} onModelCatalog={onModelCatalog} />);
+
+    const opts = claimMock.mock.calls[0][0];
+    expect(opts.callbacks).toHaveProperty("onModelCatalog");
+
+    expect(await ref.current!.playMotion("Extra", 0)).toBe(true);
+    expect(handleStub.playMotion).toHaveBeenCalledWith("Extra", 0);
+    expect(await ref.current!.applyExpression(1)).toBe(true);
+    expect(handleStub.applyExpression).toHaveBeenCalledWith(1);
+    ref.current!.resetExpression();
+    expect(handleStub.resetExpression).toHaveBeenCalledTimes(1);
   });
 });

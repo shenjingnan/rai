@@ -50,6 +50,16 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
 - KWS / ASR / TTS 模型资产不随安装包分发，首次使用请在应用「模型」页或用 CLI `install-model` 下载。
 
+### macOS 首次打开（未签名）
+
+项目未申请 Apple Developer 证书，安装包**未签名**。每次从 Releases 下载后，首次启动都会被系统拦截（提示「无法验证开发者」）。请先将 App 拖入「应用程序」，再执行：
+
+```bash
+xattr -cr "/Applications/Zap Momo.app"
+```
+
+随后启动即可正常打开。若 App 不在「应用程序」，把命令里的路径换成实际位置；或右键 App →「打开」→ 再次点击「打开」。
+
 ## 快速开始
 
 ```bash
@@ -384,8 +394,8 @@ pnpm tauri build
 > 打包版内置「下载模型」按钮：首次使用时若缺模型，在「配置」面板点击即可自动
 > 下载到 `~/.zapmomo/models/<模型名>`（KWS / ASR / TTS 均可，也可用
 > `zapmomo kws|asr|tts install-model`）。
-> macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
-> `xattr -dr com.apple.quarantine <应用路径>`。
+> macOS 安装包未签名，每次下载后首次启动若被 Gatekeeper 拦截，先拖入「应用程序」后执行
+> `xattr -cr "/Applications/Zap Momo.app"`（或右键 →「打开」）。详见上文「下载桌面应用」。
 
 ### 一键重启
 

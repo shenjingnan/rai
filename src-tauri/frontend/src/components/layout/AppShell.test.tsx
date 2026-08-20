@@ -52,7 +52,7 @@ function shellRoot(container: HTMLElement) {
   return container.firstElementChild as HTMLElement;
 }
 
-/** 悬浮三键条：AppShell 根下 absolute 定位到右上角的拖拽区容器。 */
+/** 顶部悬浮拖拽条：AppShell 根下 absolute 拉通全宽的拖拽区容器（三键靠右）。 */
 function floatingControlsBar(root: HTMLElement) {
   return Array.from(root.children).find(
     (el) =>
@@ -123,6 +123,19 @@ describe("AppShell 窗口控件的平台布局", () => {
 
     // 主面板顶部让出三键高度，避免内容被遮挡
     expect(mainPanelOuter(root).className).toContain("pt-9");
+  });
+
+  it("Windows/Linux：顶部拖拽条拉通全宽，主面板顶部整条空白区可拖动窗口", () => {
+    for (const ua of [WINDOWS_UA, LINUX_UA]) {
+      const { container, unmount } = renderShellWithUserAgent(ua);
+      const bar = floatingControlsBar(shellRoot(container));
+
+      // left-0 + right-0 → 悬浮条横贯整个窗口顶部（三键仍靠右）
+      expect(bar?.className).toContain("left-0");
+      expect(bar?.className).toContain("right-0");
+
+      unmount();
+    }
   });
 
   it("macOS：不自绘三键（系统红绿灯），无 CSS 圆角", () => {

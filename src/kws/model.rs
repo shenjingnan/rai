@@ -165,6 +165,23 @@ pub const KWS_REQUIRED_FILES: [&str; 5] = [
     DEFAULT_KEYWORDS_REL,
 ];
 
+/// wenetspeech 模型包内文件名（epoch-12 系列，官方文档测试命令同款）。
+///
+/// 包内另有 epoch-99 系列与 int8 变体，此处固定取官方推荐的 epoch-12 fp32 三件套。
+pub const WENETSPEECH_ENCODER: &str = "encoder-epoch-12-avg-2-chunk-16-left-64.onnx";
+pub const WENETSPEECH_DECODER: &str = "decoder-epoch-12-avg-2-chunk-16-left-64.onnx";
+pub const WENETSPEECH_JOINER: &str = "joiner-epoch-12-avg-2-chunk-16-left-64.onnx";
+/// wenetspeech 自带关键词文件（与 zh-en 的 `test_wavs/keywords.txt` 不同名）。
+pub const WENETSPEECH_KEYWORDS_REL: &str = "test_wavs/test_keywords.txt";
+/// wenetspeech 模型安装完成所需的文件（tokens.txt 与 zh-en 同名共用）。
+pub const KWS_WENETSPEECH_REQUIRED_FILES: [&str; 5] = [
+    WENETSPEECH_ENCODER,
+    WENETSPEECH_DECODER,
+    WENETSPEECH_JOINER,
+    DEFAULT_TOKENS,
+    WENETSPEECH_KEYWORDS_REL,
+];
+
 /// 目标目录是否已包含给定的一组文件。
 pub fn has_required_files(dest_dir: &Path, required: &[&str]) -> bool {
     required.iter().all(|f| dest_dir.join(f).is_file())

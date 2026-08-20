@@ -98,6 +98,49 @@ let kwsConfig: typeof KWS_CONFIG;
 /** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
 let mic = "";
 
+/** 模型库列表桩的最小形状（list_model_library 返回条目的测试子集）。 */
+type LibraryStub = {
+  id: string;
+  displayName: string;
+  modelType: string;
+  installState: string;
+  current: boolean;
+  localPath: string | null;
+  installId: string | null;
+  repoId: string | null;
+  ownership: string;
+};
+
+/** 默认模型库桩：两个 KWS registry 条目（zh-en 已装为当前，wenetspeech 未装）。 */
+function defaultModelLibrary(): LibraryStub[] {
+  return [
+    {
+      id: "kws-zipformer-zh-en-3m",
+      displayName: "Zipformer KWS zh-en 3M",
+      modelType: "kws",
+      installState: "installed",
+      current: true,
+      localPath: "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+      installId: "kws-zipformer-zh-en-3m",
+      repoId: null,
+      ownership: "managed",
+    },
+    {
+      id: "kws-zipformer-wenetspeech-3.3m",
+      displayName: "Zipformer KWS wenetspeech 3.3M",
+      modelType: "kws",
+      installState: "not_installed",
+      current: false,
+      localPath: null,
+      installId: null,
+      repoId: null,
+      ownership: "managed",
+    },
+  ];
+}
+
+let modelLibrary: LibraryStub[] = defaultModelLibrary();
+
 /** 默认 command 桩：非 KWS 测试用例直接复用。 */
 function defaultInvoke(
   cmd: string,
@@ -131,6 +174,17 @@ function defaultInvoke(
       return Promise.resolve(undefined);
     case "is_listening":
       return Promise.resolve(false);
+    case "list_model_library":
+      return Promise.resolve(modelLibrary);
+    case "set_current_model":
+      return Promise.resolve({
+        modelType: "kws",
+        modelId: "kws-zipformer-wenetspeech-3.3m",
+        path: "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+        runtimeAction: "restart_required",
+        effectiveImmediately: false,
+        message: "已将 Zipformer KWS wenetspeech 3.3M 设为 KWS 当前模型，将在下次启动监听时生效",
+      });
     case "get_asr_config":
       return Promise.resolve({ ...ASR_CONFIG });
     case "get_tts_config":
@@ -161,6 +215,7 @@ beforeEach(() => {
   listeners.clear();
   kwsConfig = { ...KWS_CONFIG };
   mic = "";
+  modelLibrary = defaultModelLibrary();
   invokeMock.mockImplementation(defaultInvoke);
 });
 
@@ -512,5 +567,97 @@ describe("KwsPage（唤醒词配置）", () => {
     });
 
     expect(await screen.findByText("下载中 42%")).toBeInTheDocument();
+  });
+
+  it("当前模型行有「切换模型」入口，点击打开选择模型弹窗", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
+    const user = userEvent.setup();
+    renderKwsPage();
+    await screen.findByText("未启用");
+
+    await user.click(screen.getByRole("button", { name: "切换唤醒词模型" }));
+    expect(await screen.findByText("选择唤醒词模型")).toBeInTheDocument();
+    // 弹窗内展示两个内置预设：zh-en 为当前，wenetspeech 未装 → 下载按钮
+    expect(screen.getByText("Zipformer KWS zh-en 3M")).toBeInTheDocument();
+    expect(screen.getByText("Zipformer KWS wenetspeech 3.3M")).toBeInTheDocument();
+    // 「当前模型」徽标依赖 list_model_library 异步返回（列表加载前两行都是下载按钮）；
+    // 页面行标签与弹窗徽标同名，取全部匹配断言两者都在
+    const currentBadges = await screen.findAllByText("当前模型");
+    expect(currentBadges.length).toBeGreaterThanOrEqual(2);
+    expect(
+      await screen.findByRole("button", { name: "下载Zipformer KWS wenetspeech 3.3M" }),
+    ).toBeInTheDocument();
+  });
+
+  it("正在监听时切换模型：set_current_model 后自动重启监听（stop → start）", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
+    // wenetspeech 已安装，可设为当前
+    modelLibrary = defaultModelLibrary().map((m) =>
+      m.id === "kws-zipformer-wenetspeech-3.3m"
+        ? {
+            ...m,
+            installState: "installed",
+            localPath:
+              "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+            installId: m.id,
+          }
+        : m,
+    );
+    const user = userEvent.setup();
+    renderKwsPage();
+    await screen.findByText("未启用");
+
+    // 开启监听
+    await user.click(screen.getByRole("switch", { name: "唤醒词监听开关" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_listen", { device: null, keywords: null });
+    });
+    invokeMock.mockClear();
+
+    // 打开切换弹窗，把 wenetspeech 设为当前
+    await user.click(screen.getByRole("button", { name: "切换唤醒词模型" }));
+    await user.click(await screen.findByRole("button", { name: "设为当前" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+        id: "kws-zipformer-wenetspeech-3.3m",
+      });
+    });
+    // 后端返回 restart_required → 前端重启监听使新模型立即生效
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("stop_listen");
+    });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_listen", { device: null, keywords: null });
+    });
+  });
+
+  it("未监听时切换模型：只写配置，不重启监听", async () => {
+    kwsConfig = { ...kwsConfig, models_present: true };
+    modelLibrary = defaultModelLibrary().map((m) =>
+      m.id === "kws-zipformer-wenetspeech-3.3m"
+        ? {
+            ...m,
+            installState: "installed",
+            localPath:
+              "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+            installId: m.id,
+          }
+        : m,
+    );
+    const user = userEvent.setup();
+    renderKwsPage();
+    await screen.findByText("未启用");
+
+    await user.click(screen.getByRole("button", { name: "切换唤醒词模型" }));
+    await user.click(await screen.findByRole("button", { name: "设为当前" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+        id: "kws-zipformer-wenetspeech-3.3m",
+      });
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("stop_listen");
+    expect(invokeMock).not.toHaveBeenCalledWith("start_listen");
   });
 });

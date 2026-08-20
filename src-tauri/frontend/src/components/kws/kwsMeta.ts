@@ -15,6 +15,18 @@ export function modelNameFromDir(dir: string | null | undefined): string | null 
   return dir.split(/[\\/]/).pop() ?? dir;
 }
 
+/** 默认（legacy 一键下载所装的）zh-en 模型目录名前缀（不同版本安装布局的日期后缀可能不同）。 */
+const DEFAULT_KWS_DIR_PREFIX = "sherpa-onnx-kws-zipformer-zh-en";
+
+/**
+ * 当前模型目录是否为默认 zh-en 模型：决定模型缺失时展示 legacy「下载模型」
+ * （固定下载 zh-en）还是「选择模型」弹窗（可下载/切换其他 KWS 模型）。
+ */
+export function isDefaultKwsModelDir(dir: string | null | undefined): boolean {
+  const name = modelNameFromDir(dir);
+  return !!name && name.startsWith(DEFAULT_KWS_DIR_PREFIX);
+}
+
 /**
  * KWS 状态语义色（判断顺序：错误 > 监听中 > 未监听 > 未下载模型）。
  * 标题栏开关旁的文字显示「启用/禁用 KWS」，圆点颜色用此 tone 反映真实监听状态。

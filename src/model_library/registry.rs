@@ -134,6 +134,7 @@ pub fn asset_for(model: &RegistryModel) -> Option<&'static ModelAsset> {
 pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
     match role {
         "wake-word" => &crate::kws::model::KWS_REQUIRED_FILES,
+        "wake-word-wenetspeech" => &crate::kws::model::KWS_WENETSPEECH_REQUIRED_FILES,
         // 所有 streaming zipformer ASR（含每个 ASR 的唯一 role）共用同一组 4 文件
         r if r == "asr" || r.starts_with("asr-") => &crate::asr::config::REQUIRED_FILES,
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
@@ -151,7 +152,11 @@ mod tests {
     #[test]
     fn test_registry_parses() {
         let models = all_models();
-        assert_eq!(models.len(), 17, "应为 6 个首批 + 5 个 ASR + 6 个补充 LLM");
+        assert_eq!(
+            models.len(),
+            18,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM"
+        );
         assert!(
             models
                 .iter()
@@ -219,7 +224,28 @@ mod tests {
         assert_eq!(required_files_for_role("punctuation").len(), 1);
         assert_eq!(required_files_for_role("tts").len(), 5); // 含 vocoder
         assert_eq!(required_files_for_role("tts-vocoder").len(), 1);
+        assert_eq!(required_files_for_role("wake-word").len(), 5);
+        // wenetspeech：epoch-12 三件套 + tokens + test_wavs/test_keywords.txt
+        let ws = required_files_for_role("wake-word-wenetspeech");
+        assert_eq!(ws.len(), 5);
+        assert!(ws.contains(&"encoder-epoch-12-avg-2-chunk-16-left-64.onnx"));
+        assert!(ws.contains(&"test_wavs/test_keywords.txt"));
         assert!(required_files_for_role("unknown").is_empty());
+    }
+
+    #[test]
+    fn test_default_asset_stays_zh_en() {
+        // manifest 中第一个 role=="wake-word" 资产必须保持 zh-en（default_asset 语义），
+        // wenetspeech 用独立 role，不得排到 zh-en 之前。
+        let d = crate::kws::model::default_asset();
+        assert_eq!(d.role, "wake-word");
+        assert_eq!(d.name, "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20");
+        let ws =
+            crate::kws::model::asset_by_role("wake-word-wenetspeech").expect("wenetspeech 资产");
+        assert_eq!(
+            ws.name,
+            "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+        );
     }
 
     #[test]

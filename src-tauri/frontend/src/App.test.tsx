@@ -32,7 +32,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 const DEFAULT_CONFIG = {
   enabled: false,
   custom_keywords: "",
-  model_dir: "/home/user/.zapmomo/models/sherpa-onnx-kws",
+  model_dir: "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
   provider: "cpu",
   num_threads: 4,
   sample_rate: 16000,
@@ -369,7 +369,9 @@ describe("App（KWS 控制面板）", () => {
     const user = userEvent.setup();
     renderApp();
     // 基础配置显示当前模型 basename + 未下载 Badge
-    expect(await screen.findByText("sherpa-onnx-kws")).toBeInTheDocument();
+    expect(
+      await screen.findByText("sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"),
+    ).toBeInTheDocument();
     expect(screen.getByText("未下载")).toBeInTheDocument();
     // 模型信息默认折叠；展开后显示只读字段
     await user.click(screen.getByRole("button", { name: /模型信息/ }));

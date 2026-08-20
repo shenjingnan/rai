@@ -15,6 +15,7 @@ import {
   type ListenerKind,
   type ListenerStatus,
 } from "@/components/models/capabilityStatus";
+import { KwsModelSwitchMenu } from "@/components/models/KwsModelSwitchMenu";
 import { LlmModelSwitchMenu } from "@/components/models/LlmModelSwitchMenu";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -208,7 +209,7 @@ export function ModelSummary() {
       accent: "bg-violet-100 text-violet-600",
       icon: AudioWaveform,
       name: "唤醒词（KWS）",
-      model: kwsConfigured ? basename(kws.config?.config?.model_dir ?? "") : "未配置模型",
+      model: kwsConfigured ? <KwsModelSwitchMenu /> : "未配置模型",
       statusText: kwsSummary.text,
       statusTone: kwsSummary.tone,
       gearHref: "/models/kws",

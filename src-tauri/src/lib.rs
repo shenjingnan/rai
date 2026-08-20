@@ -2624,9 +2624,11 @@ fn register_shortcuts_at_startup(app: &AppHandle) {
         let Some(acc) = shortcuts.get(action).map(str::to_string) else {
             continue;
         };
-        let result = app.global_shortcut().on_shortcut(acc.as_str(), move |app, _sc, _ev| {
-            dispatch_shortcut(app, action);
-        });
+        let result = app
+            .global_shortcut()
+            .on_shortcut(acc.as_str(), move |app, _sc, _ev| {
+                dispatch_shortcut(app, action);
+            });
         match result {
             Ok(()) => tracing::info!("全局快捷键已注册：{} = {}", action.as_str(), acc),
             Err(e) => tracing::warn!(
@@ -2658,9 +2660,9 @@ fn get_shortcuts() -> Result<std::collections::HashMap<String, String>, String> 
 /// 注册失败，配置保持原值，杜绝「界面已绑定但实际不生效」的假状态）。
 #[tauri::command]
 fn set_shortcut(app: AppHandle, action: String, accelerator: String) -> Result<(), String> {
-    use zapmomo::config::shortcuts::{validate_accelerator, ShortcutAction};
-    let action = ShortcutAction::from_ident(&action)
-        .ok_or_else(|| format!("未知的操作：{action}"))?;
+    use zapmomo::config::shortcuts::{ShortcutAction, validate_accelerator};
+    let action =
+        ShortcutAction::from_ident(&action).ok_or_else(|| format!("未知的操作：{action}"))?;
     let accelerator = accelerator.trim().to_string();
     validate_accelerator(&accelerator)?;
 
@@ -2694,8 +2696,8 @@ fn set_shortcut(app: AppHandle, action: String, accelerator: String) -> Result<(
 #[tauri::command]
 fn clear_shortcut(app: AppHandle, action: String) -> Result<(), String> {
     use zapmomo::config::shortcuts::ShortcutAction;
-    let action = ShortcutAction::from_ident(&action)
-        .ok_or_else(|| format!("未知的操作：{action}"))?;
+    let action =
+        ShortcutAction::from_ident(&action).ok_or_else(|| format!("未知的操作：{action}"))?;
     let mut cfg = settings::load_settings()?.unwrap_or_default();
     if let Some(shortcuts) = cfg.shortcuts.as_mut() {
         if let Some(cur) = shortcuts.get(action).map(str::to_string)

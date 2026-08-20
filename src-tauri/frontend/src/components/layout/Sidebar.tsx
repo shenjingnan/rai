@@ -1,17 +1,7 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  Home,
-  Layers,
-  MessageCircle,
-  Minus,
-  Package,
-  Settings,
-  Square,
-  Users,
-  X,
-} from "lucide-react";
-import { useState } from "react";
+import { Home, Layers, MessageCircle, Package, Settings, Users } from "lucide-react";
+import { isMacOs, isWindows } from "@/lib/platform";
 import { NavItem } from "./NavItem";
+import { WindowControls } from "./WindowControls";
 
 const PRIMARY_NAV = [
   { to: "/home", icon: Home, label: "概览", end: true },
@@ -22,52 +12,22 @@ const PRIMARY_NAV = [
   { to: "/settings", icon: Settings, label: "设置", end: true },
 ];
 
-/** 左上角窗口按钮样式（非 macOS 自绘三键）。 */
-const windowButtonClass =
-  "flex h-full w-9 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
-
-/** 左侧导航：左上角窗口按钮 + 真实 logo + 主导航。 */
+/** 左侧导航：顶部窗口按钮区 + 真实 logo + 主导航。 */
 export function Sidebar() {
-  const [isMac] = useState(() => navigator.userAgent.includes("Macintosh"));
+  const mac = isMacOs();
 
   return (
     <aside
       data-tauri-drag-region="deep"
       className="flex w-[248px] shrink-0 flex-col bg-sidebar-background"
     >
-      {/* 左上角窗口按钮区：macOS 由系统原生绘制红绿灯，此处仅留白；其它平台自绘三键。 */}
+      {/* 顶部条：macOS 系统红绿灯留白；Linux 自绘三键；
+          Windows 纯留白（三键由 AppShell 右上角悬浮条承担）。 */}
       <div
         className="flex h-8 shrink-0 items-center pl-3"
-        style={isMac ? { paddingLeft: "78px" } : undefined}
+        style={mac ? { paddingLeft: "78px" } : undefined}
       >
-        {!isMac && (
-          <>
-            <button
-              type="button"
-              aria-label="最小化"
-              className={windowButtonClass}
-              onClick={() => getCurrentWindow().minimize()}
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              aria-label="最大化"
-              className={windowButtonClass}
-              onClick={() => getCurrentWindow().toggleMaximize()}
-            >
-              <Square className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              aria-label="关闭"
-              className="flex h-full w-9 items-center justify-center text-muted-foreground transition-colors hover:bg-red-600 hover:text-white"
-              onClick={() => getCurrentWindow().close()}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </>
-        )}
+        {!mac && !isWindows() && <WindowControls />}
       </div>
 
       <div className="flex items-center justify-center px-6 pt-1">

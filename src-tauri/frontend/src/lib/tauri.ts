@@ -330,7 +330,7 @@ export function onVoiceSessionStopped(
 }
 
 /**
- * 把本地绝对路径转成 asset:// URL，供 Live2D 运行时加载。
+ * 把本地绝对路径转成 Tauri asset 协议 URL，供 Live2D 运行时加载。
  *
  * 不能直接用 `@tauri-apps/api/core` 的 `convertFileSrc`：它用 `encodeURIComponent`
  * 编码整个路径（含 `/`），导致 URL 的 path 退化成单个段、没有目录结构，Live2D
@@ -339,11 +339,21 @@ export function onVoiceSessionStopped(
  * 这里改为逐段编码、保留 `/` 分隔符——Tauri 的 asset handler 会「skip leading /」，
  * 去掉一个 `/` 后得到的仍是绝对路径（如 `/Users/...`），从而同时满足
  * 「相对路径正确解析」与「文件正确打开」两个要求。
+ *
+ * 平台差异（同 convertFileSrc 的规则）：
+ * - Windows 的 WebView2 是 Chromium 内核，禁止对自定义 scheme 发跨源请求，
+ *   必须用虚拟主机形式 `http://asset.localhost/<path>`（CSP 已放行该来源）；
+ * - macOS/Linux 保持 `asset://localhost/<path>`。
+ *
+ * 另外 Tauri 返回的是原生路径：Windows 用 `\` 分隔，需先归一化为 `/`，
+ * 否则整条路径会被编码成单个段（`%5C`），相对资源解析会全部失配。
  */
 export function toAssetUrl(path: string): string {
+  const isWindows = navigator.userAgent.includes("Windows");
   const segments = path
+    .replace(/\\/g, "/")
     .split("/")
     .map((s) => encodeURIComponent(s))
     .join("/");
-  return `asset://localhost/${segments}`;
+  return isWindows ? `http://asset.localhost/${segments}` : `asset://localhost/${segments}`;
 }

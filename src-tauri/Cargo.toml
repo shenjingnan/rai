@@ -18,6 +18,9 @@ tauri = { version = "2", features = ["protocol-asset", "tray-icon", "macos-priva
 # 文件/目录选择对话框（用户加载 Live2D 模型目录）
 tauri-plugin-dialog = "2"
 
+# 系统级全局快捷键（Rust 侧注册与分发；设置页经自定义 command 间接操作）
+tauri-plugin-global-shortcut = "2"
+
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

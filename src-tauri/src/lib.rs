@@ -19,6 +19,7 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
@@ -3653,6 +3654,7 @@ pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ListenState::new())
         .manage(DownloadState::default())
         .manage(AsrListenState::new())

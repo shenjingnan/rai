@@ -111,10 +111,7 @@ export function ShortcutsSection() {
           const bound = bindings[id];
           const isRecording = recording === id;
           return (
-            <div
-              key={id}
-              className="flex items-center justify-between gap-3.5 px-3.5 py-2.5"
-            >
+            <div key={id} className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
               <div className="min-w-0">
                 <dt className="text-sm text-text-primary">{label}</dt>
                 <dd className="mt-0.5 text-xs text-text-muted">{hint}</dd>

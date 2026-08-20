@@ -1,0 +1,108 @@
+name: Upload to Baidu Netdisk
+
+# Release 正式发布（release.yml 以 draft: false 发布）后触发，
+# 用 BaiduPCS-Go 将该版本全部安装包上传到百度网盘的版本目录：
+#   /apps/zapmomo/<tag>/*.dmg|.msi|.exe|.deb|.rpm|.AppImage ...
+# 也支持手动 dispatch 补传/重跑（upload --policy overwrite 幂等覆盖）。
+#
+# 前置配置（仓库 Settings → Secrets and variables → Actions）：
+#   BAIDU_BDUSS   浏览器登录百度网盘后 Cookie 中的 BDUSS
+#   BAIDU_STOKEN  同一 Cookie 中的 STOKEN（新版 BaiduPCS-Go 要求与 BDUSS 成对）
+# 凭据等同网盘账号控制权，建议使用发布专用小号；改密/退出登录/风控会使凭据
+# 失效，表现为本 workflow 登录失败，届时需手动更新 Secret。
+#
+# 独立于 release.yml，任何失败均不影响 GitHub Release 主发布渠道。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（如 v0.1.13）'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # release 事件取发布 tag；手动触发取输入。统一走 env，避免在 run: 内联
+  # 表达式（GitHub Actions 注入防护），run 中只引用 $TAG。
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  NETDISK_DIR: /apps/zapmomo
+  PCS_VERSION: v4.0.1
+
+jobs:
+  upload:
+    name: Upload installers to Baidu Netdisk
+    runs-on: ubuntu-latest
+    # GitHub 托管 runner 在海外，跨境上传百度网盘可能较慢，封顶防悬挂
+    timeout-minutes: 30
+    steps:
+      - name: Check credentials
+        env:
+          BDUSS: ${{ secrets.BAIDU_BDUSS }}
+          STOKEN: ${{ secrets.BAIDU_STOKEN }}
+        run: |
+          if [ -z "$BDUSS" ] || [ -z "$STOKEN" ]; then
+            echo "::error::缺少 BAIDU_BDUSS / BAIDU_STOKEN Secret。请在仓库 Settings → Secrets and variables → Actions 配置（浏览器登录百度网盘后从 Cookie 中提取），再重新触发本 workflow。"
+            exit 1
+          fi
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Downloading assets of $TAG ..."
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist/
+          ls -lh dist/
+
+      - name: Setup BaiduPCS-Go
+        run: |
+          curl -fsSL -o pcs.zip \
+            "https://github.com/qjfoidnh/BaiduPCS-Go/releases/download/${PCS_VERSION}/BaiduPCS-Go-${PCS_VERSION}-linux-amd64.zip"
+          # 校验官方 sha256（该二进制会接触账号凭据，防供应链篡改）
+          echo "ffbf6d15eef8f7df06ad59d46e7347c71d725dec24d1f558357bd27d16aa65b3  pcs.zip" | sha256sum -c -
+          unzip -o pcs.zip
+          install "BaiduPCS-Go-${PCS_VERSION}-linux-amd64/BaiduPCS-Go" /usr/local/bin/BaiduPCS-Go
+
+      - name: Login & create version dir
+        env:
+          BDUSS: ${{ secrets.BAIDU_BDUSS }}
+          STOKEN: ${{ secrets.BAIDU_STOKEN }}
+        run: |
+          BaiduPCS-Go login -bduss="$BDUSS" -stoken="$STOKEN"
+          BaiduPCS-Go who
+          # mkdir 对已存在目录报错，逐级创建并容错（重复触发幂等）
+          BaiduPCS-Go mkdir "$NETDISK_DIR" || true
+          BaiduPCS-Go mkdir "$NETDISK_DIR/$TAG" || true
+
+      - name: Upload installers
+        run: |
+          remote="$NETDISK_DIR/$TAG"
+          ok=0
+          for attempt in 1 2 3; do
+            if BaiduPCS-Go upload --policy overwrite dist/* "$remote/"; then
+              ok=1
+              break
+            fi
+            echo "::warning::上传失败（第 ${attempt}/3 次），15 秒后重试（v4 起上传无断点续传，按整轮重传）"
+            sleep 15
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::3 次上传均失败。跨境链路（GitHub runner 在海外）不稳定时可稍后手动 dispatch 重跑；持续失败参考 BaiduPCS-Go 的 proxy_hostnames 回国代理配置"
+            exit 1
+          fi
+
+      - name: Verify & summary
+        run: |
+          remote="$NETDISK_DIR/$TAG"
+          {
+            echo "## 百度网盘上传结果"
+            echo
+            echo "- 版本：\`${TAG}\`"
+            echo "- 网盘目录：\`${remote}/\`"
+            echo
+            echo '```'
+            BaiduPCS-Go ls "$remote"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

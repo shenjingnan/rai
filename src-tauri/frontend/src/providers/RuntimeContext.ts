@@ -7,6 +7,7 @@ import type { DevicesState } from "@/hooks/useDevices";
 import type { KwsConfigState } from "@/hooks/useKwsConfig";
 import type { ListeningState } from "@/hooks/useListening";
 import type { LlmState } from "@/hooks/useLlm";
+import type { LlmModelDownloadState } from "@/hooks/useLlmModelDownload";
 import type { ModelDownloadState } from "@/hooks/useModelDownload";
 import type { DetectionEntry } from "@/hooks/useResults";
 import type { TtsState } from "@/hooks/useTts";
@@ -29,7 +30,7 @@ export interface RuntimeState {
     listening: AsrListeningState;
     results: AsrResultsState;
   };
-  llm: LlmState;
+  llm: LlmState & { download: LlmModelDownloadState };
   tts: TtsState;
   voice: VoiceSessionState;
   /** 全局选中的麦克风设备（KWS 与 ASR 共用） */

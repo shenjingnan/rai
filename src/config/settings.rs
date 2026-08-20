@@ -2,6 +2,7 @@
 ///
 /// 提供通用的配置读写功能，支持 ${env.VAR} 环境变量引用。
 /// 配置文件存储在 `~/.zapmomo/settings.toml`。
+use crate::config::shortcuts::ShortcutsSettings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -242,6 +243,9 @@ pub struct AppConfig {
     /// 模型库配置（用户通过「添加本地模型」注册的 external 模型等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_library: Option<ModelLibrarySettings>,
+    /// 全局快捷键配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<ShortcutsSettings>,
 }
 
 /// 用户「添加本地模型」注册的模型（external）。
@@ -651,6 +655,7 @@ impl Default for AppConfig {
             llm: None,
             voice: None,
             model_library: None,
+            shortcuts: None,
         }
     }
 }
@@ -839,6 +844,7 @@ mod tests {
             llm: None,
             voice: None,
             model_library: None,
+            shortcuts: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -1087,6 +1093,7 @@ mod tests {
                 llm: None,
                 voice: None,
                 model_library: None,
+                shortcuts: None,
             };
             save_settings(&config).unwrap();
             let loaded = load_settings().unwrap().unwrap();

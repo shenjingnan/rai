@@ -159,8 +159,14 @@ function enablePreviewResize() {
     observe(target: Element): void {
       setTimeout(() => {
         const rect = {
-          x: 0, y: 0, width: 300, height: 200,
-          top: 0, right: 300, bottom: 200, left: 0,
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 200,
+          top: 0,
+          right: 300,
+          bottom: 200,
+          left: 0,
         };
         // Radix react-use-size 读 contentBoxSize[0].inlineSize/blockSize，
         // 空数组会让它崩；按真实浏览器结构填充。

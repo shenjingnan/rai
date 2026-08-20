@@ -36,7 +36,7 @@ export function LlmPresetDialog({ open, onClose }: LlmPresetDialogProps) {
   const percent = useSmoothProgress(targetPercent);
 
   return (
-    <LibraryDialog open={open} onClose={onClose} title="选择模型" maxWidth="max-w-lg">
+    <LibraryDialog open={open} onClose={onClose} title="选择模型" width="lg">
       <p className="text-xs text-text-muted">
         内置推荐预设：下载后自动配置并加载；已安装的模型可设为当前或卸载。
       </p>

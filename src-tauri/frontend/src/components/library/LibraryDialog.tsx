@@ -1,10 +1,21 @@
 import { X } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-/** 退出动画时长，需与遮罩/卡片 duration 一致。 */
-const EXIT_MS = 200;
+/**
+ * 宽度档位映射。必须双写 sm: 前缀字面量：
+ * DialogContent 默认带 sm:max-w-lg（responsive variant 排序在无前缀规则之后，
+ * 会覆盖无前缀的 max-w-*），只有同断点值才能在 twMerge 中胜出。
+ */
+const WIDTHS = {
+  sm: "max-w-sm sm:max-w-sm",
+  md: "max-w-md sm:max-w-md",
+  lg: "max-w-lg sm:max-w-lg",
+} as const;
+
+type DialogWidth = keyof typeof WIDTHS;
 
 interface LibraryDialogProps {
   open: boolean;
@@ -13,95 +24,44 @@ interface LibraryDialogProps {
   children: ReactNode;
   /** 底部操作区（确认框的取消/确认按钮等） */
   footer?: ReactNode;
-  maxWidth?: string;
+  /** 弹窗宽度档位：sm=384px / md=448px / lg=512px */
+  width?: DialogWidth;
 }
 
-/** 模型库通用对话框外壳：复用项目现有 `role="dialog"` + 遮罩 + 进出场动画模式。 */
+/**
+ * 模型库通用对话框外壳：基于 shadcn/ui Dialog（Radix），
+ * 自动获得焦点陷阱、焦点归还、滚动锁定与 Escape 关闭；
+ * 视觉保持 macOS 面板风格（浅遮罩 + 面板色卡片 + 200ms fade/zoom）。
+ */
 export function LibraryDialog({
   open,
   onClose,
   title,
   children,
   footer,
-  maxWidth = "max-w-lg",
+  width = "md",
 }: LibraryDialogProps) {
-  const [mounted, setMounted] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      setClosing(false);
-      return;
-    }
-    // 父级已通过 onClose 把 open 置为 false（如底部确认/取消按钮直接调用）：
-    // 播放退出动画并卸载，避免残留「空内容」的挂载弹窗；不再重复调用 onClose。
-    if (mounted) {
-      setClosing(true);
-      const timer = window.setTimeout(() => {
-        setMounted(false);
-        setClosing(false);
-      }, EXIT_MS);
-      return () => window.clearTimeout(timer);
-    }
-  }, [open, mounted]);
-
-  const finishClose = useCallback(() => {
-    setMounted(false);
-    setClosing(false);
-    onClose();
-  }, [onClose]);
-
-  const close = useCallback(() => {
-    if (closing) return;
-    setClosing(true);
-    window.setTimeout(finishClose, EXIT_MS);
-  }, [closing, finishClose]);
-
-  useEffect(() => {
-    if (!mounted || closing) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [mounted, closing, close]);
-
-  if (!mounted) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-    >
-      <button
-        type="button"
-        tabIndex={-1}
-        aria-label="关闭对话框"
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        showCloseButton={false}
+        aria-describedby={undefined}
+        overlayClassName="bg-black/20 duration-200"
         className={cn(
-          "absolute inset-0 cursor-default bg-black/20",
-          closing ? "animate-out fade-out-0 duration-200" : "animate-in fade-in-0 duration-200",
-        )}
-        onClick={close}
-      />
-      <div
-        className={cn(
-          "relative flex max-h-[85vh] w-full flex-col rounded-xl border border-panel-border bg-panel-background",
-          maxWidth,
-          closing
-            ? "animate-out fade-out-0 zoom-out-95 duration-200 ease-in"
-            : "animate-in fade-in-0 zoom-in-95 duration-200 ease-out",
+          // w-[calc(100%-2rem)]：fixed 定位下 100% 即视口宽，窄窗口两侧各留 1rem（等效原版外层 p-4）
+          "flex max-h-[85vh] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-xl border-panel-border bg-panel-background p-0 shadow-none",
+          WIDTHS[width],
         )}
       >
         <div className="flex items-center justify-between gap-4 border-b border-divider px-5 py-4">
-          <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+          <DialogTitle className="text-left text-sm font-semibold text-text-primary">
+            {title}
+          </DialogTitle>
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8 shrink-0"
-            onClick={close}
+            onClick={onClose}
             aria-label="关闭"
           >
             <X className="h-4 w-4" />
@@ -109,7 +69,7 @@ export function LibraryDialog({
         </div>
         <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">{children}</div>
         {footer && <div className="border-t border-divider px-5 py-3">{footer}</div>}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -17,6 +17,7 @@ use crate::config::settings;
 use crate::live2d::config as live2d_cfg;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +28,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 const LIBRARY_FILE: &str = "library.json";
 const TMP_PREFIX: &str = ".tmp-";
 const ID_PREFIX: &str = "companion-";
+/// 补注册动作的统一组名。**绝不写 "Idle"**：pixi-live2d-display 对 Idle 组自动循环
+/// 播放（空闲时每帧随机挑动作），写入会改变桌宠「静态展示」行为。
+const EXTRA_MOTION_GROUP: &str = "Extra";
+/// 存量伙伴补注册迁移标记（写入 `completed_migrations` 闸门，防重复执行）。
+const MOTION_REGISTRATION_MIGRATION: &str = "motion-registration-v1";
 
 /// 串行化 Library 的读改写与 commit 决策。**不得跨大型目录复制/删除持有。**
 static COMPANION_LOCK: Mutex<()> = Mutex::new(());
@@ -60,6 +66,10 @@ pub struct CompanionLibrary {
     pub models: Vec<CompanionModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<String>,
+    /// 已完成的一次性迁移标记（如 "motion-registration-v1"）；缺失视为均未执行。
+    /// 不 bump SCHEMA_VERSION：新字段对老文件是宽容默认，老代码读新文件忽略未知字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_migrations: Vec<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -72,6 +82,7 @@ impl Default for CompanionLibrary {
             schema_version: SCHEMA_VERSION,
             models: Vec::new(),
             active_model_id: None,
+            completed_migrations: Vec::new(),
         }
     }
 }
@@ -423,6 +434,13 @@ fn prepare_import(source: &Path) -> Result<Prepared, String> {
     // 记录 model3.json 相对 tmp 根的路径，commit 后换算成托管目录内的绝对路径。
     let (model_file_in_tmp, format) =
         live2d_cfg::find_model_file(&tmp_dir).ok_or_else(|| "复制后未找到模型清单".to_string())?;
+
+    // 补注册托管副本中未登记的动作/表情文件（best-effort：失败仅告警，不阻塞导入；
+    // 此时副本还在 tmp，源目录不受影响）。
+    if let Err(e) = register_missing_motion_files(&model_file_in_tmp) {
+        tracing::warn!("补注册动作/表情失败（不影响导入）: {e}");
+    }
+
     let model_file_rel = model_file_in_tmp
         .strip_prefix(&tmp_dir)
         .map_err(|_| "模型清单路径异常".to_string())?
@@ -586,6 +604,181 @@ pub fn save_cover(id: &str, png: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, model_dir.join("cover.png")).map_err(|e| format!("保存封面图失败: {e}"))
 }
 
+/// 递归扫描 `base` 下所有 `*.motion3.json` / `*.exp3.json`，收集为相对 base 的
+/// 正斜杠路径（Live2D 清单惯例，Windows 分隔符归一）。
+fn collect_motion_assets(
+    base: &Path,
+    dir: &Path,
+    motions: &mut Vec<String>,
+    expressions: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("读取目录失败 ({}): {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_motion_assets(base, &path, motions, expressions)?;
+            continue;
+        }
+        let Some(rel) = path
+            .strip_prefix(base)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+        else {
+            continue;
+        };
+        if rel.ends_with(".motion3.json") {
+            motions.push(rel);
+        } else if rel.ends_with(".exp3.json") {
+            expressions.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// 收集清单中已注册的 File 引用（Motions 各组并集 + Expressions）。
+fn collect_registered_files(json: &serde_json::Value) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Some(refs) = json.get("FileReferences") else {
+        return set;
+    };
+    if let Some(groups) = refs.get("Motions").and_then(|v| v.as_object()) {
+        for motions in groups.values().filter_map(|v| v.as_array()) {
+            for m in motions {
+                if let Some(f) = m.get("File").and_then(|v| v.as_str()) {
+                    set.insert(f.to_string());
+                }
+            }
+        }
+    }
+    for e in refs
+        .get("Expressions")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(f) = e.get("File").and_then(|v| v.as_str()) {
+            set.insert(f.to_string());
+        }
+    }
+    set
+}
+
+/// 相对路径转展示名：basename 去掉 `.motion3.json` / `.exp3.json` 扩展。
+fn asset_display_name(rel: &str) -> String {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    name.strip_suffix(".exp3.json")
+        .or_else(|| name.strip_suffix(".motion3.json"))
+        .unwrap_or(name)
+        .to_string()
+}
+
+/// 原子写文件（tmp + rename，Windows 先移除再 rename 兜底；模式同 `save_library_inner`）。
+fn atomic_write_file(path: &Path, contents: &str) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp-reg");
+    std::fs::write(&tmp, contents).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // Windows：rename 无法覆盖已存在目标，先移除再重试。
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| format!("移除旧文件失败: {e}"))?;
+            }
+            std::fs::rename(&tmp, path).map_err(|e| format!("原子替换失败: {e}"))
+        }
+    }
+}
+
+/// 扫描 model3.json 所在目录（含子目录）中存在但未注册的 `*.motion3.json` /
+/// `*.exp3.json`，补注册进 FileReferences 后原子回写。返回是否发生了修改。
+///
+/// - 未注册动作统一进 `Motions["Extra"]`（不写 "Idle"，见 `EXTRA_MOTION_GROUP`）；
+///   清单已有的组（含作者的 Idle）一律不动。
+/// - 未注册表情进 `Expressions`，Name 取文件名去扩展名（允许重名：播放走 index）。
+/// - 回写后重跑轻量校验，失败恢复原内容并按「无修改」返回（best-effort 增强，
+///   注册失败不阻塞导入）。
+fn register_missing_motion_files(model_file: &Path) -> Result<bool, String> {
+    let Some(base) = model_file.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Err("模型清单缺少父目录".to_string());
+    };
+    let original =
+        std::fs::read_to_string(model_file).map_err(|e| format!("读取模型清单失败: {e}"))?;
+    let mut json: serde_json::Value =
+        serde_json::from_str(&original).map_err(|e| format!("解析模型清单失败: {e}"))?;
+
+    let mut motions: Vec<String> = Vec::new();
+    let mut expressions: Vec<String> = Vec::new();
+    collect_motion_assets(base, base, &mut motions, &mut expressions)?;
+    motions.sort();
+    expressions.sort();
+
+    let registered = collect_registered_files(&json);
+    let new_motions: Vec<String> = motions
+        .into_iter()
+        .filter(|f| !registered.contains(f.as_str()))
+        .collect();
+    let new_expressions: Vec<String> = expressions
+        .into_iter()
+        .filter(|f| !registered.contains(f.as_str()))
+        .collect();
+    if new_motions.is_empty() && new_expressions.is_empty() {
+        return Ok(false);
+    }
+
+    // 读-改-写（Value 无类型解析保留未知字段，serde_json::Map::entry 自动建缺失键）。
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| "模型清单不是 JSON 对象".to_string())?;
+    let refs = obj
+        .entry("FileReferences")
+        .or_insert(serde_json::Value::Object(serde_json::Map::new()));
+    let refs = refs
+        .as_object_mut()
+        .ok_or_else(|| "FileReferences 不是对象".to_string())?;
+    if !new_motions.is_empty() {
+        let groups = refs
+            .entry("Motions")
+            .or_insert(serde_json::Value::Object(serde_json::Map::new()));
+        let groups = groups
+            .as_object_mut()
+            .ok_or_else(|| "Motions 不是对象".to_string())?;
+        let extra = groups
+            .entry(EXTRA_MOTION_GROUP)
+            .or_insert(serde_json::Value::Array(Vec::new()));
+        let extra = extra
+            .as_array_mut()
+            .ok_or_else(|| "Motions[Extra] 不是数组".to_string())?;
+        for file in new_motions {
+            extra.push(serde_json::json!({ "File": file }));
+        }
+    }
+    if !new_expressions.is_empty() {
+        let list = refs
+            .entry("Expressions")
+            .or_insert(serde_json::Value::Array(Vec::new()));
+        let list = list
+            .as_array_mut()
+            .ok_or_else(|| "Expressions 不是数组".to_string())?;
+        for file in new_expressions {
+            let name = asset_display_name(&file);
+            list.push(serde_json::json!({ "Name": name, "File": file }));
+        }
+    }
+
+    let rewritten =
+        serde_json::to_string_pretty(&json).map_err(|e| format!("序列化模型清单失败: {e}"))?;
+    atomic_write_file(model_file, &rewritten)?;
+
+    // 写后二次校验：失败恢复原内容（不能弄坏一个本来可导入的模型）。
+    if let Err(e) = live2d_cfg::validate_managed_model(base) {
+        tracing::warn!("补注册后模型校验失败，已恢复原清单: {e}");
+        let _ = atomic_write_file(model_file, &original);
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// 伙伴展示名最大长度。
 const MAX_NAME_CHARS: usize = 30;
 
@@ -673,6 +866,54 @@ pub fn migrate_legacy_if_empty() -> Result<Option<String>, String> {
     Ok(Some(model.id))
 }
 
+/// 存量伙伴一次性迁移：为库中所有伙伴补注册未登记的动作/表情文件。
+///
+/// 幂等闸门：`completed_migrations` 含本迁移标记即跳过。扫描/回写**不持锁**
+/// （大目录 IO 不进临界区）；标记落库在短锁内重读后只追加标记字段，避免与
+/// 并发导入互相覆盖。返回发生回写的模型数（0 = 无需处理或已迁移）。
+pub fn register_motions_for_existing() -> Result<usize, String> {
+    let models: Vec<CompanionModel> = {
+        let _g = lock();
+        let lib = load_library_inner()?;
+        if lib
+            .completed_migrations
+            .iter()
+            .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+        {
+            return Ok(0);
+        }
+        lib.models
+            .iter()
+            .filter(|m| quick_valid(m))
+            .cloned()
+            .collect()
+    };
+
+    let mut touched = 0usize;
+    for model in &models {
+        match register_missing_motion_files(Path::new(&model.model_file)) {
+            Ok(true) => touched += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!("伙伴 {} 补注册动作/表情失败: {e}", model.id),
+        }
+    }
+
+    {
+        let _g = lock();
+        let mut lib = load_library_inner()?;
+        if !lib
+            .completed_migrations
+            .iter()
+            .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+        {
+            lib.completed_migrations
+                .push(MOTION_REGISTRATION_MIGRATION.to_string());
+            save_library_inner(&lib)?;
+        }
+    }
+    Ok(touched)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,6 +929,218 @@ mod tests {
             r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
         )
         .unwrap();
+    }
+
+    /// 在 fixture 基础上补未注册的动作/表情文件（模拟「火花」这类模型：文件在、清单没登记）。
+    fn add_unregistered_assets(dir: &Path) {
+        std::fs::create_dir_all(dir.join("Motions")).unwrap();
+        std::fs::write(dir.join("Motions/睡觉动画.motion3.json"), "{}").unwrap();
+        std::fs::write(dir.join("chibang.motion3.json"), "{}").unwrap(); // 根目录散文件
+        std::fs::create_dir_all(dir.join("Expressions")).unwrap();
+        std::fs::write(dir.join("Expressions/03 生气.exp3.json"), "{}").unwrap();
+        std::fs::write(dir.join("Expressions/07 星星眼.exp3.json"), "{}").unwrap();
+    }
+
+    /// 解析 model3.json 为 Value（测试辅助）。
+    fn read_manifest(model_file: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(model_file).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_register_missing_motion_files_registers_extra_and_expressions() {
+        run_with_temp_home(|home| {
+            let src = home.join("m");
+            make_valid_model(&src, "m.model3.json");
+            add_unregistered_assets(&src);
+            let model_file = src.join("m.model3.json");
+
+            assert!(register_missing_motion_files(&model_file).unwrap());
+
+            let json = read_manifest(&model_file);
+            let refs = json.get("FileReferences").unwrap();
+            // 两个动作都进 Extra 组，路径为相对 model3.json 的正斜杠相对路径。
+            let extra = refs
+                .get("Motions")
+                .and_then(|m| m.get("Extra"))
+                .and_then(|e| e.as_array())
+                .unwrap();
+            let files: Vec<&str> = extra
+                .iter()
+                .filter_map(|e| e.get("File").and_then(|f| f.as_str()))
+                .collect();
+            assert_eq!(
+                files,
+                vec!["Motions/睡觉动画.motion3.json", "chibang.motion3.json"]
+            );
+            // 绝不写 Idle 组（库会对 Idle 自动循环播放，改变桌宠静态行为）。
+            assert!(refs.get("Motions").and_then(|m| m.get("Idle")).is_none());
+            // 表情注册，Name 为文件名去扩展名（列表按路径字典序）。
+            let exprs = refs.get("Expressions").and_then(|e| e.as_array()).unwrap();
+            assert_eq!(exprs.len(), 2);
+            assert_eq!(
+                exprs[0].get("Name").and_then(|n| n.as_str()),
+                Some("03 生气")
+            );
+            assert_eq!(
+                exprs[1].get("Name").and_then(|n| n.as_str()),
+                Some("07 星星眼")
+            );
+            // Moc/Textures 原样保留。
+            assert_eq!(refs.get("Moc").and_then(|v| v.as_str()), Some("model.moc3"));
+            // 写后仍可通过校验。
+            live2d_cfg::validate_managed_model(&src).unwrap();
+        });
+    }
+
+    #[test]
+    fn test_register_missing_motion_files_idempotent_and_skips_registered() {
+        run_with_temp_home(|home| {
+            let src = home.join("m");
+            // 已有注册：Idle 组一个动作 + 一个表情（作者自己写的，绝不能动）。
+            std::fs::create_dir_all(src.join("textures")).unwrap();
+            std::fs::write(src.join("model.moc3"), b"moc").unwrap();
+            std::fs::write(src.join("textures/texture_00.png"), b"png").unwrap();
+            std::fs::write(
+                src.join("m.model3.json"),
+                r#"{"FileReferences":{
+                    "Moc":"model.moc3",
+                    "Textures":["textures/texture_00.png"],
+                    "Motions":{"Idle":[{"File":"idle.motion3.json"}]},
+                    "Expressions":[{"Name":"开心","File":"happy.exp3.json"}]}}"#,
+            )
+            .unwrap();
+            std::fs::write(src.join("idle.motion3.json"), "{}").unwrap();
+            std::fs::write(src.join("happy.exp3.json"), "{}").unwrap();
+            let model_file = src.join("m.model3.json");
+            let before = std::fs::read_to_string(&model_file).unwrap();
+
+            // 已全部注册 → 无修改。
+            assert!(!register_missing_motion_files(&model_file).unwrap());
+            assert_eq!(std::fs::read_to_string(&model_file).unwrap(), before);
+
+            // 注册后再调用 → 幂等。
+            std::fs::write(src.join("new.motion3.json"), "{}").unwrap();
+            assert!(register_missing_motion_files(&model_file).unwrap());
+            assert!(!register_missing_motion_files(&model_file).unwrap());
+            let json = read_manifest(&model_file);
+            let refs = json.get("FileReferences").unwrap();
+            // 作者的 Idle 组原样（未被追加），新动作进 Extra。
+            let idle = refs
+                .get("Motions")
+                .and_then(|m| m.get("Idle"))
+                .and_then(|e| e.as_array())
+                .unwrap();
+            assert_eq!(idle.len(), 1);
+            let extra = refs
+                .get("Motions")
+                .and_then(|m| m.get("Extra"))
+                .and_then(|e| e.as_array())
+                .unwrap();
+            assert_eq!(extra.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_register_missing_motion_files_rejects_bad_json() {
+        run_with_temp_home(|home| {
+            let src = home.join("m");
+            make_valid_model(&src, "m.model3.json");
+            std::fs::write(src.join("m.model3.json"), "{not-json").unwrap();
+            let err = register_missing_motion_files(&src.join("m.model3.json")).unwrap_err();
+            assert!(err.contains("解析"), "{err}");
+            // 原文件未被覆盖。
+            assert_eq!(
+                std::fs::read_to_string(src.join("m.model3.json")).unwrap(),
+                "{not-json"
+            );
+        });
+    }
+
+    #[test]
+    fn test_import_registers_missing_motion_files() {
+        run_with_temp_home(|home| {
+            let src = home.join("火花");
+            make_valid_model(&src, "火花.model3.json");
+            add_unregistered_assets(&src);
+
+            let (model, _) = import_from_dir(&src).unwrap();
+            // 托管副本（非源目录）的清单被补注册。
+            let json = read_manifest(Path::new(&model.model_file));
+            let refs = json.get("FileReferences").unwrap();
+            let extra = refs
+                .get("Motions")
+                .and_then(|m| m.get("Extra"))
+                .and_then(|e| e.as_array())
+                .unwrap();
+            assert_eq!(extra.len(), 2);
+            assert_eq!(
+                refs.get("Expressions")
+                    .and_then(|e| e.as_array())
+                    .unwrap()
+                    .len(),
+                2
+            );
+            // 源目录清单保持原样（不污染用户文件）。
+            let src_json = read_manifest(&src.join("火花.model3.json"));
+            assert!(
+                src_json
+                    .get("FileReferences")
+                    .unwrap()
+                    .get("Motions")
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn test_register_motions_for_existing_migrates_and_is_idempotent() {
+        run_with_temp_home(|home| {
+            let src = home.join("存量");
+            make_valid_model(&src, "old.model3.json");
+            add_unregistered_assets(&src);
+            let (model, _) = import_from_dir(&src).unwrap();
+            // 手动还原清单为未注册状态，模拟「老版本导入、还没补注册」的存量。
+            std::fs::write(
+                Path::new(&model.model_file),
+                r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
+            )
+            .unwrap();
+
+            let touched = register_motions_for_existing().unwrap();
+            assert_eq!(touched, 1);
+            let json = read_manifest(Path::new(&model.model_file));
+            assert!(json.get("FileReferences").unwrap().get("Motions").is_some());
+
+            // 标记已写入 → 二次调用直接跳过（即使再手动抹掉注册也不再处理）。
+            let lib = load_library_fast().unwrap();
+            assert!(
+                lib.completed_migrations
+                    .iter()
+                    .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+            );
+            std::fs::write(
+                Path::new(&model.model_file),
+                r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
+            )
+            .unwrap();
+            assert_eq!(register_motions_for_existing().unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn test_library_json_without_migrations_field_still_loads() {
+        run_with_temp_home(|_home| {
+            let dir = get_companions_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            // 老版本 library.json（无 completed_migrations 字段）宽容加载。
+            std::fs::write(
+                dir.join(LIBRARY_FILE),
+                r#"{"schema_version":1,"models":[],"active_model_id":null}"#,
+            )
+            .unwrap();
+            let lib = load_library_fast().unwrap();
+            assert!(lib.completed_migrations.is_empty());
+        });
     }
 
     #[test]

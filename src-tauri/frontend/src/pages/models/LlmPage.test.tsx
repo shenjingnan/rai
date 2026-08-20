@@ -3,11 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import type { LibraryModel } from "@/types/modelLibrary";
 
-const { invokeMock, listeners, dialogOpenMock } = vi.hoisted(() => ({
+const { invokeMock, listeners, dialogOpenMock, llmDownloadImpl } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listeners: new Map<string, (e: { payload: unknown }) => void>(),
   dialogOpenMock: vi.fn(),
+  /** `download_llm_model` 的可注入实现（各用例控制挂起/成功/失败/applied） */
+  llmDownloadImpl: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -97,6 +100,43 @@ function makeLlmConfig() {
 }
 
 let llmConfig: ReturnType<typeof makeLlmConfig>;
+/** `list_model_library` 返回的已注册模型（含 LLM 预设的安装/current 状态）。 */
+let libraryModels: LibraryModel[];
+
+/** 已安装的 managed LLM 预设（LlmPresetDialog 按 id/repoId 匹配）。 */
+function installedPreset(
+  id: string,
+  name: string,
+  opts?: { current?: boolean; installState?: LibraryModel["installState"] },
+): LibraryModel {
+  return {
+    id,
+    name,
+    displayName: name,
+    modelType: "llm",
+    runtime: "llama.cpp",
+    format: "GGUF",
+    description: "",
+    languages: [],
+    tags: [],
+    parameterCount: "0.6B",
+    quantization: "Q4_K_M",
+    version: "instruct",
+    sizeBytes: 396_705_472,
+    homepage: null,
+    downloadable: true,
+    source: "registry",
+    ownership: "managed",
+    installState: opts?.installState ?? "installed",
+    current: opts?.current ?? false,
+    runtimeStatus: "inactive",
+    localPath: `/home/user/.zapmomo/models/${name}`,
+    installedAt: "2026-08-20T00:00:00Z",
+    installId: id,
+    repoId: null,
+    compatibility: "verified",
+  };
+}
 
 function renderLlmPage() {
   return render(
@@ -118,7 +158,13 @@ beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
   dialogOpenMock.mockReset();
+  llmDownloadImpl.mockReset();
+  llmDownloadImpl.mockResolvedValue({
+    model_path: "/home/user/.zapmomo/models/Qwen3-0.6B/Qwen3-0.6B-Q4_K_M.gguf",
+    applied: true,
+  });
   llmConfig = makeLlmConfig();
+  libraryModels = [];
 
   invokeMock.mockImplementation(
     (
@@ -128,6 +174,7 @@ beforeEach(() => {
         path?: string;
         params?: Record<string, number>;
         prompt?: string;
+        id?: string;
       },
     ) => {
       switch (cmd) {
@@ -152,6 +199,8 @@ beforeEach(() => {
           return Promise.resolve(false);
         case "is_llm_ready":
           return Promise.resolve(false);
+        case "is_voice_session_running":
+          return Promise.resolve(false);
         case "set_llm_auto_load":
           llmConfig.auto_load = args?.enabled ?? false;
           return Promise.resolve(undefined);
@@ -162,6 +211,39 @@ beforeEach(() => {
           llmConfig.model_path = args?.path ?? "";
           llmConfig.models_present = true;
           return Promise.resolve(undefined);
+        case "download_llm_model":
+          // 模拟后端：applied=true 时写入配置（下载区据此消失、开关解锁）
+          return llmDownloadImpl(args).then((r: { model_path: string; applied: boolean }) => {
+            if (r.applied) {
+              llmConfig.model_path = r.model_path;
+              llmConfig.models_present = true;
+            }
+            return r;
+          });
+        case "list_model_library":
+          return Promise.resolve(libraryModels);
+        case "set_current_model": {
+          const id = args?.id as string;
+          libraryModels = libraryModels.map((m) => ({ ...m, current: m.id === id }));
+          const target = libraryModels.find((m) => m.id === id);
+          if (target) {
+            llmConfig.model_path = target.localPath ?? "";
+            llmConfig.models_present = true;
+          }
+          return Promise.resolve({
+            model_type: "llm",
+            model_id: id,
+            path: target?.localPath ?? "",
+            runtime_action: "none",
+            effective_immediately: false,
+            message: "已设为当前模型",
+          });
+        }
+        case "delete_model": {
+          const id = args?.id as string;
+          libraryModels = libraryModels.filter((m) => m.id !== id);
+          return Promise.resolve(undefined);
+        }
         case "set_llm_params":
           // 替换为新对象引用（贴近真实后端：保存后 resolve 出新 params），
           // 使组件里保存前的旧 params 与刷新后的新值可区分（用于判断「哪些字段改了」）
@@ -244,7 +326,7 @@ describe("LlmPage（AI 大脑配置）", () => {
     expect(screen.getByRole("button", { name: "选择模型" })).toBeEnabled();
   });
 
-  it("已加载时选择模型：set_llm_model_path 后自动 reload 无缝切换", async () => {
+  it("已加载时选择模型：弹窗内导入 GGUF 后 set_llm_model_path 自动 reload 无缝切换", async () => {
     llmConfig.models_present = true;
     dialogOpenMock.mockResolvedValue("/home/user/.zapmomo/models/qwen3-1.7b.gguf");
     renderLlmPage();
@@ -254,6 +336,7 @@ describe("LlmPage（AI 大脑配置）", () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: "选择模型" }));
+    await user.click(await screen.findByRole("button", { name: "导入 GGUF 文件" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_llm_model_path", {
@@ -392,13 +475,14 @@ describe("LlmPage（AI 大脑配置）", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("unload_llm_model", expect.anything());
   });
 
-  it("选择模型：文件对话框选 GGUF 后调用 set_llm_model_path 并刷新为未加载", async () => {
+  it("选择模型：弹窗内导入 GGUF 文件调 set_llm_model_path 并刷新为未加载", async () => {
     dialogOpenMock.mockResolvedValue("/home/user/.zapmomo/models/qwen3-1.7b.gguf");
     renderLlmPage();
     await screen.findByText("未配置模型");
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: "选择模型" }));
+    await user.click(await screen.findByRole("button", { name: "导入 GGUF 文件" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_llm_model_path", {
@@ -574,5 +658,188 @@ describe("LlmPage（AI 大脑配置）", () => {
 
     await user.click(screen.getByRole("button", { name: "隐藏模型路径" }));
     expect(screen.queryByText(pathText)).not.toBeInTheDocument();
+  });
+
+  describe("选择模型弹窗（内置预设模型）", () => {
+    /** 渲染 LLM 页并打开「选择模型」弹窗，返回 userEvent。 */
+    async function renderAndOpenPresets() {
+      renderLlmPage();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "选择模型" }));
+      await screen.findByRole("dialog");
+      return user;
+    }
+
+    it("弹窗显示 5 个推荐预设与下载按钮、导入入口、模型库链接", async () => {
+      await renderAndOpenPresets();
+      expect(screen.getByText("Qwen3 0.6B")).toBeInTheDocument();
+      expect(screen.getByText("Qwen3 1.7B")).toBeInTheDocument();
+      expect(screen.getByText("Qwen3 4B")).toBeInTheDocument();
+      expect(screen.getByText("Qwen3 8B")).toBeInTheDocument();
+      expect(screen.getByText("Llama 3.2 1B")).toBeInTheDocument();
+      expect(screen.getByText(/378\.3 MB · 约 1GB 内存/)).toBeInTheDocument();
+      expect(screen.getByText(/2\.33 GB · 约 4GB 内存/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "下载Qwen3 0.6B" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "导入 GGUF 文件" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /更多模型/ })).toBeInTheDocument();
+    });
+
+    it("点击预设调用 download_llm_model，下载中其他预设禁用", async () => {
+      llmDownloadImpl.mockReturnValue(new Promise(() => {})); // 挂起模拟下载中
+      const user = await renderAndOpenPresets();
+      await user.click(screen.getByRole("button", { name: "下载Qwen3 0.6B" }));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("download_llm_model", {
+          id: "qwen3-0.6b-q4-k-m",
+        });
+      });
+      expect(screen.getByRole("button", { name: "下载Qwen3 0.6B" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "下载Qwen3 4B" })).toBeDisabled();
+      expect(screen.getByText("下载中…")).toBeInTheDocument();
+    });
+
+    it("下载进度事件：显示百分比消息", async () => {
+      llmDownloadImpl.mockReturnValue(new Promise(() => {}));
+      const user = await renderAndOpenPresets();
+      await user.click(screen.getByRole("button", { name: "下载Qwen3 0.6B" }));
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("download_llm_model", expect.anything());
+      });
+
+      act(() => {
+        listeners.get("llm-model-download-progress")?.({
+          payload: { stage: "downloading", percent: 42, message: "下载中 42.0%" },
+        });
+      });
+      expect(await screen.findByText("下载中 42.0%")).toBeInTheDocument();
+    });
+
+    it("下载完成（applied）：自动配置并加载", async () => {
+      const user = await renderAndOpenPresets();
+      await user.click(screen.getByRole("button", { name: "下载Qwen3 0.6B" }));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("download_llm_model", {
+          id: "qwen3-0.6b-q4-k-m",
+        });
+      });
+      expect(await screen.findByText("加载中")).toBeInTheDocument();
+      expect(invokeMock).toHaveBeenCalledWith("load_llm_model");
+    });
+
+    it("voice 会话运行中下载完成：不自动加载", async () => {
+      renderLlmPage();
+      // 先等 mount 时的 isVoiceSessionRunning 回读落定，否则其异步 setRunning 会覆盖事件状态
+      await Promise.resolve();
+      act(() => {
+        listeners.get("voice-session-state")?.({ payload: { running: true, state: "armed" } });
+      });
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "选择模型" }));
+      await user.click(await screen.findByRole("button", { name: "下载Qwen3 0.6B" }));
+
+      // 等 refreshConfig 完成（get_llm_config 第 2 次调用），load 判断已同步执行
+      await waitFor(() => {
+        expect(invokeMock.mock.calls.filter(([c]) => c === "get_llm_config").length).toBe(2);
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith("load_llm_model");
+    });
+
+    it("下载失败：显示错误并恢复按钮", async () => {
+      llmDownloadImpl.mockRejectedValue("下载失败：网络错误");
+      const user = await renderAndOpenPresets();
+      await user.click(screen.getByRole("button", { name: "下载Qwen3 0.6B" }));
+
+      expect(await screen.findByText(/下载失败：网络错误/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "下载Qwen3 0.6B" })).toBeEnabled();
+    });
+
+    it("远程 provider（openai）选择模型按钮禁用，弹窗不渲染", async () => {
+      llmConfig.provider = "openai";
+      renderLlmPage();
+      expect(await screen.findByText("AI 大脑（LLM）配置")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "选择模型" })).toBeDisabled();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("已配置模型时选择模型按钮可用，弹窗可打开（用于切换）", async () => {
+      llmConfig.models_present = true;
+      await renderAndOpenPresets();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("applied=false（下载期间用户已自行配置）：不覆盖配置、不自动加载", async () => {
+      llmDownloadImpl.mockResolvedValue({
+        model_path: "/home/user/.zapmomo/models/Qwen3-0.6B/Qwen3-0.6B-Q4_K_M.gguf",
+        applied: false,
+      });
+      const user = await renderAndOpenPresets();
+      await user.click(screen.getByRole("button", { name: "下载Qwen3 0.6B" }));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("download_llm_model", expect.anything());
+      });
+      // 等 refreshConfig 完成（get_llm_config 第 2 次调用），load 判断已同步执行
+      await waitFor(() => {
+        expect(invokeMock.mock.calls.filter(([c]) => c === "get_llm_config").length).toBe(2);
+      });
+      expect(screen.getByRole("button", { name: "下载Qwen3 0.6B" })).toBeInTheDocument();
+      expect(invokeMock).not.toHaveBeenCalledWith("load_llm_model");
+    });
+
+    it("已安装非当前预设：显示设为当前与卸载；设为当前调 set_current_model", async () => {
+      libraryModels = [installedPreset("qwen3-0.6b-q4-k-m", "Qwen3 0.6B")];
+      const user = await renderAndOpenPresets();
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "下载Qwen3 0.6B" })).not.toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "设为当前" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "卸载" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "设为当前" }));
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+          id: "qwen3-0.6b-q4-k-m",
+        });
+      });
+    });
+
+    it("未安装（not_installed 记录）预设显示下载，而非设为当前/卸载", async () => {
+      // 回归：list_model_library 对未安装 registry 模型也返回记录，仅按 id 匹配会误判为已安装
+      libraryModels = [
+        installedPreset("qwen3-0.6b-q4-k-m", "Qwen3 0.6B", { installState: "not_installed" }),
+      ];
+      await renderAndOpenPresets();
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "下载Qwen3 0.6B" })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("button", { name: "设为当前" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+    });
+
+    it("当前预设显示当前模型标记，无设为当前/卸载", async () => {
+      libraryModels = [installedPreset("qwen3-0.6b-q4-k-m", "Qwen3 0.6B", { current: true })];
+      await renderAndOpenPresets();
+      // 「当前模型」同时出现在弹窗预设行标记与 LlmCoreConfig 的字段标签，取列表形式断言
+      await waitFor(() => {
+        expect(screen.getAllByText("当前模型").length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByRole("button", { name: "设为当前" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+    });
+
+    it("卸载预设：确认框 → 确认 → delete_model", async () => {
+      libraryModels = [installedPreset("qwen3-0.6b-q4-k-m", "Qwen3 0.6B")];
+      const user = await renderAndOpenPresets();
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "下载Qwen3 0.6B" })).not.toBeInTheDocument();
+      });
+      await user.click(screen.getByRole("button", { name: "卸载" }));
+      expect(await screen.findByText(/确定要卸载/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "确认卸载" }));
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("delete_model", { id: "qwen3-0.6b-q4-k-m" });
+      });
+    });
   });
 });

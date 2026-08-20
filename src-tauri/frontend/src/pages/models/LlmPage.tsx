@@ -1,18 +1,19 @@
 import { ArrowLeft, Info } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { LlmAdvancedParams } from "@/components/llm/LlmAdvancedParams";
 import { LlmCoreConfig } from "@/components/llm/LlmCoreConfig";
+import { LlmPresetDialog } from "@/components/llm/LlmPresetDialog";
 import { LlmRunControl } from "@/components/llm/LlmRunControl";
 import { LlmSystemPrompt } from "@/components/llm/LlmSystemPrompt";
 import { isHttpProvider } from "@/components/llm/llmMeta";
-import { useLlmModelPicker } from "@/components/llm/useLlmModelPicker";
 import { useRuntime } from "@/providers/RuntimeContext";
 
 /** AI 大脑（LLM）配置页：标题行含运行开关与状态 + 基础配置 + 高级参数 + 系统提示词。 */
 export function LlmPage() {
-  const { pick, pickError } = useLlmModelPicker();
   const { llm } = useRuntime();
   const isHttp = isHttpProvider(llm.config?.provider);
+  const [presetOpen, setPresetOpen] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -31,7 +32,10 @@ export function LlmPage() {
         <LlmRunControl />
       </header>
 
-      <LlmCoreConfig pick={pick} pickError={pickError} />
+      {/* 选择模型弹窗（内置预设下载/切换/卸载 + 导入 GGUF；远程 provider 不提供） */}
+      {!isHttp && <LlmPresetDialog open={presetOpen} onClose={() => setPresetOpen(false)} />}
+
+      <LlmCoreConfig onOpenPresets={() => setPresetOpen(true)} />
 
       <LlmSystemPrompt />
       <LlmAdvancedParams />

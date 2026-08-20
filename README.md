@@ -33,6 +33,33 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **CI/CD** — GitHub Actions 自动化测试、发布、覆盖率报告
 - **Shell 补全** — 支持 bash / zsh / fish / powershell / elvish 自动补全
 
+## 下载桌面应用
+
+点击下方按钮直接下载对应系统的最新版安装包（无需登录 GitHub，自动指向最新 Release）：
+
+| 系统 | 芯片 / 架构 | 立即下载 |
+| --- | --- | --- |
+| Windows 10 / 11 | x64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Windows_x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Windows_x64.exe) |
+| macOS 13+ | Apple Silicon（M1/M2/M3/M4） | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-macOS_arm64-8E8E93?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_macOS_arm64.dmg) |
+| macOS 13+ | Intel | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-macOS_x64-8E8E93?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_macOS_x64.dmg) |
+| Ubuntu / Debian | amd64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Linux_amd64-A80030?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_amd64.deb) |
+| Fedora / RHEL | x86_64 | [![立即下载](https://img.shields.io/badge/%E7%AB%8B%E5%8D%B3%E4%B8%8B%E8%BD%BD-Linux_x86_64-294172?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_x86_64.rpm) |
+
+- Windows 企业批量部署可选 [MSI 版](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Windows_x64.msi)；Linux 可选 [AppImage](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_amd64.AppImage) 免安装直接运行。
+- 完整版本与更新日志见 [Releases](https://github.com/shenjingnan/zapmomo/releases)。
+- 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
+- KWS / ASR / TTS 模型资产不随安装包分发，首次使用请在应用「模型」页或用 CLI `install-model` 下载。
+
+### macOS 首次打开（未签名）
+
+项目未申请 Apple Developer 证书，安装包**未签名**。每次从 Releases 下载后，首次启动都会被系统拦截（提示「无法验证开发者」）。请先将 App 拖入「应用程序」，再执行：
+
+```bash
+xattr -cr "/Applications/Zap Momo.app"
+```
+
+随后启动即可正常打开。若 App 不在「应用程序」，把命令里的路径换成实际位置；或右键 App →「打开」→ 再次点击「打开」。
+
 ## 快速开始
 
 ```bash
@@ -251,12 +278,13 @@ debug = false
 
 基于 llama.cpp（Rust 绑定 `llama-cpp-2`）的本地大语言模型，支持流式对话与 Agent 工具调用；也可通过 OpenAI 兼容的 `/v1/responses` 接口接入远程 API 或 `llama-server`。
 
-LLM 模型为 **GGUF 文件（用户自备，不走清单下载）**：放入 `~/.zapmomo/models/<任意目录>/` 后由 CLI 自动发现，或用 `[llm] model_path` 指定路径。
+LLM 模型为 **GGUF 文件**：内置清单提供多个可一键下载的预设（应用内「AI 大脑（LLM）配置」页 / 模型库），也支持自备 GGUF 放入 `~/.zapmomo/models/<任意目录>/` 自动发现，或用 `[llm] model_path` 指定路径。
 
 ### 快速开始
 
 ```bash
-# 1. 下载推荐模型（Qwen3-4B-Instruct-2507，Q4_K_M 量化约 2.5GB，自行放到 ~/.zapmomo/models/）
+# 1. 获取模型：桌面应用「AI 大脑（LLM）配置」页一键下载（Qwen3-0.6B / 4B 预设），
+#    或自行下载推荐模型 Qwen3-4B-Instruct-2507（Q4_K_M 量化约 2.5GB）放到 ~/.zapmomo/models/
 # 2. 验证模型可加载
 cargo run -- llm load
 
@@ -367,8 +395,8 @@ pnpm tauri build
 > 打包版内置「下载模型」按钮：首次使用时若缺模型，在「配置」面板点击即可自动
 > 下载到 `~/.zapmomo/models/<模型名>`（KWS / ASR / TTS 均可，也可用
 > `zapmomo kws|asr|tts install-model`）。
-> macOS 未签名 dmg 首次打开若被 Gatekeeper 拦截，右键 →「打开」，或执行
-> `xattr -dr com.apple.quarantine <应用路径>`。
+> macOS 安装包未签名，每次下载后首次启动若被 Gatekeeper 拦截，先拖入「应用程序」后执行
+> `xattr -cr "/Applications/Zap Momo.app"`（或右键 →「打开」）。详见上文「下载桌面应用」。
 
 ### 一键重启
 

@@ -251,6 +251,12 @@ export interface LlmConfigInfo {
   params: LlmParams;
 }
 
+/** `download_llm_model` 返回（`applied=false` = 用户已配置有效模型，未覆盖） */
+export interface LlmDownloadResult {
+  model_path: string;
+  applied: boolean;
+}
+
 /** `llm-token` 事件载荷（对应后端 TokenDelta） */
 export interface LlmToken {
   text: string;

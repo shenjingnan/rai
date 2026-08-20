@@ -83,7 +83,7 @@ pub struct RegistryModel {
     /// 可选增强资产 role 列表（如 ASR 的 punctuation，缺失不影响可用性）
     #[serde(default)]
     pub optional_assets: Vec<String>,
-    /// `None` = 无内置下载源（LLM 需导入 GGUF）
+    /// `None` = 无内置下载源（需导入本地文件；当前 LLM 预设均已有 manifest 下载源）
     pub download: Option<RegistryDownload>,
 }
 
@@ -220,5 +220,24 @@ mod tests {
         assert_eq!(required_files_for_role("tts").len(), 5); // 含 vocoder
         assert_eq!(required_files_for_role("tts-vocoder").len(), 1);
         assert!(required_files_for_role("unknown").is_empty());
+    }
+
+    #[test]
+    fn test_llm_preset_ids_for_download() {
+        // LLM 配置页一键下载的预设（download_llm_model command 依赖），删除或改名会直接
+        // 破坏下载按钮；同时钉住 name/file_name（幂等预检与条件写配置依赖该安装布局）。
+        for (id, dir, file) in [
+            ("qwen3-0.6b-q4-k-m", "Qwen3-0.6B", "Qwen3-0.6B-Q4_K_M.gguf"),
+            (
+                "qwen3-4b-instruct-2507-q4-k-m",
+                "Qwen3-4B-Instruct-2507",
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            ),
+        ] {
+            let m = model_by_id(id).unwrap_or_else(|| panic!("LLM 预设 {id} 必须存在"));
+            assert!(m.is_llm() && m.download.is_some(), "{id} 应可一键下载");
+            assert_eq!(m.name, dir);
+            assert_eq!(m.file_name.as_deref(), Some(file));
+        }
     }
 }

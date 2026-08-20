@@ -134,8 +134,8 @@ jobs:
           merge-multiple: true
 
       - name: Rename installers to user-friendly asset names
-        # Tauri 产物默认名对普通用户不友好：productName「Zap Momo」的空格被打包器
-        # 转成「Zap.Momo」前缀；平台术语混杂（x64-setup / aarch64 / amd64 / x86_64）；
+        # Tauri 产物默认名对普通用户不友好：平台术语混杂
+        # （x64-setup / aarch64 / amd64 / x86_64）；
         # Windows 双安装包、macOS 双架构无选择指引。统一重命名为
         # <产品>_<平台>_<架构>.<后缀>，Release 资产列表按平台自动分组排序。
         # 刻意不注入版本号：资产名跨版本保持不变，README 的

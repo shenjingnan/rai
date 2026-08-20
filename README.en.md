@@ -64,7 +64,7 @@ Click a button below to grab the latest installer for your system (no GitHub log
 The project has no Apple Developer certificate, so installers are **unsigned**. Every freshly downloaded build from Releases is blocked on first launch ("cannot verify developer"). Drag the app into "Applications", then run:
 
 ```bash
-xattr -cr "/Applications/Zap Momo.app"
+xattr -cr "/Applications/ZapMomo.app"
 ```
 
 After that the app launches normally. If the app is not in "Applications", replace the path with its actual location; or right-click the app → "Open" → click "Open" again.

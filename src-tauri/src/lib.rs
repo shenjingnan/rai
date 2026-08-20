@@ -4033,7 +4033,7 @@ pub fn run() {
                 "companion",
                 WebviewUrl::App("companion.html".into()),
             )
-            .title("Zap Momo")
+            .title("ZapMomo")
             .inner_size(init_w, init_h)
             .transparent(true)
             .decorations(false)
@@ -4085,7 +4085,7 @@ pub fn run() {
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
             let mut settings =
                 WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-                    .title("Zap Momo 设置")
+                    .title("ZapMomo 设置")
                     .inner_size(1180.0, 760.0)
                     .min_inner_size(1180.0, 640.0)
                     .resizable(true)
@@ -4132,7 +4132,7 @@ pub fn run() {
                 });
             }
 
-            // 应用菜单（仅 macOS）：「Zap Momo」子菜单（偏好设置 cmd+, / 退出 Cmd+Q）
+            // 应用菜单（仅 macOS）：「ZapMomo」子菜单（偏好设置 cmd+, / 退出 Cmd+Q）
             // 与「编辑」菜单。macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项
             // （key equivalent）才能派发到 WebView 输入框；自定义菜单若缺少这些项，
             // 复制/粘贴/全选会全部失效。
@@ -4168,13 +4168,13 @@ pub fn run() {
                 // 整个退出被取消（Cmd+Q 表现为窗口隐藏、进程残留）。自定义项直接走
                 // handle_menu("quit") → app.exit(0)，绕过窗口询问，与托盘「退出」一致。
                 let quit =
-                    MenuItem::with_id(app, "quit", "退出 Zap Momo", true, Some("CmdOrCtrl+Q"))?;
+                    MenuItem::with_id(app, "quit", "退出 ZapMomo", true, Some("CmdOrCtrl+Q"))?;
                 // 注意：muda 在 macOS 只把 Submenu 渲染为菜单栏项，顶级普通 MenuItem
                 // 不显示（快捷键仍可派发）。因此偏好设置/退出须收进 app 名子菜单，
-                // 保持「Apple | Zap Momo | 编辑」的 macOS 惯例结构。
+                // 保持「Apple | ZapMomo | 编辑」的 macOS 惯例结构。
                 let sep = PredefinedMenuItem::separator(app)?;
                 let app_submenu =
-                    Submenu::with_items(app, "Zap Momo", true, &[&show_settings, &sep, &quit])?;
+                    Submenu::with_items(app, "ZapMomo", true, &[&show_settings, &sep, &quit])?;
                 let app_menu = Menu::with_items(app, &[&app_submenu, &edit_menu])?;
                 app.set_menu(app_menu)?;
             }

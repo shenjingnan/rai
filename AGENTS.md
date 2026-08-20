@@ -121,14 +121,14 @@ cargo tarpaulin                     # 生成覆盖率报告
 
 `release-plz` 负责版本/tag/changelog/crates.io；push `vX.Y.Z` tag 后由
 `.github/workflows/release.yml`（tauri-action）在 Windows/macOS/Linux 原生 runner
-构建安装包并附到草稿 Release。详见 README「发布流程」。
+构建安装包并附到草稿 Release。详见 CONTRIBUTING.md「发布流程」。
 
 ## 已知限制
 
 - **开发模式重启会白屏**：`pnpm tauri dev` 下点击「重启」（设置页 / 右键菜单 / 托盘）
   后新进程白屏。根因是 Tauri 内置重启不重跑 `beforeDevCommand`，而 `tauri dev`
   在应用退出时拆掉 Vite dev server（[tauri#6163](https://github.com/tauri-apps/tauri/issues/6163)），
-  新进程连不上 `localhost:1420`。生产打包版正常。详见 README「一键重启」。
+  新进程连不上 `localhost:1420`。生产打包版正常。详见 CONTRIBUTING.md「一键重启」。
 
 ## Git 工作流
 

@@ -1,5 +1,17 @@
 <div align="center">
   <img src="docs/public/logo.svg" alt="ZapMomo Logo" width="300" />
+
+  <p>
+    <a href="https://github.com/shenjingnan/zapmomo/releases"><img src="https://img.shields.io/github/v/release/shenjingnan/zapmomo" alt="GitHub Release" /></a>
+    <a href="https://crates.io/crates/zapmomo"><img src="https://img.shields.io/crates/v/zapmomo" alt="crates.io 版本" /></a>
+    <a href="https://crates.io/crates/zapmomo"><img src="https://img.shields.io/crates/d/zapmomo" alt="crates.io 下载量" /></a>
+    <br />
+    <a href="https://github.com/shenjingnan/zapmomo/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/shenjingnan/zapmomo/ci.yml?branch=main&label=CI" alt="GitHub Actions CI 状态" /></a>
+    <a href="https://codecov.io/gh/shenjingnan/zapmomo"><img src="https://codecov.io/gh/shenjingnan/zapmomo/graph/badge.svg" alt="Codecov 覆盖率" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/crates/l/zapmomo" alt="License: GPL-3.0-only" /></a>
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust" alt="Rust 1.97+" /></a>
+    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="支持平台：Windows / macOS / Linux" /></a>
+  </p>
 </div>
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.

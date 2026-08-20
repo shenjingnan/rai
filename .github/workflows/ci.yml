@@ -77,11 +77,47 @@ jobs:
       - name: Spell check
         run: typos .
 
-      - name: Tests
-        run: cargo test -- --test-threads=1
-
+      # 不在本 job 跑 cargo test：test matrix job 已在 ubuntu/macOS/Windows
+      # 三平台覆盖同一命令；此处重复跑会因 dev-deps 的 feature 统一差异
+      # 触发第二次全量重建（实测多付约 2 分钟）。
       - name: Build
         run: cargo build
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux audio deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache cargo build artifacts
+        # tarpaulin 不能与 clippy/build 共用同一个 target/ 缓存：tarpaulin 默认
+        # cargo clean 后用插桩 RUSTFLAGS 全量重建，共 job 时 job 结束快照里只剩
+        # 插桩产物，下一 run 的 clippy/build 全部指纹失配，被迫每次从零编译。
+        # 拆成独立 job 后本 job 的 target/ 只有插桩这一种构建上下文，缓存自洽。
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache sherpa-onnx prebuilt libs
+        # 同 check job：rust-cache 会清空 target/ 下非构建目录的文件，预编译库
+        # 需单独缓存并在下一步校验（见 check job 注释）。
+        uses: actions/cache@v6
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rehydrate sherpa-onnx prebuilt libs
+        shell: bash
+        run: |
+          if [ -d target/sherpa-onnx-prebuilt ] \
+            && [ -z "$(find target/sherpa-onnx-prebuilt -type f -print -quit)" ]; then
+            echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
+            rm -rf target/sherpa-onnx-prebuilt
+          fi
 
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@v2
@@ -89,7 +125,10 @@ jobs:
           tool: cargo-tarpaulin
 
       - name: Generate coverage report
-        run: cargo tarpaulin --out lcov --output-dir coverage -- --test-threads=1
+        # --skip-clean：跳过 cargo clean，让插桩产物跨 run 复用（tarpaulin 官方
+        # 文档推荐的减少重编译首选手段）。稳态下仅重编 workspace 自身 crate；
+        # 若覆盖率数字出现异常，再回退默认 clean 排查。
+        run: cargo tarpaulin --skip-clean --out lcov --output-dir coverage -- --test-threads=1
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

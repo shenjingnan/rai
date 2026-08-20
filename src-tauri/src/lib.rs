@@ -3718,9 +3718,10 @@ pub fn run() {
                 });
             }
 
-            // 应用菜单（仅 macOS）：偏好设置…（cmd+,）、编辑菜单与退出（Cmd+Q）。
-            // macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项（key equivalent）才能派发到
-            // WebView 输入框；自定义菜单若缺少这些项，复制/粘贴/全选会全部失效。
+            // 应用菜单（仅 macOS）：「Zap Momo」子菜单（偏好设置 cmd+, / 退出 Cmd+Q）
+            // 与「编辑」菜单。macOS 的 Cmd+C/V/X/A/Z 依赖菜单中的「编辑」项
+            // （key equivalent）才能派发到 WebView 输入框；自定义菜单若缺少这些项，
+            // 复制/粘贴/全选会全部失效。
             //
             // Windows/Linux 不设 app 级菜单：Tauri 的 set_menu 会把它作为原生菜单栏
             // 渲染进每个窗口（含无边框的 companion），模型顶部会多出一条菜单；
@@ -3747,14 +3748,20 @@ pub fn run() {
                     true,
                     &[&undo, &redo, &edit_sep1, &cut, &copy, &paste, &select_all],
                 )?;
-                let app_menu = Menu::with_items(
-                    app,
-                    &[
-                        &show_settings,
-                        &edit_menu,
-                        &PredefinedMenuItem::quit(app, None)?,
-                    ],
-                )?;
+                // 退出项必须用自定义 MenuItem 而非 PredefinedMenuItem::quit：
+                // 后者在 macOS 绑定原生 `terminate:`，而 terminate 会逐个询问可见窗口
+                // `windowShouldClose:`——被下方 on_window_event 的 prevent_close 拦截后
+                // 整个退出被取消（Cmd+Q 表现为窗口隐藏、进程残留）。自定义项直接走
+                // handle_menu("quit") → app.exit(0)，绕过窗口询问，与托盘「退出」一致。
+                let quit =
+                    MenuItem::with_id(app, "quit", "退出 Zap Momo", true, Some("CmdOrCtrl+Q"))?;
+                // 注意：muda 在 macOS 只把 Submenu 渲染为菜单栏项，顶级普通 MenuItem
+                // 不显示（快捷键仍可派发）。因此偏好设置/退出须收进 app 名子菜单，
+                // 保持「Apple | Zap Momo | 编辑」的 macOS 惯例结构。
+                let sep = PredefinedMenuItem::separator(app)?;
+                let app_submenu =
+                    Submenu::with_items(app, "Zap Momo", true, &[&show_settings, &sep, &quit])?;
+                let app_menu = Menu::with_items(app, &[&app_submenu, &edit_menu])?;
                 app.set_menu(app_menu)?;
             }
 
@@ -3777,7 +3784,9 @@ pub fn run() {
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // 关闭设置/角色窗口时仅隐藏，不退出进程；退出走托盘/菜单 Cmd+Q。
+                // 关闭设置/角色窗口时仅隐藏，不退出进程；退出走托盘/菜单 Cmd+Q
+                //（菜单退出项须用自定义 MenuItem——原生 quit 会走 terminate: →
+                //  windowShouldClose:，被本拦截器取消，见上方菜单构建处注释）。
                 api.prevent_close();
                 let _ = window.hide();
             }

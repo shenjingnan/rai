@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useRuntime } from "@/providers/RuntimeContext";
 import { estimateRamGb, formatBytes } from "@/lib/catalog/quantization";
+import { useRuntime } from "@/providers/RuntimeContext";
 
 /** 一键下载预设（id = models/model_registry.json 的 registry id；体积与 manifest size_bytes 对齐） */
 const PRESETS = [
@@ -34,9 +34,7 @@ export function LlmPresetDownload() {
   const { downloading, currentId, progress, error, download } = llm.download;
   // verifying/done 阶段后端 percent=-1，直接喂 Progress 会异常，非 downloading 一律按 100
   const percent =
-    progress?.stage === "downloading"
-      ? Math.max(0, Math.min(100, progress.percent))
-      : 100;
+    progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">
@@ -54,21 +52,17 @@ export function LlmPresetDownload() {
 
       <dl className="divide-y divide-divider border-t border-divider">
         {PRESETS.map((p) => (
-          <div
-            key={p.id}
-            className="flex items-center justify-between gap-3.5 px-3.5 py-2.5"
-          >
+          <div key={p.id} className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
             <div className="min-w-0">
-              <dt className="text-sm text-text-primary">
-                {p.label} · {p.model}
-              </dt>
+              <dt className="text-sm text-text-primary">{`${p.label} · ${p.model}`}</dt>
               <dd className="mt-0.5 text-xs text-text-muted">
-                {formatBytes(p.sizeBytes)} · 约 {estimateRamGb(p.sizeBytes)}GB 内存 · {p.desc}
+                {`${formatBytes(p.sizeBytes)} · 约 ${estimateRamGb(p.sizeBytes)}GB 内存 · ${p.desc}`}
               </dd>
             </div>
             <Button
               onClick={() => void download(p.id)}
               disabled={downloading}
+              aria-label={`下载${p.label}`}
               className="shrink-0"
             >
               <Download className="h-4 w-4" />

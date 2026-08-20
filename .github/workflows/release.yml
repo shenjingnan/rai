@@ -65,7 +65,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: lts/*
+          # 显式固定 Node 24（与 .node-version 一致），避免 lts/* 未来漂移引入构建变化
+          node-version: 24
           cache: pnpm
 
       - name: Install frontend deps

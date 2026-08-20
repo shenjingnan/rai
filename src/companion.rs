@@ -1057,10 +1057,11 @@ mod tests {
 
             // 标记已写入 → 二次调用直接跳过（即使再手动抹掉注册也不再处理）。
             let lib = load_library_fast().unwrap();
-            assert!(lib
-                .completed_migrations
-                .iter()
-                .any(|m| m == MOTION_REGISTRATION_MIGRATION));
+            assert!(
+                lib.completed_migrations
+                    .iter()
+                    .any(|m| m == MOTION_REGISTRATION_MIGRATION)
+            );
             std::fs::write(
                 Path::new(&model.model_file),
                 r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,

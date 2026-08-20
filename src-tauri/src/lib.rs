@@ -2026,6 +2026,18 @@ fn migrate_legacy_in_background(app: AppHandle) {
     );
 }
 
+/// 后台存量迁移：为已导入伙伴补注册未登记的动作/表情文件（幂等，不阻塞启动；
+/// 失败不写标记，下次启动自动重试）。
+fn register_motions_in_background() {
+    tauri::async_runtime::spawn_blocking(move || {
+        match zapmomo::companion::register_motions_for_existing() {
+            Ok(n) if n > 0 => tracing::info!("已为 {n} 个伙伴补注册动作/表情文件"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("补注册动作/表情迁移失败（下次启动重试）: {e}"),
+        }
+    });
+}
+
 /// 列出伙伴库（含旧版迁移兜底 + sanitize active）。
 #[tauri::command]
 async fn list_companions(app: AppHandle) -> Result<CompanionLibraryView, String> {
@@ -3534,6 +3546,8 @@ pub fn run() {
             // 后台旧版迁移：库为空且旧 [live2d].model_dir 存在时，把模型复制进托管目录并
             // 设为 active（完成后 reconcile，桌宠从旧目录无缝切到托管副本）。不阻塞启动。
             migrate_legacy_in_background(app.handle().clone());
+            // 后台存量迁移：为已导入伙伴补注册未登记的动作/表情文件（幂等，不阻塞启动）。
+            register_motions_in_background();
 
             // 设置窗口：默认隐藏，由 cmd+, 或托盘菜单打开；关闭时隐藏而非退出。
             let mut settings =

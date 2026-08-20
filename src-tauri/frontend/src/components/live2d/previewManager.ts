@@ -8,6 +8,55 @@ if (typeof window !== "undefined") {
   (window as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
 }
 
+/** 从已加载模型实例枚举的可播放能力（展示名从 File 派生）。 */
+export interface Live2dCatalog {
+  motionGroups: { group: string; motions: { index: number; name: string }[] }[];
+  expressions: { index: number; name: string }[];
+}
+
+/** Cubism4 运行时动作/表情管理器的结构子集（基类类型不带具体定义，按结构断言）。 */
+interface Live2dRuntime {
+  motionManager: {
+    definitions: Partial<Record<string, { File: string }[]>>;
+    startMotion: (group: string, index: number, priority: number) => Promise<boolean>;
+  };
+  expressionManager?: {
+    definitions: { Name: string }[];
+    setExpression: (index: number) => Promise<boolean>;
+    resetExpression: () => void;
+  };
+}
+
+/** MotionPriority.FORCE = 3（枚举未从 cubism4 入口稳定导出，按库源码字面量传）。 */
+const MOTION_PRIORITY_FORCE = 3;
+
+/** 从模型实例读取断言后的运行时结构（buildCatalog 与播放共用）。 */
+function runtimeOf(model: Live2DModel): Live2dRuntime {
+  return model.internalModel as unknown as Live2dRuntime;
+}
+
+/** 动作展示名：File basename 去掉 .motion3.json 扩展。 */
+function motionDisplayName(file: string): string {
+  const name = file.split("/").pop() ?? file;
+  return name.replace(/\.motion3\.json$/, "");
+}
+
+/** 枚举模型动作组与表情（纯函数，导出供测试）。 */
+export function buildCatalog(model: Live2DModel): Live2dCatalog {
+  const rt = runtimeOf(model);
+  const motionGroups = Object.entries(rt.motionManager.definitions)
+    .filter(([, defs]) => (defs?.length ?? 0) > 0)
+    .map(([group, defs]) => ({
+      group,
+      motions: defs!.map((d, index) => ({ index, name: motionDisplayName(d.File) })),
+    }));
+  const expressions = (rt.expressionManager?.definitions ?? []).map((d, index) => ({
+    index,
+    name: d.Name,
+  }));
+  return { motionGroups, expressions };
+}
+
 export interface PreviewSlotCallbacks {
   /** 渲染初始化或模型加载失败时的回调。 */
   onError?: (error: Error) => void;
@@ -15,6 +64,8 @@ export interface PreviewSlotCallbacks {
   onModelMetrics?: (metrics: { aspectRatio: number }) => void;
   /** 模型上舞台、画布可用时回调（缓存命中也会触发，上层需自行去重）。 */
   onModelReady?: (canvas: HTMLCanvasElement) => void;
+  /** 模型上舞台后回调其可播放的动作/表情目录（缓存命中也会触发；全量覆盖语义）。 */
+  onModelCatalog?: (catalog: Live2dCatalog | null) => void;
 }
 
 export interface ClaimOptions {
@@ -34,6 +85,12 @@ export interface ClaimHandle {
   showModel(modelUrl: string | null, reloadKey: string | number): void;
   /** 释放占用：仅当自己是当前占用者时生效（stale-safe，乱序 release 不影响新占用者）。 */
   release(): void;
+  /** 播放动作（FORCE 优先级可打断在播动作）；无当前模型或已释放时返回 false。 */
+  playMotion(group: string, index: number): Promise<boolean>;
+  /** 按下标应用表情（同名表情可能重复，index 无歧义）。 */
+  applyExpression(index: number): Promise<boolean>;
+  /** 重置表情回默认。 */
+  resetExpression(): void;
 }
 
 /** 模型 LRU 缓存上限：概览/伙伴页最近使用的模型往返切换免加载。 */
@@ -81,6 +138,18 @@ class HandleImpl implements ClaimHandle {
 
   release(): void {
     this.manager.release(this);
+  }
+
+  playMotion(group: string, index: number): Promise<boolean> {
+    return this.manager.playMotion(this, group, index);
+  }
+
+  applyExpression(index: number): Promise<boolean> {
+    return this.manager.applyExpression(this, index);
+  }
+
+  resetExpression(): void {
+    this.manager.resetExpression(this);
   }
 }
 
@@ -146,6 +215,7 @@ export class PreviewManager {
 
     if (url === null) {
       this.detachShown();
+      handle.callbacks.onModelCatalog?.(null);
       return;
     }
 
@@ -194,6 +264,31 @@ export class PreviewManager {
         }
       },
     );
+  }
+
+  /** 仅当 handle 是当前占用者且有模型在播时返回模型，否则 null（stale-safe）。 */
+  private modelFor(handle: HandleImpl): Live2DModel | null {
+    return this.current?.id === handle.id ? this.shownModel : null;
+  }
+
+  /** 播放动作（FORCE 优先级打断 idle/在播动作）。 */
+  playMotion(handle: HandleImpl, group: string, index: number): Promise<boolean> {
+    const model = this.modelFor(handle);
+    if (!model) return Promise.resolve(false);
+    return runtimeOf(model).motionManager.startMotion(group, index, MOTION_PRIORITY_FORCE);
+  }
+
+  /** 按下标应用表情。 */
+  applyExpression(handle: HandleImpl, index: number): Promise<boolean> {
+    const model = this.modelFor(handle);
+    if (!model) return Promise.resolve(false);
+    return runtimeOf(model).expressionManager?.setExpression(index) ?? Promise.resolve(false);
+  }
+
+  /** 重置表情回默认。 */
+  resetExpression(handle: HandleImpl): void {
+    const model = this.modelFor(handle);
+    model && runtimeOf(model).expressionManager?.resetExpression();
   }
 
   /** 懒创建共享 app：已存在直接返回，创建失败回调 onError 并返回 null（下次 claim 重试）。 */
@@ -246,6 +341,7 @@ export class PreviewManager {
       handle.callbacks.onModelMetrics?.({ aspectRatio: bounds.width / bounds.height });
     }
     handle.callbacks.onModelReady?.(app.view as HTMLCanvasElement);
+    handle.callbacks.onModelCatalog?.(buildCatalog(entry.model));
   }
 
   private detachShown(): void {

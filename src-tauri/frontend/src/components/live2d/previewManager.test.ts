@@ -18,6 +18,17 @@ const { ApplicationMock, appInstances, fromMock, modelInstances, boundsMock, lay
       url: string;
       autoUpdate: boolean;
       destroy: ReturnType<typeof vi.fn>;
+      internalModel: {
+        motionManager: {
+          definitions: Record<string, { File: string }[]>;
+          startMotion: ReturnType<typeof vi.fn>;
+        };
+        expressionManager?: {
+          definitions: { Name: string }[];
+          setExpression: ReturnType<typeof vi.fn>;
+          resetExpression: ReturnType<typeof vi.fn>;
+        };
+      };
     }> = [];
     // 注意：实现必须用普通 function（可构造）——生产代码以 new PIXI.Application() 调用，
     // 箭头函数实现在此 Vitest 版本下 new 时抛 "is not a constructor"。
@@ -34,7 +45,36 @@ const { ApplicationMock, appInstances, fromMock, modelInstances, boundsMock, lay
       return app;
     });
     const fromMock = vi.fn(async (url: string) => {
-      const model = { url, autoUpdate: false, destroy: vi.fn() };
+      const model = {
+        url,
+        autoUpdate: false,
+        destroy: vi.fn(),
+        internalModel: {
+          motionManager: {
+            definitions:
+              url === "asset://empty.model3.json"
+                ? {}
+                : {
+                    Extra: [
+                      { File: "Motions/睡觉动画.motion3.json" },
+                      { File: "chibang.motion3.json" },
+                    ],
+                  },
+            startMotion: vi.fn(async () => true),
+          },
+          expressionManager:
+            url === "asset://empty.model3.json"
+              ? undefined
+              : {
+                  definitions: [
+                    { Name: "03 生气", File: "a.exp3.json" },
+                    { Name: "07 星星眼", File: "b.exp3.json" },
+                  ],
+                  setExpression: vi.fn(async () => true),
+                  resetExpression: vi.fn(),
+                },
+        },
+      };
       modelInstances.push(model);
       return model;
     });
@@ -66,6 +106,7 @@ function makeCallbacks() {
     onError: vi.fn(),
     onModelMetrics: vi.fn(),
     onModelReady: vi.fn(),
+    onModelCatalog: vi.fn(),
   };
 }
 
@@ -282,7 +323,15 @@ describe("PreviewManager showModel", () => {
     first.handle.showModel("asset://slow.model3.json", "k1");
     first.handle.release();
 
-    resolveModel({ url: "asset://slow.model3.json", autoUpdate: false, destroy: vi.fn() });
+    resolveModel({
+      url: "asset://slow.model3.json",
+      autoUpdate: false,
+      destroy: vi.fn(),
+      internalModel: {
+        motionManager: { definitions: {}, startMotion: vi.fn(async () => true) },
+        expressionManager: undefined,
+      },
+    });
     // 冲刷微任务，确保加载完成路径（只入缓存、不上舞台）已执行。
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(appInstances[0].stage.addChild).not.toHaveBeenCalled();
@@ -354,5 +403,62 @@ describe("PreviewManager 可见性治理", () => {
     expect(modelInstances[0].autoUpdate).toBe(true);
     handle.release();
     setHidden(false);
+  });
+});
+
+describe("PreviewManager 动作/表情目录与播放", () => {
+  it("attach 后回调 onModelCatalog（含展示名派生）", async () => {
+    const manager = await freshManager();
+    const { callbacks, handle } = claim(manager);
+    handle.showModel("asset://a.model3.json", "default");
+    await vi.waitFor(() => expect(callbacks.onModelCatalog).toHaveBeenCalled());
+    expect(callbacks.onModelCatalog).toHaveBeenCalledWith({
+      motionGroups: [
+        {
+          group: "Extra",
+          motions: [
+            { index: 0, name: "睡觉动画" },
+            { index: 1, name: "chibang" },
+          ],
+        },
+      ],
+      expressions: [
+        { index: 0, name: "03 生气" },
+        { index: 1, name: "07 星星眼" },
+      ],
+    });
+  });
+
+  it("playMotion 以 FORCE 优先级转发；applyExpression/resetExpression 走 index；release 后 no-op", async () => {
+    const manager = await freshManager();
+    const { callbacks, handle } = claim(manager);
+    handle.showModel("asset://a.model3.json", "default");
+    // onModelCatalog 是 attach（模型上舞台、shownModel 就绪）的完成信号。
+    await vi.waitFor(() => expect(callbacks.onModelCatalog).toHaveBeenCalled());
+    const model = modelInstances[0];
+
+    expect(await handle.playMotion("Extra", 1)).toBe(true);
+    expect(model.internalModel.motionManager.startMotion).toHaveBeenCalledWith("Extra", 1, 3);
+
+    expect(await handle.applyExpression(0)).toBe(true);
+    expect(model.internalModel.expressionManager!.setExpression).toHaveBeenCalledWith(0);
+
+    handle.resetExpression();
+    expect(model.internalModel.expressionManager!.resetExpression).toHaveBeenCalled();
+
+    // 释放后（不再是当前占用者）播放安全 no-op。
+    handle.release();
+    expect(await handle.playMotion("Extra", 0)).toBe(false);
+  });
+
+  it("空目录模型回调空 catalog（两组空数组，非 null）", async () => {
+    const manager = await freshManager();
+    const { callbacks, handle } = claim(manager);
+    handle.showModel("asset://empty.model3.json", "default");
+    await vi.waitFor(() => expect(callbacks.onModelCatalog).toHaveBeenCalled());
+    expect(callbacks.onModelCatalog).toHaveBeenLastCalledWith({
+      motionGroups: [],
+      expressions: [],
+    });
   });
 });

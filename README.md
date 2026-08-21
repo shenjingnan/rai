@@ -112,14 +112,13 @@ xattr -cr "/Applications/ZapMomo.app"
 
 ### deepseek-harness 集成（dsh 桥）
 
-桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。底层是 loopback HTTP 直推（无轮询），dsh 侧安装 `@zapmomo-ai/dsh-plugin` 插件即可接入。
+桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。接入一条命令：
 
-- **一键接入** — 设置页「外部感知 · dsh 桥」默认启用，桥端口与 token 自动写入 `~/.zapmomo/runtime/dsh-bridge.json`
-- **安装插件** — `dsh plugin --profile web add @zapmomo-ai/dsh-plugin`，重启 `dsh web` 生效
-- **可调参数** — 设置页 / `[dsh]` 配置段可开关语音播报、是否写入对话记录
-- **安全隔离** — 仅绑定 `127.0.0.1` + Bearer token 鉴权；ZapMomo 未运行时插件静默跳过，不影响 dsh
+```bash
+dsh plugin --profile web add @zapmomo-ai/dsh-plugin
+```
 
-详细说明与事件映射见[文档站](docs/content/docs/desktop-app/dsh-bridge.mdx)及插件源码 `integrations/dsh-plugin/README.md`。
+装完重启 `dsh web` 即生效（设置页「外部感知 · dsh 桥」默认启用）。详见[文档站](docs/content/docs/desktop-app/dsh-bridge.mdx)。
 
 ### 开机自启动
 

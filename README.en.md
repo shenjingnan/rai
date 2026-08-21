@@ -395,24 +395,13 @@ window_scale = 1.0                       # Window scaling (0.25 ~ 2.0)
 
 ### deepseek-harness Integration (dsh Bridge)
 
-The desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time: when a task **starts / finishes / fails / is interrupted**, the Live2D character announces it with a speech bubble + voice. Under the hood it is a loopback HTTP push (no polling) — install the `@zapmomo-ai/dsh-plugin` plugin on the dsh side to connect.
+The desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time: when a task **starts / finishes / fails / is interrupted**, the Live2D character announces it with a speech bubble + voice. It takes one command to connect:
 
-- **One-click connect** — the "External sensing · dsh bridge" settings section is enabled by default; the bridge port and token are auto-written to `~/.zapmomo/runtime/dsh-bridge.json`
-- **Install the plugin** — `dsh plugin --profile web add @zapmomo-ai/dsh-plugin`, then restart `dsh web`
-- **Tunable** — the settings panel / `[dsh]` config section toggle voice announcements and whether events are recorded to chat history
-- **Secure & isolated** — binds `127.0.0.1` only with Bearer-token auth; the plugin silently skips when ZapMomo is not running, never blocking dsh
-
-Add a `[dsh]` section to `~/.zapmomo/settings.toml` to override defaults (all optional):
-
-```toml
-[dsh]
-enabled = true            # Enable the bridge service (loopback HTTP), default true
-port = 0                  # Listen port; 0 = random (recommended), default 0
-voice_enabled = true      # Voice-announce events (silent during an active voice session), default true
-record_to_history = true  # Record events into chat history, default true
+```bash
+dsh plugin --profile web add @zapmomo-ai/dsh-plugin
 ```
 
-Full details and the event mapping: see the [docs site page](docs/content/docs/desktop-app/dsh-bridge.mdx) (Chinese); the plugin source lives in `integrations/dsh-plugin/README.md`.
+Then restart `dsh web` (the "External sensing · dsh bridge" settings section is enabled by default). See the [docs site page](docs/content/docs/desktop-app/dsh-bridge.mdx) (Chinese) for details.
 
 ## Contributing
 

@@ -6463,7 +6463,7 @@ dependencies = [
 
 [[package]]
 name = "zapmomo"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "block2",
@@ -6498,7 +6498,7 @@ dependencies = [
 
 [[package]]
 name = "zapmomo-app"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "serde",
  "serde_json",

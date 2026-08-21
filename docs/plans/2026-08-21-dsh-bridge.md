@@ -860,25 +860,29 @@ pub struct DiscoveryInfo {
     pub token: String,
 }
 
-/// 写发现文件（unix 下权限 0600；Windows 无 chmod 概念跳过）。
+/// 写发现文件（临时文件 + rename 原子替换；unix 下权限 0600，Windows 跳过 chmod）。
 pub fn write_discovery(info: &DiscoveryInfo) -> Result<(), String> {
     let path = discovery_file();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 runtime 目录失败: {e}"))?;
     }
     let body = serde_json::to_string(info).map_err(|e| format!("序列化发现文件失败: {e}"))?;
-    std::fs::write(&path, body).map_err(|e| format!("写入发现文件失败: {e}"))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &body).map_err(|e| format!("写入发现文件失败: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("替换发现文件失败: {e}"))?;
     Ok(())
 }
 
-/// 删除发现文件（退出清理 / 启动清陈旧残留；不存在视为成功）。
+/// 删除发现文件（退出清理 / 启动清陈旧残留；失败仅记 debug 日志）。
 pub fn remove_discovery() {
-    let _ = std::fs::remove_file(discovery_file());
+    if let Err(e) = std::fs::remove_file(discovery_file()) {
+        tracing::debug!("删除发现文件失败: {e}");
+    }
 }
 
 /// 生成一次性 token：sha256(纳秒时钟 ‖ pid ‖ 计数器) 十六进制前 32 位。

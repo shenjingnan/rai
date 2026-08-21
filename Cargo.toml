@@ -53,6 +53,9 @@ tokio = { version = "1", features = ["full"] }
 # 系统资源检测（模型库「系统资源」卡片：内存 / 磁盘 / CPU）
 sysinfo = "0.33"
 
+# dsh 桥：loopback HTTP 接收 deepseek-harness 插件推送的任务事件
+tiny_http = "0.12"
+
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

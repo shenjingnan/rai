@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
 import { formatBytes } from "@/components/library/libraryMeta";
+import { DshSection } from "@/components/settings/DshSection";
 import { ShortcutsSection } from "@/components/settings/ShortcutsSection";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -443,6 +444,9 @@ export function SettingsPage() {
 
       {/* 快捷键 */}
       <ShortcutsSection />
+
+      {/* 外部感知（dsh 桥） */}
+      <DshSection />
 
       {/* 更改目录确认框 */}
       <LibraryDialog

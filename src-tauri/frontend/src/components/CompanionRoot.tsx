@@ -1,9 +1,12 @@
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
+import type { Live2DModel } from "pixi-live2d-display/cubism4";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EventBubble } from "@/components/companion/EventBubble";
 import { Live2dStage } from "@/components/live2d/Live2dStage";
 import { VoiceStatusDot } from "@/components/voice/VoiceStatusDot";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
+import { pickMotionGroup } from "@/lib/dshMotion";
 import {
   api,
   onCompanionDragModeChanged,
@@ -11,6 +14,7 @@ import {
   onCompanionLockedChanged,
   onCompanionOpacityChanged,
   onCompanionScaleChanged,
+  onDshSpeak,
   onLive2dModelChanged,
   toAssetUrl,
 } from "@/lib/tauri";
@@ -58,6 +62,9 @@ export function CompanionRoot() {
   // 拖拽模式：modifier = 需按住 cmd/ctrl 才能拖动（缺省 direct = 直接拖动）。
   const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
+
+  // Live2D 模型句柄：dsh 事件触发动作用（模型缺对应组时静默跳过）。
+  const modelRef = useRef<Live2DModel | null>(null);
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
   const aspectRatioRef = useRef(aspectRatio);
@@ -219,6 +226,26 @@ export function CompanionRoot() {
     [resizeTo],
   );
 
+  // dsh 任务事件：气泡由 EventBubble 渲染，这里联动触发模型动作。
+  useEffect(() => {
+    const unlisten = onDshSpeak(({ event }) => {
+      const model = modelRef.current;
+      if (!model) return;
+      // motionManager 类型上非空，但运行时缺组/初始化异常时可能缺失，防御跳过。
+      if (!model.internalModel.motionManager) return;
+      const groups = Object.keys(
+        (model.internalModel.motionManager.definitions ?? {}) as Record<string, unknown>,
+      );
+      const group = pickMotionGroup(groups, event.type);
+      if (!group) return;
+      // FORCE 优先级（3）：打断 idle/在播动作，同 previewManager 的 startMotion 语义
+      void model.internalModel.motionManager.startMotion(group, 0, 3);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // 监听窗口移动：拖动停止（debounce）后把逻辑像素坐标写回 settings，供下次启动恢复。
   useEffect(() => {
     const win = getCurrentWindow();
@@ -289,8 +316,13 @@ export function CompanionRoot() {
           width={size.width}
           height={size.height}
           onModelMetrics={handleModelMetrics}
+          onModelLoaded={(m) => {
+            modelRef.current = m;
+          }}
         />
       </div>
+      {/* dsh 任务事件气泡（pointer-events-none，不挡拖动/右键） */}
+      <EventBubble />
       {/* 置底为纯背景装饰，不显示语音状态点 */}
       {layer === "front" && (
         <span className="absolute right-2 top-2">

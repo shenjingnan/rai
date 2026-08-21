@@ -29,6 +29,10 @@ import type {
   CompanionWindowLayer,
   ConversationRecord,
   DownloadProgress,
+  DshBridgeStatus,
+  DshConfigInfo,
+  DshParamsPatch,
+  DshSpeakPayload,
   ImportCompanionResult,
   KwsConfigInfo,
   KwsParamsPatch,
@@ -135,6 +139,12 @@ export const api = {
   // ---- 对话记录（~/.zapmomo/conversations.json）----
   getConversationRecords: () => invoke<ConversationRecord[]>("get_conversation_records"),
   clearConversationRecords: () => invoke<void>("clear_conversation_records"),
+  // ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+  getDshConfig: () => invoke<DshConfigInfo>("get_dsh_config"),
+  setDshEnabled: (args: { enabled: boolean }) => invoke<void>("set_dsh_enabled", args),
+  setDshParams: (args: { params: DshParamsPatch }) => invoke<void>("set_dsh_params", args),
+  getDshBridgeStatus: () => invoke<DshBridgeStatus>("get_dsh_bridge_status"),
+  testDshAnnounce: () => invoke<void>("test_dsh_announce"),
   // ---- 模型库 ----
   listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
   getSystemResources: () => invoke<SystemResources>("get_system_resources"),
@@ -380,6 +390,18 @@ export function onVoiceSessionStopped(
   handler: (payload: VoiceStopped) => void,
 ): Promise<UnlistenFn> {
   return listen<VoiceStopped>("voice-session-stopped", (e) => handler(e.payload));
+}
+
+// ---- dsh 桥事件 ----
+
+export function onDshSpeak(handler: (payload: DshSpeakPayload) => void): Promise<UnlistenFn> {
+  return listen<DshSpeakPayload>("dsh-speak", (e) => handler(e.payload));
+}
+
+export function onDshBridgeStatus(
+  handler: (payload: DshBridgeStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<DshBridgeStatus>("dsh-bridge-status", (e) => handler(e.payload));
 }
 
 /**

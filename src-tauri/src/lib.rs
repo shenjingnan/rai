@@ -2421,6 +2421,16 @@ fn apply_companion_layer_platform(app: &AppHandle, layer: CompanionWindowLayer) 
         }
     }
 }
+
+/// 按层级即时调整角色窗口的 z-order 与鼠标穿透（平台相关；启动与运行时共用）。
+///
+/// Linux：置底能力暂未实现（X11 `_NET_WM_STATE_BELOW` 与 Wayland 支持为 future work），
+/// 仅保证可编译与持久化，运行时不做窗口层级调整。
+#[cfg(target_os = "linux")]
+fn apply_companion_layer_platform(_app: &AppHandle, layer: CompanionWindowLayer) {
+    tracing::debug!("角色窗口层级切换在 Linux 上暂不支持置底（{layer:?}）");
+}
+
 /// 把原生菜单项 id 解析为缩放比例。
 fn scale_from_id(id: &str) -> Option<f64> {
     match id {

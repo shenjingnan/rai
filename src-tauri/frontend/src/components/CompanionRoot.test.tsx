@@ -8,8 +8,8 @@ const { invokeMock, startDraggingMock, setSizeMock, configState, listenHandlers 
     startDraggingMock: vi.fn(),
     /** resizeTo 的 setSize 是 config 完全应用（含 setLocked）后的最后一步，作等待信号。 */
     setSizeMock: vi.fn(async () => undefined),
-    /** get_live2d_config 的 locked 覆盖值（null = 后端未返回该字段）。 */
-    configState: { locked: null as boolean | null },
+    /** get_live2d_config 的 locked / drag_mode 覆盖值（null = 后端未返回该字段）。 */
+    configState: { locked: null as boolean | null, dragMode: null as string | null },
     /** 按事件名捕获 listen 回调，供测试主动推送后端事件。 */
     listenHandlers: {} as Record<string, (payload: unknown) => void>,
   }),
@@ -68,6 +68,7 @@ beforeEach(() => {
   startDraggingMock.mockReset();
   setSizeMock.mockReset();
   configState.locked = null;
+  configState.dragMode = null;
   for (const key of Object.keys(listenHandlers)) delete listenHandlers[key];
 
   invokeMock.mockImplementation((cmd: string) => {
@@ -83,6 +84,7 @@ beforeEach(() => {
           click_through: null,
           window_layer: "front",
           locked: configState.locked,
+          drag_mode: configState.dragMode,
           settings_path: "/zap/.zapmomo/settings.toml",
         });
       default:
@@ -155,5 +157,71 @@ describe("CompanionRoot（位置锁定）", () => {
         expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
       ),
     );
+  });
+});
+
+describe("CompanionRoot（拖拽模式）", () => {
+  it("缺省（null）视为 direct：裸左键按下触发窗口拖动", async () => {
+    configState.dragMode = null;
+    render(<CompanionRoot />);
+    const container = screen.getByRole("application");
+    await waitForConfigApplied();
+
+    fireEvent.mouseDown(container);
+    expect(startDraggingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("modifier 模式裸左键按下不触发拖动，按住 cmd 触发", async () => {
+    configState.dragMode = "modifier";
+    render(<CompanionRoot />);
+    const container = screen.getByRole("application");
+    await waitForConfigApplied();
+
+    fireEvent.mouseDown(container);
+    expect(startDraggingMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(container, { metaKey: true });
+    expect(startDraggingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("modifier 模式下 ctrl（Windows/Linux）同样触发拖动", async () => {
+    configState.dragMode = "modifier";
+    render(<CompanionRoot />);
+    const container = screen.getByRole("application");
+    await waitForConfigApplied();
+
+    fireEvent.mouseDown(container, { ctrlKey: true });
+    expect(startDraggingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("锁定优先于拖拽模式：modifier + 修饰键 + locked 仍不触发", async () => {
+    configState.dragMode = "modifier";
+    configState.locked = true;
+    render(<CompanionRoot />);
+    const container = screen.getByRole("application");
+    await waitForConfigApplied();
+
+    fireEvent.mouseDown(container, { metaKey: true });
+    expect(startDraggingMock).not.toHaveBeenCalled();
+  });
+
+  it("companion-drag-mode-changed 事件实时切换拖拽模式", async () => {
+    configState.dragMode = "direct";
+    render(<CompanionRoot />);
+    const container = screen.getByRole("application");
+    await waitForConfigApplied();
+
+    fireEvent.mouseDown(container);
+    expect(startDraggingMock).toHaveBeenCalledTimes(1);
+
+    // 后端事件：切到 modifier → 裸按被拦截。
+    act(() => listenHandlers["companion-drag-mode-changed"]("modifier"));
+    fireEvent.mouseDown(container);
+    expect(startDraggingMock).toHaveBeenCalledTimes(1);
+
+    // 切回 direct → 拖动恢复。
+    act(() => listenHandlers["companion-drag-mode-changed"]("direct"));
+    fireEvent.mouseDown(container);
+    expect(startDraggingMock).toHaveBeenCalledTimes(2);
   });
 });

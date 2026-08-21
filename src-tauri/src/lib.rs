@@ -2492,6 +2492,54 @@ fn layer_from_id(id: &str) -> Option<CompanionWindowLayer> {
     }
 }
 
+/// 「切换伙伴」菜单项 id 前缀：`companion_set_<伙伴id>`。
+const COMPANION_SET_PREFIX: &str = "companion_set_";
+
+/// 把原生菜单项 id 解析为伙伴 id（`companion_set_<id>` → `<id>`）。
+///
+/// 空后缀与其余命名空间（`scale_*` / `open_settings` / 占位项 `no_companions` 等）
+/// 返回 `None`。
+fn companion_id_from_menu_id(id: &str) -> Option<&str> {
+    id.strip_prefix(COMPANION_SET_PREFIX)
+        .filter(|rest| !rest.is_empty())
+}
+
+/// 「切换伙伴」菜单项描述（纯数据，便于单测；由构建函数转成 CheckMenuItem）。
+struct CompanionMenuEntry {
+    id: String,
+    label: String,
+    /// 无效伙伴（托管目录/清单被外部删除）禁用，避免点击后才在深层校验失败。
+    enabled: bool,
+    /// 当前 active 打勾。
+    checked: bool,
+}
+
+/// 由库快照生成「切换伙伴」菜单项描述（不触碰菜单 API，纯函数）。
+///
+/// `valid` 用 `quick_valid`（仅探测目录/清单存在性，毫秒级）；无效项 label 追加
+/// 「（不可用）」并禁用，仍保留在列表中告知用户该伙伴待重新导入。
+fn companion_menu_entries(
+    models: &[zapmomo::companion::CompanionModel],
+    active_id: Option<&str>,
+) -> Vec<CompanionMenuEntry> {
+    models
+        .iter()
+        .map(|m| {
+            let valid = zapmomo::companion::quick_valid(m);
+            CompanionMenuEntry {
+                id: format!("{COMPANION_SET_PREFIX}{}", m.id),
+                label: if valid {
+                    m.name.clone()
+                } else {
+                    format!("{}（不可用）", m.name)
+                },
+                enabled: valid,
+                checked: active_id == Some(m.id.as_str()),
+            }
+        })
+        .collect()
+}
+
 /// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
 ///
 /// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
@@ -4657,5 +4705,70 @@ mod companion_layer_tests {
         );
         // 未知值应解析失败（避免前端传错静默落到 Front）
         assert!(serde_json::from_str::<CompanionWindowLayer>("\"bogus\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod companion_menu_tests {
+    use super::{companion_id_from_menu_id, companion_menu_entries};
+    use zapmomo::companion::CompanionModel;
+
+    fn model(id: &str, name: &str, model_dir: &str) -> CompanionModel {
+        CompanionModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            source_path: None,
+            model_dir: model_dir.to_string(),
+            model_file: format!("{model_dir}/{name}.model3.json"),
+            format: "cubism3".to_string(),
+            imported_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_companion_id_from_menu_id_parses_prefix() {
+        assert_eq!(
+            companion_id_from_menu_id("companion_set_companion-abc123def456"),
+            Some("companion-abc123def456")
+        );
+    }
+
+    #[test]
+    fn test_companion_id_from_menu_id_rejects_other_namespaces() {
+        assert_eq!(companion_id_from_menu_id("companion_set_"), None);
+        assert_eq!(companion_id_from_menu_id("scale_100"), None);
+        assert_eq!(companion_id_from_menu_id("open_settings"), None);
+        assert_eq!(companion_id_from_menu_id("no_companions"), None);
+        assert_eq!(companion_id_from_menu_id(""), None);
+    }
+
+    #[test]
+    fn test_companion_menu_entries_marks_active_and_invalid() {
+        // 目录不存在 → 无效（禁用 + label 追加「（不可用）」）；active 项 checked。
+        let models = vec![
+            model("companion-aaa", "大月下", "/nonexistent/zapmomo/aaa"),
+            model("companion-bbb", "星语", "/nonexistent/zapmomo/bbb"),
+        ];
+        let entries = companion_menu_entries(&models, Some("companion-bbb"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "companion_set_companion-aaa");
+        assert_eq!(entries[0].label, "大月下（不可用）");
+        assert!(!entries[0].enabled);
+        assert!(!entries[0].checked);
+        assert!(entries[1].checked);
+    }
+
+    #[test]
+    fn test_companion_menu_entries_valid_model_enabled() {
+        // quick_valid 只探测目录 + 清单文件存在性：建真实临时目录与空清单文件。
+        let dir = std::env::temp_dir().join("zapmomo-companion-menu-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = model("companion-ccc", "mochi", dir.to_str().unwrap());
+        std::fs::write(&m.model_file, "{}").unwrap();
+        let entries = companion_menu_entries(&[m], None);
+        assert!(entries[0].enabled);
+        assert_eq!(entries[0].label, "mochi");
+        assert!(!entries[0].checked);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

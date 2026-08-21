@@ -2232,6 +2232,8 @@ async fn import_companion(
         let active = zapmomo::companion::active_model(&lib);
         reconcile_active(&app, active)?;
     }
+    // 新导入条目要出现在托盘「切换伙伴」子菜单（无论是否成为 active）。
+    rebuild_tray_menu_threadsafe(&app);
 
     Ok(ImportCompanionResult {
         library: build_view(&lib),
@@ -2248,6 +2250,8 @@ async fn set_active_companion(app: AppHandle, id: String) -> Result<CompanionLib
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 设置页切换后托盘「切换伙伴」勾选要移动。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2263,6 +2267,8 @@ async fn rename_companion(
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 重命名后托盘「切换伙伴」label 要更新。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2275,6 +2281,8 @@ async fn remove_companion(app: AppHandle, id: String) -> Result<CompanionLibrary
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 条目减少 / active 落位或清屏后托盘子菜单要刷新。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2750,6 +2758,17 @@ fn rebuild_tray_menu(app: &AppHandle) {
     {
         let _ = tray.set_menu(Some(menu));
     }
+}
+
+/// 从任意线程安全重建托盘菜单（muda/NSMenu 操作须在主线程）。
+///
+/// 异步命令（import/set_active/rename/remove_companion）跑在 tokio 运行时线程，
+/// 不能直接 `set_menu`；主线程路径（handle_menu / apply_companion_*）继续直接调用
+/// `rebuild_tray_menu`，不必多一次线程跳转。应用退出中 `run_on_main_thread` 可能
+/// 失败，忽略（与 `rebuild_tray_menu` 容忍托盘缺失同一策略）。
+fn rebuild_tray_menu_threadsafe(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || rebuild_tray_menu(&handle));
 }
 
 /// 读当前窗口缩放与透明度（读失败或缺省回退 1.0 / 1.0）。

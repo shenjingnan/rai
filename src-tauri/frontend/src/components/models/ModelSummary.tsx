@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
+import { AsrModelSwitchMenu } from "@/components/models/AsrModelSwitchMenu";
 import {
   deriveListenerStatus,
   type ListenerKind,
@@ -220,7 +221,7 @@ export function ModelSummary() {
       accent: "bg-blue-100 text-blue-600",
       icon: Mic,
       name: "语音识别（ASR）",
-      model: asrConfigured ? basename(asr.config?.config?.model_dir ?? "") : "未配置模型",
+      model: asrConfigured ? <AsrModelSwitchMenu /> : "未配置模型",
       statusText: asrSummary.text,
       statusTone: asrSummary.tone,
       gearHref: "/models/asr",

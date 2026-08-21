@@ -6508,6 +6508,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tracing",
+ "windows 0.61.3",
  "zapmomo",
 ]
 

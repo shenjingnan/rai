@@ -6,12 +6,14 @@ import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 import {
   api,
+  onCompanionLayerChanged,
   onCompanionOpacityChanged,
   onCompanionScaleChanged,
   onLive2dModelChanged,
   toAssetUrl,
 } from "@/lib/tauri";
 import { centeredResizeTarget } from "@/lib/windowResize";
+import type { CompanionWindowLayer } from "@/types/tauri";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
 const BASE_HEIGHT = 480;
@@ -47,6 +49,8 @@ export function CompanionRoot() {
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [scale, setScale] = useState(1.0);
   const [opacity, setOpacity] = useState(1.0);
+  // 显示层级：置底（back）为纯背景装饰（点穿、不可拖拽/右键/滚轮），置顶（front）为现状浮层。
+  const [layer, setLayer] = useState<CompanionWindowLayer>("front");
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
@@ -125,6 +129,7 @@ export function CompanionRoot() {
     const s = config.window_scale ?? 1.0;
     setScale(s);
     setOpacity(config.window_opacity ?? 1.0);
+    if (config.window_layer) setLayer(config.window_layer);
     void resizeTo(aspectRatioRef.current, s);
   }, [config, resizeTo]);
 
@@ -156,6 +161,16 @@ export function CompanionRoot() {
   useEffect(() => {
     const unlisten = onCompanionOpacityChanged((v) => {
       setOpacity(v);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 设置面板切显示层级时同步（置底：隐藏状态点、关闭交互；置顶：恢复）。
+  useEffect(() => {
+    const unlisten = onCompanionLayerChanged((l) => {
+      setLayer(l);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -197,7 +212,9 @@ export function CompanionRoot() {
   }, []);
 
   // cmd/ctrl + 滚轮：连续缩放（节流约 60ms，阻止默认滚动）。
+  // 置底（back）为点穿背景，不挂滚轮监听（原生层本已吞掉鼠标事件，这里是防御）。
   useEffect(() => {
+    if (layer === "back") return;
     const el = containerRef.current;
     if (!el) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -218,7 +235,7 @@ export function CompanionRoot() {
       el.removeEventListener("wheel", onWheel);
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [layer]);
 
   return (
     <div
@@ -226,10 +243,11 @@ export function CompanionRoot() {
       role="application"
       className="relative h-screen w-screen select-none overflow-hidden bg-transparent"
       onMouseDown={(e) => {
-        if (e.button !== 0) return;
+        if (e.button !== 0 || layer === "back") return;
         void getCurrentWindow().startDragging();
       }}
       onContextMenu={(e) => {
+        if (layer === "back") return;
         e.preventDefault();
         void api.showCompanionMenu({ x: e.clientX, y: e.clientY });
       }}
@@ -243,9 +261,12 @@ export function CompanionRoot() {
           onModelMetrics={handleModelMetrics}
         />
       </div>
-      <span className="absolute right-2 top-2">
-        <VoiceStatusDot phase={voice.phase} running={voice.running} />
-      </span>
+      {/* 置底为纯背景装饰，不显示语音状态点 */}
+      {layer === "front" && (
+        <span className="absolute right-2 top-2">
+          <VoiceStatusDot phase={voice.phase} running={voice.running} />
+        </span>
+      )}
     </div>
   );
 }

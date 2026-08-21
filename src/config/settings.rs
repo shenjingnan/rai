@@ -503,6 +503,17 @@ pub struct CompanionWindowPosition {
     pub y: i32,
 }
 
+/// 角色窗口显示层级。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionWindowLayer {
+    /// 置顶：悬浮在所有应用窗口之上（默认，现状）。
+    #[default]
+    Front,
+    /// 置底：作为背景装饰，沉到所有应用窗口之下并完全点穿。
+    Back,
+}
+
 /// Live2D 角色配置。
 ///
 /// 字段可缺省：未配置时回退到 `live2d::config` 的默认目录。
@@ -523,6 +534,9 @@ pub struct Live2dSettings {
     /// 角色窗口点击穿透（true = 鼠标事件全部穿透到身后窗口；缺省视为 false）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub click_through: Option<bool>,
+    /// 角色窗口显示层级（置顶/置底；缺省视为置顶）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_layer: Option<CompanionWindowLayer>,
 }
 
 /// 本地 LLM 配置。
@@ -1050,24 +1064,31 @@ mod tests {
             window_scale: Some(1.5),
             window_opacity: Some(0.6),
             click_through: Some(true),
+            window_layer: Some(CompanionWindowLayer::Back),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
         assert!(toml_str.contains("click_through = true"));
+        assert!(toml_str.contains("window_layer = \"back\""));
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(live2d, deserialized);
-        // 未记录位置/比例/穿透时字段应被 skip_serializing_if 忽略
+        assert_eq!(deserialized.window_layer, Some(CompanionWindowLayer::Back));
+        // 未记录位置/比例/穿透/层级时字段应被 skip_serializing_if 忽略
         let none_pos = Live2dSettings {
             model_dir: Some("/tmp/some-model".to_string()),
             window_position: None,
             window_scale: None,
             window_opacity: None,
             click_through: None,
+            window_layer: None,
         };
         let none_toml = toml::to_string(&none_pos).unwrap();
         assert!(!none_toml.contains("window_position"));
         assert!(!none_toml.contains("window_scale"));
         assert!(!none_toml.contains("window_opacity"));
         assert!(!none_toml.contains("click_through"));
+        assert!(!none_toml.contains("window_layer"));
+        // 缺省层级为置顶
+        assert_eq!(CompanionWindowLayer::default(), CompanionWindowLayer::Front);
     }
 
     #[test]

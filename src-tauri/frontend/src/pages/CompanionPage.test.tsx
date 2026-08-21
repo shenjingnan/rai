@@ -101,6 +101,7 @@ beforeEach(() => {
             window_scale: 1.0,
             window_opacity: 1.0,
             click_through: configState.clickThrough,
+            window_layer: "front",
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
@@ -238,6 +239,25 @@ describe("CompanionPage 伙伴模型管理器", () => {
         opacity: expect.any(Number),
       });
     });
+  });
+
+  it("切换显示层级开关调用 set_companion_layer（置顶→置底）", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("button", { name: /大月下.*使用中/ });
+    // 初始默认置顶，开关为开。
+    const toggle = await screen.findByRole("switch", { name: "置顶" });
+    expect(toggle).toBeChecked();
+    expect(screen.getByText(/置顶：悬浮在所有窗口之上/)).toBeInTheDocument();
+
+    // 关闭开关 → 置底。
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_layer", { layer: "back" });
+    });
+    expect(await screen.findByText(/置底：沉到所有窗口之下/)).toBeInTheDocument();
   });
 
   it("空库时显示空态", async () => {

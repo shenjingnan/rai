@@ -109,6 +109,9 @@ export interface AsrResult {
   is_final: boolean;
 }
 
+/** 角色窗口显示层级：置顶（front）悬浮在所有窗口之上 / 置底（back）沉到窗口之下并点穿 */
+export type CompanionWindowLayer = "front" | "back";
+
 /** `get_live2d_config` 返回 */
 export interface Live2dConfigInfo {
   model_dir: string | null;
@@ -118,6 +121,7 @@ export interface Live2dConfigInfo {
   window_scale: number | null;
   window_opacity: number | null;
   click_through: boolean | null;
+  window_layer: CompanionWindowLayer | null;
   settings_path: string;
 }
 

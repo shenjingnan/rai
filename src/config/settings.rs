@@ -1134,6 +1134,15 @@ mod tests {
     }
 
     #[test]
+    fn test_live2d_drag_mode_invalid_value_rejected() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[live2d]\ndrag_mode = \"bogus\"\n");
+            let err = load_settings().unwrap_err();
+            assert!(err.to_string().contains("drag_mode"));
+        });
+    }
+
+    #[test]
     fn test_save_settings_roundtrip() {
         run_with_temp_home(|home| {
             let config = AppConfig {

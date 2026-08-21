@@ -7,6 +7,7 @@ import { useVoiceSession } from "@/hooks/useVoiceSession";
 import {
   api,
   onCompanionLayerChanged,
+  onCompanionLockedChanged,
   onCompanionOpacityChanged,
   onCompanionScaleChanged,
   onLive2dModelChanged,
@@ -38,7 +39,7 @@ const WHEEL_SCALE_STEP = 1.1;
  *   `style.opacity` 应用，语音状态点不受影响）；
  * - 窗口尺寸由「基准高度 × scale」派生（宽度按模型宽高比），缩放入口为设置面板、cmd/ctrl+滚轮
  *   与原生右键菜单（后端弹原生菜单，不受小窗口裁剪）；
- * - 按住左键拖动移动窗口；右键弹出原生上下文菜单。
+ * - 按住左键拖动移动窗口（位置锁定时禁止）；右键弹出原生上下文菜单。
  */
 export function CompanionRoot() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -51,6 +52,8 @@ export function CompanionRoot() {
   const [opacity, setOpacity] = useState(1.0);
   // 显示层级：置底（back）为纯背景装饰（点穿、不可拖拽/右键/滚轮），置顶（front）为现状浮层。
   const [layer, setLayer] = useState<CompanionWindowLayer>("front");
+  // 位置锁定：禁止拖动窗口（滚轮缩放与右键菜单保留，右键菜单是解锁入口）。
+  const [locked, setLocked] = useState(false);
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
@@ -130,6 +133,8 @@ export function CompanionRoot() {
     setScale(s);
     setOpacity(config.window_opacity ?? 1.0);
     if (config.window_layer) setLayer(config.window_layer);
+    // 旧后端 / 测试桩可能不返回该字段，兜底为未锁定。
+    setLocked(config.locked ?? false);
     void resizeTo(aspectRatioRef.current, s);
   }, [config, resizeTo]);
 
@@ -171,6 +176,16 @@ export function CompanionRoot() {
   useEffect(() => {
     const unlisten = onCompanionLayerChanged((l) => {
       setLayer(l);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 设置面板/菜单锁定位置时同步（只拦截拖动，不影响缩放与右键）。
+  useEffect(() => {
+    const unlisten = onCompanionLockedChanged((v) => {
+      setLocked(v);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -243,7 +258,7 @@ export function CompanionRoot() {
       role="application"
       className="relative h-screen w-screen select-none overflow-hidden bg-transparent"
       onMouseDown={(e) => {
-        if (e.button !== 0 || layer === "back") return;
+        if (e.button !== 0 || layer === "back" || locked) return;
         void getCurrentWindow().startDragging();
       }}
       onContextMenu={(e) => {

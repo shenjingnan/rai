@@ -537,6 +537,9 @@ pub struct Live2dSettings {
     /// 角色窗口显示层级（置顶/置底；缺省视为置顶）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_layer: Option<CompanionWindowLayer>,
+    /// 角色窗口位置锁定（true = 禁止拖动窗口；滚轮缩放与右键菜单保留；缺省视为 false）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
 }
 
 /// 本地 LLM 配置。
@@ -1065,10 +1068,12 @@ mod tests {
             window_opacity: Some(0.6),
             click_through: Some(true),
             window_layer: Some(CompanionWindowLayer::Back),
+            locked: Some(true),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
         assert!(toml_str.contains("click_through = true"));
         assert!(toml_str.contains("window_layer = \"back\""));
+        assert!(toml_str.contains("locked = true"));
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(live2d, deserialized);
         assert_eq!(deserialized.window_layer, Some(CompanionWindowLayer::Back));
@@ -1080,6 +1085,7 @@ mod tests {
             window_opacity: None,
             click_through: None,
             window_layer: None,
+            locked: None,
         };
         let none_toml = toml::to_string(&none_pos).unwrap();
         assert!(!none_toml.contains("window_position"));
@@ -1087,6 +1093,7 @@ mod tests {
         assert!(!none_toml.contains("window_opacity"));
         assert!(!none_toml.contains("click_through"));
         assert!(!none_toml.contains("window_layer"));
+        assert!(!none_toml.contains("locked"));
         // 缺省层级为置顶
         assert_eq!(CompanionWindowLayer::default(), CompanionWindowLayer::Front);
     }
@@ -1098,8 +1105,9 @@ mod tests {
             let result = load_settings().unwrap().unwrap();
             let live2d = result.live2d.unwrap();
             assert_eq!(live2d.model_dir.as_deref(), Some("/tmp/model-dir"));
-            // 旧版配置无 click_through 字段 → 反序列化回退 None（视为关闭）。
+            // 旧版配置无 click_through / locked 字段 → 反序列化回退 None（视为关闭）。
             assert_eq!(live2d.click_through, None);
+            assert_eq!(live2d.locked, None);
         });
     }
 

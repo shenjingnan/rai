@@ -122,6 +122,8 @@ export interface Live2dConfigInfo {
   window_opacity: number | null;
   click_through: boolean | null;
   window_layer: CompanionWindowLayer | null;
+  /** 位置锁定（禁止拖动窗口；null = 旧后端未返回，视为未锁定） */
+  locked: boolean | null;
   settings_path: string;
 }
 

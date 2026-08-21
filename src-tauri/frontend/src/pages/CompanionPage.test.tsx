@@ -16,8 +16,8 @@ const { invokeMock, openMock, stageHandleMock, stageState, configState } = vi.ho
   },
   /** 供 mock 替身注入目录的可变容器（vi.mock 工厂只可靠引用 hoisted 变量）。 */
   stageState: { catalog: null as StageCatalog | null },
-  /** get_live2d_config 的 click_through 覆盖值（null = 后端未返回该字段）。 */
-  configState: { clickThrough: null as boolean | null },
+  /** get_live2d_config 的 click_through / locked 覆盖值（null = 后端未返回该字段）。 */
+  configState: { clickThrough: null as boolean | null, locked: null as boolean | null },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -84,6 +84,7 @@ beforeEach(() => {
   stageHandleMock.resetExpression.mockReset();
   stageState.catalog = null;
   configState.clickThrough = null;
+  configState.locked = null;
   library = { models: [], active_model_id: null };
   importSeq = 0;
 
@@ -102,6 +103,7 @@ beforeEach(() => {
             window_opacity: 1.0,
             click_through: configState.clickThrough,
             window_layer: "front",
+            locked: configState.locked,
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
@@ -568,5 +570,41 @@ describe("CompanionPage 伙伴模型管理器", () => {
 
     expect(await screen.findByRole("switch", { name: "点击穿透" })).toBeInTheDocument();
     expect(screen.queryByText("尺寸")).not.toBeInTheDocument();
+  });
+
+  it("锁定位置开关默认关闭，点击后调用 set_companion_locked 开启", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "锁定位置" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_locked", { enabled: true });
+    });
+  });
+
+  it("锁定位置开关从配置恢复为开启，再点击则关闭", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    configState.locked = true;
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "锁定位置" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_locked", { enabled: false });
+    });
+  });
+
+  it("未选中伙伴时锁定位置开关仍然可见（窗口级行为）", async () => {
+    library = { models: [], active_model_id: null };
+    renderPage();
+
+    expect(await screen.findByRole("switch", { name: "锁定位置" })).toBeInTheDocument();
   });
 });

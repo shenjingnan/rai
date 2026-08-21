@@ -1985,6 +1985,7 @@ struct Live2dConfigInfo {
     window_opacity: Option<f64>,
     click_through: Option<bool>,
     window_layer: Option<CompanionWindowLayer>,
+    locked: Option<bool>,
     settings_path: String,
 }
 
@@ -2009,6 +2010,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let window_opacity = live2d_settings.as_ref().and_then(|l| l.window_opacity);
     let click_through = live2d_settings.as_ref().and_then(|l| l.click_through);
     let window_layer = live2d_settings.as_ref().and_then(|l| l.window_layer);
+    let locked = live2d_settings.as_ref().and_then(|l| l.locked);
 
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
@@ -2019,6 +2021,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         window_opacity,
         click_through,
         window_layer,
+        locked,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2350,6 +2353,21 @@ fn apply_companion_layer(app: &AppHandle, layer: CompanionWindowLayer) -> Result
     Ok(())
 }
 
+/// 保存并应用角色窗口位置锁定（内部实现，供 command 与原生菜单事件共用）。
+///
+/// 锁定仅拦截前端拖动（CompanionRoot 的 mousedown → startDragging），滚轮缩放与
+/// 右键菜单保留（右键菜单是解锁入口）。与 click_through 不同：拖动拦截在前端
+/// CompanionRoot，必须 emit `companion-locked-changed` 实时同步；无平台 API 调用。
+fn apply_companion_locked(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.locked = Some(enabled);
+    settings::save_settings(&settings)?;
+    let _ = app.emit("companion-locked-changed", enabled);
+    rebuild_tray_menu(app);
+    Ok(())
+}
+
 /// 读取持久化的角色窗口显示层级（缺省置顶）。
 fn current_companion_layer() -> CompanionWindowLayer {
     settings::load_settings()
@@ -2513,6 +2531,16 @@ fn set_companion_layer(app: AppHandle, layer: CompanionWindowLayer) -> Result<()
     apply_companion_layer(&app, layer)
 }
 
+/// 设置并持久化角色窗口位置锁定（true = 禁止拖动窗口）。
+///
+/// 由设置面板或原生菜单调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].locked`，
+/// 并通过 `companion-locked-changed` 事件通知角色窗口实时拦截拖动；滚轮缩放与
+/// 右键菜单不受影响（右键菜单是解锁入口之一）。
+#[tauri::command]
+fn set_companion_locked(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_companion_locked(&app, enabled)
+}
+
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
 #[tauri::command]
 fn get_hide_dock_icon() -> Result<bool, String> {
@@ -2562,6 +2590,13 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "disable_click_through" => {
             let _ = apply_companion_click_through(app, false);
         }
+        // 位置锁定：与点击穿透同理按当前状态显示「锁定/解锁」项，点击应用固定值（幂等）。
+        "enable_lock" => {
+            let _ = apply_companion_locked(app, true);
+        }
+        "disable_lock" => {
+            let _ = apply_companion_locked(app, false);
+        }
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
@@ -2579,6 +2614,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let layer_submenu = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
+    let locked = build_locked_item(app)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
@@ -2590,6 +2626,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &opacity_submenu,
             &layer_submenu,
             &click_through,
+            &locked,
             &open_settings,
             &hide,
             &restart,
@@ -2606,6 +2643,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
     let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
+    let locked = build_locked_item(app)?;
     let toggle_companion =
         MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
@@ -2619,6 +2657,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &tray_opacity,
             &tray_layer,
             &click_through,
+            &locked,
             &open_settings,
             &restart,
             &quit,
@@ -2665,6 +2704,19 @@ fn current_companion_click_through() -> bool {
     }
 }
 
+/// 解析位置锁定开关：缺省（未配置 / 旧版配置）视为关闭。
+fn resolve_locked(live2d: Option<&Live2dSettings>) -> bool {
+    live2d.and_then(|l| l.locked).unwrap_or(false)
+}
+
+/// 读当前位置锁定开关（读失败或缺省回退 false）。
+fn current_companion_locked() -> bool {
+    match settings::load_settings() {
+        Ok(Some(s)) => resolve_locked(s.live2d.as_ref()),
+        _ => false,
+    }
+}
+
 /// 构建「点击穿透」菜单项（角色右键菜单与托盘菜单共用）。
 ///
 /// 按当前状态显示「启用点击穿透」或「禁用点击穿透」的普通菜单项，点击后
@@ -2684,6 +2736,29 @@ fn build_click_through_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wr
             "禁用点击穿透"
         } else {
             "启用点击穿透"
+        },
+        true,
+        None::<&str>,
+    )
+}
+
+/// 构建「锁定角色」菜单项（角色右键菜单与托盘菜单共用）。
+///
+/// 与 build_click_through_item 同理不用 CheckMenuItem：其 checked 自动切换与取反
+/// 逻辑叠加，一次点击可能触发正反两个 apply，净效果为零（表现为「点击无效」）。
+fn build_locked_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let enabled = current_companion_locked();
+    MenuItem::with_id(
+        app,
+        if enabled {
+            "disable_lock"
+        } else {
+            "enable_lock"
+        },
+        if enabled {
+            "解锁角色"
+        } else {
+            "锁定角色"
         },
         true,
         None::<&str>,
@@ -4160,6 +4235,7 @@ pub fn run() {
             set_companion_opacity,
             set_companion_click_through,
             set_companion_layer,
+            set_companion_locked,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,
@@ -4322,6 +4398,8 @@ pub fn run() {
             if let Some(layer) = live2d.as_ref().and_then(|l| l.window_layer) {
                 apply_companion_layer_platform(app.handle(), layer);
             }
+            // 位置锁定无需建窗时后端应用：拦截点在前端 CompanionRoot 的 mousedown，
+            // 由 get_live2d_config 恢复（见 frontend CompanionRoot）。
 
             // 后台旧版迁移：库为空且旧 [live2d].model_dir 存在时，把模型复制进托管目录并
             // 设为 active（完成后 reconcile，桌宠从旧目录无缝切到托管副本）。不阻塞启动。
@@ -4485,6 +4563,32 @@ mod companion_click_through_tests {
         };
         assert!(resolve_click_through(Some(&on)));
         assert!(!resolve_click_through(Some(&off)));
+    }
+}
+
+#[cfg(test)]
+mod companion_locked_tests {
+    use super::resolve_locked;
+    use zapmomo::config::settings::Live2dSettings;
+
+    #[test]
+    fn test_resolve_locked_missing_defaults_false() {
+        assert!(!resolve_locked(None));
+        assert!(!resolve_locked(Some(&Live2dSettings::default())));
+    }
+
+    #[test]
+    fn test_resolve_locked_reads_flag() {
+        let on = Live2dSettings {
+            locked: Some(true),
+            ..Default::default()
+        };
+        let off = Live2dSettings {
+            locked: Some(false),
+            ..Default::default()
+        };
+        assert!(resolve_locked(Some(&on)));
+        assert!(!resolve_locked(Some(&off)));
     }
 }
 

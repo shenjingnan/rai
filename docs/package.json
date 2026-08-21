@@ -5,6 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "serve out",
+    "test": "vitest run",
     "types:check": "next typegen && tsc --noEmit"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "postcss": "^8.5.0",
     "serve": "^14.0.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

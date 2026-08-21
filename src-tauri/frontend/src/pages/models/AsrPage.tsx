@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AsrAdvancedParams } from "@/components/asr/AsrAdvancedParams";
 import { AsrBasicConfig } from "@/components/asr/AsrBasicConfig";
+import { AsrModelDialog } from "@/components/asr/AsrModelDialog";
 import { AsrRunControl } from "@/components/asr/AsrRunControl";
 import { AsrTechnicalInfo } from "@/components/asr/AsrTechnicalInfo";
 import { AsrTestDialog } from "@/components/asr/AsrTestDialog";
@@ -14,6 +15,7 @@ import { useRuntime } from "@/providers/RuntimeContext";
  */
 export function AsrPage() {
   const [testOpen, setTestOpen] = useState(false);
+  const [switchOpen, setSwitchOpen] = useState(false);
   const { asr } = useRuntime();
   const asrEnabled = asr.config.config?.enabled ?? false;
 
@@ -49,11 +51,16 @@ export function AsrPage() {
         />
       </section>
 
-      <AsrBasicConfig onTestOpen={() => setTestOpen(true)} />
+      <AsrBasicConfig
+        onTestOpen={() => setTestOpen(true)}
+        onSwitchOpen={() => setSwitchOpen(true)}
+      />
 
       <AsrTechnicalInfo />
 
       <AsrAdvancedParams />
+
+      <AsrModelDialog open={switchOpen} onClose={() => setSwitchOpen(false)} />
 
       <AsrTestDialog open={testOpen} onClose={() => setTestOpen(false)} />
     </div>

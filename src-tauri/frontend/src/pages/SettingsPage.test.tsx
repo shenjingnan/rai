@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/toast";
@@ -62,6 +62,8 @@ beforeEach(() => {
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "get_hide_dock_icon":
+        return Promise.resolve(false);
+      case "get_autostart":
         return Promise.resolve(false);
       case "get_shortcuts":
         return Promise.resolve({});
@@ -173,5 +175,83 @@ describe("SettingsPage 存储位置", () => {
     renderPage();
     await screen.findByText("存储位置");
     expect(screen.queryByRole("button", { name: "开始迁移" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage 开机自启动", () => {
+  it("默认关闭，点击后调用 set_autostart 开启", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_autostart", { enabled: true });
+    });
+  });
+
+  it("系统已注册时恢复为开，点击后调用 set_autostart 关闭", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "get_autostart":
+          return Promise.resolve(true);
+        case "get_hide_dock_icon":
+          return Promise.resolve(false);
+        case "catalog_get_endpoint":
+          return Promise.resolve({ downloadSource: "auto", mirrorUrl: "" });
+        case "get_storage_info":
+          return Promise.resolve(storageInfo());
+        default:
+          return Promise.resolve();
+      }
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_autostart", { enabled: false });
+    });
+  });
+
+  it("写入失败时开关回滚", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "set_autostart":
+          return Promise.reject(new Error("写入系统启动项被拒"));
+        case "get_hide_dock_icon":
+          return Promise.resolve(false);
+        case "get_autostart":
+          return Promise.resolve(false);
+        case "catalog_get_endpoint":
+          return Promise.resolve({ downloadSource: "auto", mirrorUrl: "" });
+        case "get_storage_info":
+          return Promise.resolve(storageInfo());
+        default:
+          return Promise.resolve();
+      }
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+  });
+
+  it("托盘菜单切换后经 autostart-changed 事件同步开关", async () => {
+    renderPage();
+    const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    act(() => {
+      listenHandlers.get("autostart-changed")?.(true);
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
   });
 });

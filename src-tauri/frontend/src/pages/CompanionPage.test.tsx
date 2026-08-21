@@ -2,7 +2,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/toast";
-import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
+import type {
+  CompanionDragMode,
+  CompanionLibraryView,
+  CompanionModelInfo,
+} from "@/types/tauri";
 import { CompanionPage } from "./CompanionPage";
 
 type StageCatalog = import("@/components/live2d/previewManager").Live2dCatalog;
@@ -20,7 +24,7 @@ const { invokeMock, openMock, stageHandleMock, stageState, configState } = vi.ho
   configState: {
     clickThrough: null as boolean | null,
     locked: null as boolean | null,
-    dragMode: null as string | null,
+    dragMode: null as CompanionDragMode | null,
   },
 }));
 

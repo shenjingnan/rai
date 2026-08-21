@@ -195,6 +195,8 @@ export const api = {
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (args: { enabled: boolean }) => invoke<void>("set_autostart", args),
   getShortcuts: () => invoke<Record<string, string>>("get_shortcuts"),
   setShortcut: (args: { action: ShortcutActionId; accelerator: string }) =>
     invoke<void>("set_shortcut", args),
@@ -294,6 +296,11 @@ export function onCompanionDragModeChanged(
   handler: (mode: CompanionDragMode) => void,
 ): Promise<UnlistenFn> {
   return listen<CompanionDragMode>("companion-drag-mode-changed", (e) => handler(e.payload));
+}
+
+/** 开机自启动状态变化（设置页为唯一订阅者：托盘菜单改动后同步开关）。 */
+export function onAutostartChanged(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("autostart-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

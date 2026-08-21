@@ -12,7 +12,10 @@
 
 **与设计文档的一处偏离（已评估）:** 设计文档 §6 提到照抄 `resolve_locked` 写 `resolve_drag_mode`；实施时发现它没有调用者（拖拽模式不进菜单，不需要 `current_*` 读函数），`cargo clippy -- -D warnings` 会报 dead_code。后端单测改由 `settings.rs` 的 serde roundtrip + 旧配置回退测试覆盖（数据层真正的风险点），`lib.rs` 层的 apply 逻辑与 `apply_companion_locked` 完全同构。
 
-**实施补充记录:** Task 2 顺带在 `settings.rs` 补了 `test_live2d_drag_mode_invalid_value_rejected` 负向测试（`drag_mode = "bogus"` 时 load_settings 响亮失败）——来自 Task 1 质量审查的 Minor 建议，与 `CompanionWindowLayer` 的既有对称用例，锁定「非法值 fail loud」契约。
+**实施补充记录:**
+- Task 2 顺带在 `settings.rs` 补了 `test_live2d_drag_mode_invalid_value_rejected` 负向测试（`drag_mode = "bogus"` 时 load_settings 响亮失败）——来自 Task 1 质量审查的 Minor 建议，与 `CompanionWindowLayer` 的既有对称用例，锁定「非法值 fail loud」契约。
+- Task 4 质量审查后把 config 恢复写法从 `if (config.drag_mode) setDragMode(...)` 统一为 `setDragMode(config.drag_mode ?? "direct")`（commit bfcf7602）：与 `locked` 的显式兜底对称，消除未来 config refetch 场景下两字段行为分歧。计划 Task 4/5 Step 代码块保留原始写法未回写。
+- 最终审查发现 main 上 #132 已把设置区开关说明收敛为 Info icon + Tooltip 规范：合并 main 后把新开关适配为同款（`w-16 shrink-0` label + Tooltip 说明），并将两个测试文件 mock 的 `dragMode` 类型收紧为 `CompanionDragMode | null`。
 
 **工作目录:** `/Users/nemo/Projects/shenjingnan/zapmomo/.claude/worktrees/effervescent-sniffing-karp`（git worktree，分支 `feature/companion-drag-mode`）。前端命令都在 `src-tauri/frontend/` 下执行。
 

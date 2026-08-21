@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CompanionDragMode } from "@/types/tauri";
 import { CompanionRoot } from "./CompanionRoot";
 
 const { invokeMock, startDraggingMock, setSizeMock, configState, listenHandlers } = vi.hoisted(
@@ -9,7 +10,10 @@ const { invokeMock, startDraggingMock, setSizeMock, configState, listenHandlers 
     /** resizeTo 的 setSize 是 config 完全应用（含 setLocked）后的最后一步，作等待信号。 */
     setSizeMock: vi.fn(async () => undefined),
     /** get_live2d_config 的 locked / drag_mode 覆盖值（null = 后端未返回该字段）。 */
-    configState: { locked: null as boolean | null, dragMode: null as string | null },
+    configState: {
+      locked: null as boolean | null,
+      dragMode: null as CompanionDragMode | null,
+    },
     /** 按事件名捕获 listen 回调，供测试主动推送后端事件。 */
     listenHandlers: {} as Record<string, (payload: unknown) => void>,
   }),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useToast } from "@/components/ui/toast";
-import { api } from "@/lib/tauri";
+import { api, onLive2dModelChanged } from "@/lib/tauri";
 import type { CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
 
 export interface CompanionLibraryState {
@@ -50,6 +50,18 @@ export function useCompanionLibrary(): CompanionLibraryState {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // 托盘 / 右键菜单切换伙伴后同步「使用中」Badge：live2d-model-changed 只在 active
+  // 真变化时发出（reconcile_active 幂等早退保证），不会造成刷新风暴。refresh 是稳定
+  // useCallback（空依赖），本 effect 只运行一次；卸载时取消订阅。
+  useEffect(() => {
+    const unlisten = onLive2dModelChanged(() => {
+      void refresh();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, [refresh]);
 
   const importModel = useCallback(

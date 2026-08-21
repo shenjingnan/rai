@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::TitleBarStyle;
 #[cfg(target_os = "macos")]
 use tauri::menu::PredefinedMenuItem;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
@@ -2232,6 +2232,8 @@ async fn import_companion(
         let active = zapmomo::companion::active_model(&lib);
         reconcile_active(&app, active)?;
     }
+    // 新导入条目要出现在托盘「切换伙伴」子菜单（无论是否成为 active）。
+    rebuild_tray_menu_threadsafe(&app);
 
     Ok(ImportCompanionResult {
         library: build_view(&lib),
@@ -2248,6 +2250,8 @@ async fn set_active_companion(app: AppHandle, id: String) -> Result<CompanionLib
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 设置页切换后托盘「切换伙伴」勾选要移动。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2263,6 +2267,8 @@ async fn rename_companion(
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 重命名后托盘「切换伙伴」label 要更新。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2275,6 +2281,8 @@ async fn remove_companion(app: AppHandle, id: String) -> Result<CompanionLibrary
         .map_err(|e| e.to_string())??;
     let active = zapmomo::companion::active_model(&lib);
     reconcile_active(&app, active)?;
+    // 条目减少 / active 落位或清屏后托盘子菜单要刷新。
+    rebuild_tray_menu_threadsafe(&app);
     Ok(build_view(&lib))
 }
 
@@ -2376,6 +2384,27 @@ fn current_companion_layer() -> CompanionWindowLayer {
         .and_then(|s| s.live2d)
         .and_then(|l| l.window_layer)
         .unwrap_or_default()
+}
+
+/// 菜单切换当前伙伴：`set_active` 持久化 → `reconcile_active` 同步桌宠 → 重建托盘勾选态。
+///
+/// 与 `apply_companion_*` 家族对齐（供 handle_menu 主线程调用），但菜单上下文没有 UI
+/// 可承载错误，故不返回 `Result`，失败只 `tracing::warn`。`set_active` 内部的
+/// `validate_managed_model` 深校验是毫秒级小 IO（读 model3.json + 查文件存在性），
+/// 与 handle_menu 里现有同步 load/save settings 同量级。
+fn apply_active_companion(app: &AppHandle, id: &str) {
+    match zapmomo::companion::set_active(id) {
+        Ok(lib) => {
+            let active = zapmomo::companion::active_model(&lib);
+            if let Err(e) = reconcile_active(app, active) {
+                tracing::warn!(
+                    "菜单切换伙伴后同步桌宠失败（active 已持久化，重启或打开伙伴页自愈）: {e}"
+                );
+            }
+            rebuild_tray_menu(app);
+        }
+        Err(e) => tracing::warn!("菜单切换伙伴失败（active 未变更）: {e}"),
+    }
 }
 
 /// macOS 置底层级：-1 = 普通应用窗口(0)之下、桌面图标(-2147483623)与壁纸(-2147483624)之上。
@@ -2492,6 +2521,54 @@ fn layer_from_id(id: &str) -> Option<CompanionWindowLayer> {
     }
 }
 
+/// 「切换伙伴」菜单项 id 前缀：`companion_set_<伙伴id>`。
+const COMPANION_SET_PREFIX: &str = "companion_set_";
+
+/// 把原生菜单项 id 解析为伙伴 id（`companion_set_<id>` → `<id>`）。
+///
+/// 空后缀与其余命名空间（`scale_*` / `open_settings` / 占位项 `no_companions` 等）
+/// 返回 `None`。
+fn companion_id_from_menu_id(id: &str) -> Option<&str> {
+    id.strip_prefix(COMPANION_SET_PREFIX)
+        .filter(|rest| !rest.is_empty())
+}
+
+/// 「切换伙伴」菜单项描述（纯数据，便于单测；由构建函数转成 CheckMenuItem）。
+struct CompanionMenuEntry {
+    id: String,
+    label: String,
+    /// 无效伙伴（托管目录/清单被外部删除）禁用，避免点击后才在深层校验失败。
+    enabled: bool,
+    /// 当前 active 打勾。
+    checked: bool,
+}
+
+/// 由库快照生成「切换伙伴」菜单项描述（不触碰菜单 API，纯函数）。
+///
+/// `valid` 用 `quick_valid`（仅探测目录/清单存在性，毫秒级）；无效项 label 追加
+/// 「（不可用）」并禁用，仍保留在列表中告知用户该伙伴待重新导入。
+fn companion_menu_entries(
+    models: &[zapmomo::companion::CompanionModel],
+    active_id: Option<&str>,
+) -> Vec<CompanionMenuEntry> {
+    models
+        .iter()
+        .map(|m| {
+            let valid = zapmomo::companion::quick_valid(m);
+            CompanionMenuEntry {
+                id: format!("{COMPANION_SET_PREFIX}{}", m.id),
+                label: if valid {
+                    m.name.clone()
+                } else {
+                    format!("{}（不可用）", m.name)
+                },
+                enabled: valid,
+                checked: active_id == Some(m.id.as_str()),
+            }
+        })
+        .collect()
+}
+
 /// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
 ///
 /// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
@@ -2604,13 +2681,16 @@ fn handle_menu(app: &AppHandle, id: &str) {
                 let _ = apply_companion_opacity(app, opacity);
             } else if let Some(layer) = layer_from_id(id) {
                 let _ = apply_companion_layer(app, layer);
+            } else if let Some(companion_id) = companion_id_from_menu_id(id) {
+                apply_active_companion(app, companion_id);
             }
         }
     }
 }
 
-/// 构建角色窗口的右键菜单（窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 构建角色窗口的右键菜单（切换伙伴/窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let companion_submenu = build_companion_switch_submenu(app)?;
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let layer_submenu = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2622,6 +2702,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(
         app,
         &[
+            &companion_submenu,
             &scale_submenu,
             &opacity_submenu,
             &layer_submenu,
@@ -2638,8 +2719,9 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 /// 托盘 id（档位变化后 `tray_by_id` 定位托盘并重建菜单）。
 const TRAY_ID: &str = "zapmomo-tray";
 
-/// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度/显示层级、打开设置、重启、退出。
+/// 构建托盘菜单：显示/隐藏角色、切换伙伴、窗口尺寸/透明度/显示层级、打开设置、重启、退出。
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let companion_submenu = build_companion_switch_submenu(app)?;
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
     let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2653,6 +2735,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         &[
             &toggle_companion,
+            &companion_submenu,
             &tray_scale,
             &tray_opacity,
             &tray_layer,
@@ -2675,6 +2758,17 @@ fn rebuild_tray_menu(app: &AppHandle) {
     {
         let _ = tray.set_menu(Some(menu));
     }
+}
+
+/// 从任意线程安全重建托盘菜单（muda/NSMenu 操作须在主线程）。
+///
+/// 异步命令（import/set_active/rename/remove_companion）跑在 tokio 运行时线程，
+/// 不能直接 `set_menu`；主线程路径（handle_menu / apply_companion_*）继续直接调用
+/// `rebuild_tray_menu`，不必多一次线程跳转。应用退出中 `run_on_main_thread` 可能
+/// 失败，忽略（与 `rebuild_tray_menu` 容忍托盘缺失同一策略）。
+fn rebuild_tray_menu_threadsafe(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || rebuild_tray_menu(&handle));
 }
 
 /// 读当前窗口缩放与透明度（读失败或缺省回退 1.0 / 1.0）。
@@ -2821,6 +2915,52 @@ fn build_metric_submenus(
     // 档位顺序与「窗口尺寸」一致：从小到大。
     let opacity_menu = Submenu::with_items(app, "透明度", true, &[&o20, &o40, &o60, &o80, &o100])?;
     Ok((scale_menu, opacity_menu))
+}
+
+/// 构建「切换伙伴」子菜单（角色右键菜单与托盘菜单共用）。
+///
+/// - 空库 / 读库失败：降级为单个禁用项「暂无伙伴」（id 不带 `companion_set_`
+///   前缀，永不进入 handle_menu 分支）。
+/// - 当前 active 用 `CheckMenuItem` 打勾：右键菜单每次弹出重建、托盘在切换后
+///   `rebuild_tray_menu`，勾选态始终最新。
+fn build_companion_switch_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let lib = match zapmomo::companion::load_library_fast() {
+        Ok(lib) => lib,
+        Err(e) => {
+            tracing::warn!("读取伙伴库失败（切换伙伴子菜单降级为占位项）: {e}");
+            return build_empty_companion_submenu(app);
+        }
+    };
+    if lib.models.is_empty() {
+        return build_empty_companion_submenu(app);
+    }
+    let entries = companion_menu_entries(&lib.models, lib.active_model_id.as_deref());
+    let items: Vec<CheckMenuItem<tauri::Wry>> = entries
+        .iter()
+        .map(|e| {
+            CheckMenuItem::with_id(
+                app,
+                e.id.clone(),
+                e.label.as_str(),
+                e.enabled,
+                e.checked,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<_>>()?;
+    // with_items 收 &[&dyn IsMenuItem]：collect 的 FromIterator 不做逐元素 unsize
+    // 强转，须显式 as 成 trait 对象再收集。
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items
+        .iter()
+        .map(|i| i as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    Submenu::with_items(app, "切换伙伴", true, &refs)
+}
+
+/// 空库占位子菜单（单个禁用项；id 无 `companion_set_` 前缀，不会被 handle_menu 处理）。
+fn build_empty_companion_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let placeholder = MenuItem::with_id(app, "no_companions", "暂无伙伴", false, None::<&str>)?;
+    Submenu::with_items(app, "切换伙伴", true, &[&placeholder])
 }
 
 /// 弹出角色窗口右键菜单（由前端在右键时调用，坐标相对窗口左上角，逻辑像素）。
@@ -4657,5 +4797,70 @@ mod companion_layer_tests {
         );
         // 未知值应解析失败（避免前端传错静默落到 Front）
         assert!(serde_json::from_str::<CompanionWindowLayer>("\"bogus\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod companion_menu_tests {
+    use super::{companion_id_from_menu_id, companion_menu_entries};
+    use zapmomo::companion::CompanionModel;
+
+    fn model(id: &str, name: &str, model_dir: &str) -> CompanionModel {
+        CompanionModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            source_path: None,
+            model_dir: model_dir.to_string(),
+            model_file: format!("{model_dir}/{name}.model3.json"),
+            format: "cubism3".to_string(),
+            imported_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_companion_id_from_menu_id_parses_prefix() {
+        assert_eq!(
+            companion_id_from_menu_id("companion_set_companion-abc123def456"),
+            Some("companion-abc123def456")
+        );
+    }
+
+    #[test]
+    fn test_companion_id_from_menu_id_rejects_other_namespaces() {
+        assert_eq!(companion_id_from_menu_id("companion_set_"), None);
+        assert_eq!(companion_id_from_menu_id("scale_100"), None);
+        assert_eq!(companion_id_from_menu_id("open_settings"), None);
+        assert_eq!(companion_id_from_menu_id("no_companions"), None);
+        assert_eq!(companion_id_from_menu_id(""), None);
+    }
+
+    #[test]
+    fn test_companion_menu_entries_marks_active_and_invalid() {
+        // 目录不存在 → 无效（禁用 + label 追加「（不可用）」）；active 项 checked。
+        let models = vec![
+            model("companion-aaa", "大月下", "/nonexistent/zapmomo/aaa"),
+            model("companion-bbb", "星语", "/nonexistent/zapmomo/bbb"),
+        ];
+        let entries = companion_menu_entries(&models, Some("companion-bbb"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "companion_set_companion-aaa");
+        assert_eq!(entries[0].label, "大月下（不可用）");
+        assert!(!entries[0].enabled);
+        assert!(!entries[0].checked);
+        assert!(entries[1].checked);
+    }
+
+    #[test]
+    fn test_companion_menu_entries_valid_model_enabled() {
+        // quick_valid 只探测目录 + 清单文件存在性：建真实临时目录与空清单文件。
+        let dir = std::env::temp_dir().join("zapmomo-companion-menu-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = model("companion-ccc", "mochi", dir.to_str().unwrap());
+        std::fs::write(&m.model_file, "{}").unwrap();
+        let entries = companion_menu_entries(&[m], None);
+        assert!(entries[0].enabled);
+        assert_eq!(entries[0].label, "mochi");
+        assert!(!entries[0].checked);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

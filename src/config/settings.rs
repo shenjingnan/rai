@@ -246,6 +246,9 @@ pub struct AppConfig {
     /// 全局快捷键配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcuts: Option<ShortcutsSettings>,
+    /// dsh 桥配置（接收 deepseek-harness 插件推送的任务事件）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh: Option<DshSettings>,
 }
 
 /// 用户「添加本地模型」注册的模型（external）。
@@ -655,6 +658,25 @@ pub struct VoiceSettings {
     pub welcome_wait_timeout: Option<f32>,
 }
 
+/// dsh 桥配置。
+///
+/// 全部字段可缺省：未配置的项在解析时回退到 `dsh::config` 的内置默认值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DshSettings {
+    /// 是否启用桥服务（loopback HTTP 监听），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// 监听端口，0 = 随机端口（默认，避免冲突），缺省 0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 事件是否语音播报（voice 会话运行中只出气泡），缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_enabled: Option<bool>,
+    /// 事件是否写入对话记录，缺省 true
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_to_history: Option<bool>,
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -676,6 +698,7 @@ impl Default for AppConfig {
             voice: None,
             model_library: None,
             shortcuts: None,
+            dsh: None,
         }
     }
 }
@@ -865,6 +888,7 @@ mod tests {
             voice: None,
             model_library: None,
             shortcuts: None,
+            dsh: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -1132,6 +1156,7 @@ mod tests {
                 voice: None,
                 model_library: None,
                 shortcuts: None,
+                dsh: None,
             };
             save_settings(&config).unwrap();
             let loaded = load_settings().unwrap().unwrap();
@@ -1340,6 +1365,34 @@ mod tests {
             save_settings(&config2).unwrap();
             let loaded = load_settings().unwrap().unwrap();
             assert_eq!(loaded.log_level, "warn");
+        });
+    }
+
+    // ---- dsh（dsh 桥配置段）----
+
+    #[test]
+    fn test_parse_dsh_section() {
+        run_with_temp_home(|_| {
+            std::fs::create_dir_all(get_settings_dir()).unwrap();
+            std::fs::write(
+                get_settings_path(),
+                "[dsh]\nenabled = false\nport = 47800\nvoice_enabled = false\n",
+            )
+            .unwrap();
+            let cfg = load_settings().unwrap().unwrap();
+            let dsh = cfg.dsh.expect("[dsh] 段应解析");
+            assert_eq!(dsh.enabled, Some(false));
+            assert_eq!(dsh.port, Some(47800));
+            assert_eq!(dsh.voice_enabled, Some(false));
+            assert_eq!(dsh.record_to_history, None);
+        });
+    }
+
+    #[test]
+    fn test_dsh_section_absent_defaults_none() {
+        run_with_temp_home(|_| {
+            let cfg = load_settings().unwrap();
+            assert!(cfg.is_none());
         });
     }
 }

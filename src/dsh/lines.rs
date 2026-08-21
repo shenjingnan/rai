@@ -122,4 +122,20 @@ mod tests {
             assert!((0.0..1.0).contains(&r), "roll 越界: {r}");
         }
     }
+
+    #[test]
+    fn test_all_event_types_produce_non_empty() {
+        for kind in [
+            "task-started",
+            "task-finished",
+            "task-failed",
+            "task-interrupted",
+        ] {
+            let line = pick_line(&ev(kind, Some("测试")), 0.5);
+            assert!(!line.is_empty(), "{kind} 有标题应产出非空台词");
+            assert!(!line.contains("{t}"), "{kind} 占位符应被替换");
+            let line2 = pick_line(&ev(kind, None), 0.5);
+            assert!(!line2.is_empty(), "{kind} 无标题应产出非空台词");
+        }
+    }
 }

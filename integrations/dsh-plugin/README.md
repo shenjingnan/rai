@@ -2,6 +2,8 @@
 
 dsh（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）→ ZapMomo 桌宠的**任务事件桥**。
 
+> 面向用户的使用说明见[文档站：deepseek-harness 集成（dsh 桥）](../../docs/content/docs/desktop-app/dsh-bridge.mdx)；本篇是面向开发的实现与发布细节。
+
 监听 dsh 的 `agent/status` 与 `session/event`（`turn/end`），把任务**开始 / 完成 / 失败 / 中断**翻译成语义化事件，POST 到 ZapMomo 的 loopback 桥（`POST /dsh/events`）。ZapMomo 桌宠据此以文字气泡 + 语音播报给用户反馈。
 
 ## 前置条件

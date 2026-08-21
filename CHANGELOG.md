@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.18](https://github.com/shenjingnan/zapmomo/compare/v0.1.17...v0.1.18) - 2026-08-21
+
+### Added
+
+- *(docs)* 文档站首页 hero 落地页（介绍 + 三平台下载） ([#147](https://github.com/shenjingnan/zapmomo/pull/147))
+- *(dsh)* 插件源码与 npm 发布 CI（integrations/dsh-plugin + OIDC workflow） ([#145](https://github.com/shenjingnan/zapmomo/pull/145))
+- *(tts)* 支持多 TTS 模型（VITS/Matcha）与模型类型建模 ([#144](https://github.com/shenjingnan/zapmomo/pull/144))
+- *(app)* BongoCat 兼容键鼠模拟表演系统 ([#143](https://github.com/shenjingnan/zapmomo/pull/143))
+- *(dsh)* deepseek-harness 任务状态驱动桌宠播报（HTTP 桥 + 气泡/语音 + 设置页） ([#142](https://github.com/shenjingnan/zapmomo/pull/142))
+- *(tts)* 模型与能力支持 TTS「选择模型」弹窗切换 ([#141](https://github.com/shenjingnan/zapmomo/pull/141))
+
+### Fixed
+
+- *(app)* 修复 Windows release 构建失败并给 CI 补 windows 编译腿 ([#139](https://github.com/shenjingnan/zapmomo/pull/139))
+
+### Other
+
+- *(dsh)* 新增 deepseek-harness 集成使用文档 ([#149](https://github.com/shenjingnan/zapmomo/pull/149))
+- *(dsh)* deepseek-harness 集成（dsh 桥）用户文档与 SOCKS 代理支持 ([#148](https://github.com/shenjingnan/zapmomo/pull/148))
+- *(dsh)* 插件发布跟随 zapmomo 主版本 tag（v*），免单独打插件 tag ([#146](https://github.com/shenjingnan/zapmomo/pull/146))
+
 ## [0.1.17](https://github.com/shenjingnan/zapmomo/compare/v0.1.16...v0.1.17) - 2026-08-21
 
 ### Added

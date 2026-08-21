@@ -22,6 +22,8 @@ interface Live2dStageProps {
   onModelMetrics?: (metrics: { aspectRatio: number }) => void;
   /** 模型加载成功、画布已可用时回调（供上层截取封面等；注意画布可能尚未渲染本帧）。 */
   onModelReady?: (canvas: HTMLCanvasElement) => void;
+  /** 模型加载成功（或清屏置 null）时回调，供上层持有模型句柄触发动作。 */
+  onModelLoaded?: (model: Live2DModel | null) => void;
 }
 
 /**
@@ -39,6 +41,7 @@ export function Live2dStage({
   onError,
   onModelMetrics,
   onModelReady,
+  onModelLoaded,
 }: Live2dStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
@@ -51,6 +54,8 @@ export function Live2dStage({
   onModelMetricsRef.current = onModelMetrics;
   const onModelReadyRef = useRef(onModelReady);
   onModelReadyRef.current = onModelReady;
+  const onModelLoadedRef = useRef(onModelLoaded);
+  onModelLoadedRef.current = onModelLoaded;
   const sizeRef = useRef({ width, height });
   sizeRef.current = { width, height };
   // 模型加载 effect 用 ref 读缩放，避免 scale 变化触发销毁重载；布局由 resize effect 在 deps 里重算。
@@ -107,6 +112,7 @@ export function Live2dStage({
     if (!modelUrl) {
       modelRef.current?.destroy();
       modelRef.current = null;
+      onModelLoadedRef.current?.(null);
       return;
     }
     const app = appRef.current;
@@ -126,6 +132,7 @@ export function Live2dStage({
         }
         app.stage.addChild(model);
         modelRef.current = model;
+        onModelLoadedRef.current?.(model);
         layoutModel(model, sizeRef.current.width, sizeRef.current.height, modelScaleRef.current);
         const bounds = computeModelBounds(model);
         const valid =

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.17](https://github.com/shenjingnan/zapmomo/compare/v0.1.16...v0.1.17) - 2026-08-21
+
+### Added
+
+- *(app)* 桌宠支持修饰键拖拽模式（按住 cmd/ctrl 才能拖动） ([#137](https://github.com/shenjingnan/zapmomo/pull/137))
+- *(app)* 支持开机自启动，托盘/设置页双入口切换 + 单实例防护 ([#136](https://github.com/shenjingnan/zapmomo/pull/136))
+- *(asr)* 模型与能力支持 ASR「选择模型」弹窗切换 ([#134](https://github.com/shenjingnan/zapmomo/pull/134))
+- *(ci)* 百度网盘上传附带更新说明与安装说明文本 ([#133](https://github.com/shenjingnan/zapmomo/pull/133))
+- *(app)* 桌宠支持位置锁定，右键/托盘/设置页三入口切换 ([#131](https://github.com/shenjingnan/zapmomo/pull/131))
+
+### Fixed
+
+- *(ci)* Release 发布改用 PAT，触发百度网盘上传 workflow ([#129](https://github.com/shenjingnan/zapmomo/pull/129))
+
 ## [0.1.16](https://github.com/shenjingnan/zapmomo/compare/v0.1.15...v0.1.16) - 2026-08-21
 
 ### Added

@@ -24,6 +24,7 @@ import type {
   AsrConfigInfo,
   AsrParamsPatch,
   AsrResult,
+  CompanionDragMode,
   CompanionLibraryView,
   CompanionWindowLayer,
   ConversationRecord,
@@ -116,7 +117,6 @@ export const api = {
   }) => invoke<void>("synthesize_tts", args),
   stopTts: () => invoke<void>("stop_tts"),
   isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
-  downloadTtsModel: () => invoke<void>("download_tts_model"),
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
   setTtsVoice: (voice: string | null) => invoke<void>("set_tts_voice", { voice }),
@@ -199,9 +199,13 @@ export const api = {
   setCompanionLayer: (args: { layer: CompanionWindowLayer }) =>
     invoke<void>("set_companion_layer", args),
   setCompanionLocked: (args: { enabled: boolean }) => invoke<void>("set_companion_locked", args),
+  setCompanionDragMode: (args: { mode: CompanionDragMode }) =>
+    invoke<void>("set_companion_drag_mode", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (args: { enabled: boolean }) => invoke<void>("set_autostart", args),
   getShortcuts: () => invoke<Record<string, string>>("get_shortcuts"),
   setShortcut: (args: { action: ShortcutActionId; accelerator: string }) =>
     invoke<void>("set_shortcut", args),
@@ -261,12 +265,6 @@ export function onTtsStopped(handler: (payload: ListenStopped) => void): Promise
   return listen<ListenStopped>("tts-stopped", (e) => handler(e.payload));
 }
 
-export function onTtsDownloadProgress(
-  handler: (payload: DownloadProgress) => void,
-): Promise<UnlistenFn> {
-  return listen<DownloadProgress>("tts-model-download-progress", (e) => handler(e.payload));
-}
-
 export function onLlmDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
@@ -295,6 +293,17 @@ export function onCompanionLayerChanged(
 
 export function onCompanionLockedChanged(handler: (locked: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("companion-locked-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionDragModeChanged(
+  handler: (mode: CompanionDragMode) => void,
+): Promise<UnlistenFn> {
+  return listen<CompanionDragMode>("companion-drag-mode-changed", (e) => handler(e.payload));
+}
+
+/** 开机自启动状态变化（设置页为唯一订阅者：托盘菜单改动后同步开关）。 */
+export function onAutostartChanged(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("autostart-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

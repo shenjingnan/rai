@@ -1,9 +1,8 @@
-import { CircleAlert, Download, FolderOpen, Mic, Settings2, Volume2 } from "lucide-react";
+import { CircleAlert, FolderOpen, Mic, Settings2, Volume2 } from "lucide-react";
 import { useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -17,38 +16,27 @@ import { modelNameFromDir } from "./ttsMeta";
 interface TtsBasicConfigProps {
   onTestOpen: () => void;
   onManageVoices: () => void;
+  onOpenModelDialog: () => void;
 }
 
 /**
  * 基础配置（macOS 设置行）：
  * 当前模型（名称 + 就绪/未下载 Badge + 可展开完整路径）+
- * 底部「下载模型（模型缺失时）/ 测试语音」操作按钮。
+ * 底部「选择模型 / 测试语音 / 音色管理」操作按钮。
  */
-export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigProps) {
+export function TtsBasicConfig({
+  onTestOpen,
+  onManageVoices,
+  onOpenModelDialog,
+}: TtsBasicConfigProps) {
   const { tts } = useRuntime();
-  const {
-    config,
-    configError,
-    downloading,
-    downloadProgress,
-    downloadError,
-    download,
-    voices,
-    selectedVoice,
-    setSelectedVoice,
-  } = tts;
+  const { config, configError, voices, selectedVoice, setSelectedVoice } = tts;
   const [showPath, setShowPath] = useState(false);
 
   const modelsPresent = config?.models_present ?? false;
   const enabled = config?.enabled ?? true;
   const modelPath = config?.model_dir ?? "";
   const modelName = modelNameFromDir(modelPath);
-
-  const percent =
-    downloadProgress?.stage === "downloading"
-      ? Math.max(0, Math.min(100, downloadProgress.percent))
-      : 100;
-  const busy = downloading || (config?.model_downloading ?? false);
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">
@@ -79,7 +67,7 @@ export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigPro
             <CircleAlert className="h-4 w-4" />
             <AlertTitle>模型文件缺失</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">
-              模型文件缺失（{config.model_dir}）。点击下方「下载模型」按钮下载后即可测试语音合成。
+              模型文件缺失（{config.model_dir}）。点击下方「选择模型」重新下载或换用已安装模型。
             </AlertDescription>
           </Alert>
         </div>
@@ -166,12 +154,10 @@ export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigPro
       </dl>
 
       <div className="flex flex-wrap gap-2 border-t border-divider px-3.5 py-2.5">
-        {!modelsPresent && (
-          <Button onClick={download} disabled={busy}>
-            <Download className="h-4 w-4" />
-            {busy ? "下载中…" : "下载模型"}
-          </Button>
-        )}
+        <Button onClick={onOpenModelDialog}>
+          <FolderOpen className="h-4 w-4" />
+          选择模型
+        </Button>
         <Button
           variant="secondary"
           className="shadow-none"
@@ -186,22 +172,6 @@ export function TtsBasicConfig({ onTestOpen, onManageVoices }: TtsBasicConfigPro
           音色管理
         </Button>
       </div>
-
-      {downloadProgress && (
-        <div className="space-y-1 px-3.5 pb-3">
-          <Progress value={percent} />
-          <p className="text-xs text-text-muted">{downloadProgress.message}</p>
-        </div>
-      )}
-
-      {downloadError && (
-        <div className="px-3.5 pb-3">
-          <Alert variant="destructive">
-            <CircleAlert className="h-4 w-4" />
-            <AlertDescription className="whitespace-pre-wrap">{downloadError}</AlertDescription>
-          </Alert>
-        </div>
-      )}
     </section>
   );
 }

@@ -166,6 +166,70 @@ fn resolve_file(
     }
 }
 
+/// onnx 默认文件名探测：settings 未显式配置某 onnx 文件时按模型目录内容选择。
+///
+/// 与 KWS 的 `detect_default_onnx` 规则不同：ASR 官方 int8 配方是 int8 encoder/joiner +
+/// fp32 decoder（int8 偏好按组件分方向），且文件名不一定含 chunk-16（双语模型就不含），
+/// 故各自维护、注释互引，不做参数化共享。
+///
+/// 规则（确定性，read_dir 顺序不确定故候选排序）：
+/// 1. 默认常量文件名存在 → 直接用（已装注册模型零行为变化，实测 6 个注册包常量文件都在）；
+/// 2. 否则收集目录中 `{prefix}-` 开头、`.onnx` 结尾的文件：优先子集 =
+///    `prefer_int8` 时含 `.int8`、否则不含 `.int8`，子集内字母序取第一个；
+///    优先子集为空 → 全体候选字母序取第一个（如 int8-only 目录的 decoder 取 int8，可运行）；
+/// 3. 目录不存在或无候选 → 回退默认常量名（后续预检报「缺少模型文件」，错误路径清晰）。
+fn detect_default_onnx(
+    model_dir: &Path,
+    prefix: &str,
+    fallback: &str,
+    prefer_int8: bool,
+) -> String {
+    if model_dir.join(fallback).is_file() {
+        return fallback.to_string();
+    }
+    let Ok(entries) = std::fs::read_dir(model_dir) else {
+        return fallback.to_string();
+    };
+    let mut candidates: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n.starts_with(&format!("{prefix}-")) && n.ends_with(".onnx"))
+        .collect();
+    candidates.sort();
+    candidates
+        .iter()
+        .find(|n| n.contains(".int8") == prefer_int8)
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// settings 未显式配置某文件字段时的默认名探测入口（tokens 各模型同名，不探测）。
+///
+/// int8 偏好按组件分方向：encoder/joiner 偏好 int8（官方量化配方，与默认常量一致），
+/// decoder 偏好 fp32（体积小、int8 收益可忽略，官方示例即用 fp32）。
+fn detect_default_name(field: &str, model_dir: &Path, fallback: &str) -> String {
+    match field {
+        "encoder" => detect_default_onnx(model_dir, "encoder", fallback, true),
+        "decoder" => detect_default_onnx(model_dir, "decoder", fallback, false),
+        "joiner" => detect_default_onnx(model_dir, "joiner", fallback, true),
+        _ => fallback.to_string(),
+    }
+}
+
+/// 目录内是否探测得到完整的一套 ASR 模型文件（模型无关，替代按默认文件名硬编码的
+/// 判定，供模型库 external/HF 导入的完整性检查复用；对称 KWS 的 `kws_files_present`）。
+pub fn asr_files_present(model_dir: &Path) -> bool {
+    let files = [
+        detect_default_onnx(model_dir, "encoder", DEFAULT_ENCODER, true),
+        detect_default_onnx(model_dir, "decoder", DEFAULT_DECODER, false),
+        detect_default_onnx(model_dir, "joiner", DEFAULT_JOINER, true),
+        DEFAULT_TOKENS.to_string(),
+    ];
+    files.iter().all(|f| model_dir.join(f).is_file())
+}
+
 /// 解析模型目录：CLI > settings > 默认。
 fn resolve_model_dir(
     settings: Option<&AsrSettings>,
@@ -205,7 +269,14 @@ pub fn resolve(
             "tokens" => s.and_then(|s| s.tokens.as_deref()),
             _ => None,
         };
-        resolve_file(value, default_name, &cfg.model_dir)
+        // 未显式配置时按模型目录内容探测默认文件名（外部导入/手工放置的目录
+        // 可能不叫默认名；显式 settings 覆盖优先，与 KWS resolve 语义一致）
+        let detected = if value.is_none() {
+            detect_default_name(field, &cfg.model_dir, default_name)
+        } else {
+            default_name.to_string()
+        };
+        resolve_file(value, &detected, &cfg.model_dir)
     };
 
     cfg.encoder = file("encoder", DEFAULT_ENCODER)?;
@@ -689,5 +760,199 @@ mod tests {
         };
         patch2.apply_to(&mut asr2).unwrap();
         assert_eq!(asr2.hotwords, Some("你好".to_string()));
+    }
+
+    /// 双语布局（int8+fp32 混放，即全部注册包的实际布局）→ 常量直接命中，零行为变化。
+    #[test]
+    fn test_detect_asr_default_constants_win() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder-epoch-99-avg-1.int8.onnx",
+            "encoder-epoch-99-avg-1.onnx",
+            "decoder-epoch-99-avg-1.int8.onnx",
+            "decoder-epoch-99-avg-1.onnx",
+            "joiner-epoch-99-avg-1.int8.onnx",
+            "joiner-epoch-99-avg-1.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(
+            detect_default_onnx(dir.path(), "encoder", DEFAULT_ENCODER, true),
+            DEFAULT_ENCODER
+        );
+        assert_eq!(
+            detect_default_onnx(dir.path(), "decoder", DEFAULT_DECODER, false),
+            DEFAULT_DECODER
+        );
+        assert_eq!(
+            detect_default_onnx(dir.path(), "joiner", DEFAULT_JOINER, true),
+            DEFAULT_JOINER
+        );
+        assert!(asr_files_present(dir.path()));
+    }
+
+    /// 非默认名混放（epoch-20 系，外部导入场景）→ encoder/joiner 取 int8、decoder 取 fp32。
+    #[test]
+    fn test_detect_asr_prefers_int8_encoder_joiner_fp32_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            "encoder-epoch-20-avg-1-chunk-16-left-64.onnx",
+            "decoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            "decoder-epoch-20-avg-1-chunk-16-left-64.onnx",
+            "joiner-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            "joiner-epoch-20-avg-1-chunk-16-left-64.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(
+            detect_default_onnx(dir.path(), "encoder", DEFAULT_ENCODER, true),
+            "encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx"
+        );
+        assert_eq!(
+            detect_default_onnx(dir.path(), "decoder", DEFAULT_DECODER, false),
+            "decoder-epoch-20-avg-1-chunk-16-left-64.onnx"
+        );
+        assert_eq!(
+            detect_default_onnx(dir.path(), "joiner", DEFAULT_JOINER, true),
+            "joiner-epoch-20-avg-1-chunk-16-left-64.int8.onnx"
+        );
+        assert!(asr_files_present(dir.path()));
+    }
+
+    /// 单变体目录回退：int8-only 的 decoder 取 int8；fp32-only 的 encoder 取 fp32。
+    #[test]
+    fn test_detect_asr_fallback_to_any_variant() {
+        let int8_only = tempfile::tempdir().unwrap();
+        std::fs::write(
+            int8_only.path().join("decoder-epoch-20-avg-1.int8.onnx"),
+            b"x",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_default_onnx(int8_only.path(), "decoder", DEFAULT_DECODER, false),
+            "decoder-epoch-20-avg-1.int8.onnx"
+        );
+
+        let fp32_only = tempfile::tempdir().unwrap();
+        std::fs::write(fp32_only.path().join("encoder-epoch-20-avg-1.onnx"), b"x").unwrap();
+        assert_eq!(
+            detect_default_onnx(fp32_only.path(), "encoder", DEFAULT_ENCODER, true),
+            "encoder-epoch-20-avg-1.onnx"
+        );
+    }
+
+    /// 目录不存在 / 空目录 / 无 onnx 候选 → 回退默认常量名。
+    #[test]
+    fn test_detect_asr_missing_or_empty_dir_falls_back_to_constant() {
+        assert_eq!(
+            detect_default_onnx(
+                Path::new("/nonexistent-asr"),
+                "encoder",
+                DEFAULT_ENCODER,
+                true
+            ),
+            DEFAULT_ENCODER
+        );
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            detect_default_onnx(empty.path(), "encoder", DEFAULT_ENCODER, true),
+            DEFAULT_ENCODER
+        );
+        // 前缀不匹配的 onnx 不算候选
+        std::fs::write(empty.path().join("other-model.onnx"), b"x").unwrap();
+        assert_eq!(
+            detect_default_onnx(empty.path(), "encoder", DEFAULT_ENCODER, true),
+            DEFAULT_ENCODER
+        );
+    }
+
+    /// settings 只给 model_dir（切换模型的写法）+ 非默认命名目录 → resolve 命中探测名。
+    #[test]
+    fn test_resolve_detects_non_default_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            "decoder-epoch-20-avg-1-chunk-16-left-64.onnx",
+            "joiner-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(
+            cfg.encoder,
+            dir.path()
+                .join("encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx")
+        );
+        assert_eq!(
+            cfg.decoder,
+            dir.path()
+                .join("decoder-epoch-20-avg-1-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.joiner,
+            dir.path()
+                .join("joiner-epoch-20-avg-1-chunk-16-left-64.int8.onnx")
+        );
+        assert_eq!(cfg.tokens, dir.path().join(DEFAULT_TOKENS));
+    }
+
+    /// 显式 settings 文件覆盖优先，不探测（与 KWS resolve 语义一致）。
+    #[test]
+    fn test_resolve_explicit_file_overrides_skip_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            encoder: Some("custom-encoder.onnx".to_string()),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(
+            cfg.encoder,
+            dir.path().join("custom-encoder.onnx"),
+            "显式覆盖应直连，不被目录内文件影响"
+        );
+    }
+
+    /// 探测式完整性判定：完整 true / 缺任一 false / 空目录 false / 不存在 false。
+    #[test]
+    fn test_asr_files_present() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!asr_files_present(dir.path()));
+        assert!(!asr_files_present(Path::new("/nonexistent-asr")));
+
+        for name in [
+            "encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            "decoder-epoch-20-avg-1-chunk-16-left-64.onnx",
+            "joiner-epoch-20-avg-1-chunk-16-left-64.int8.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert!(asr_files_present(dir.path()));
+
+        std::fs::remove_file(dir.path().join(DEFAULT_TOKENS)).unwrap();
+        assert!(!asr_files_present(dir.path()), "缺 tokens 应为 false");
+
+        std::fs::write(dir.path().join(DEFAULT_TOKENS), b"x").unwrap();
+        std::fs::remove_file(
+            dir.path()
+                .join("encoder-epoch-20-avg-1-chunk-16-left-64.int8.onnx"),
+        )
+        .unwrap();
+        assert!(!asr_files_present(dir.path()), "缺 encoder 应为 false");
     }
 }

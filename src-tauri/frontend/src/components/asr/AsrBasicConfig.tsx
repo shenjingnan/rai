@@ -1,4 +1,4 @@
-import { CircleAlert, Download, FolderOpen, Mic, Settings2 } from "lucide-react";
+import { CircleAlert, Download, FolderOpen, Mic, Repeat2, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -6,18 +6,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useRuntime } from "@/providers/RuntimeContext";
-import { modelNameFromDir } from "./asrMeta";
+import { isDefaultAsrModelDir, modelNameFromDir } from "./asrMeta";
 
 interface AsrBasicConfigProps {
   onTestOpen: () => void;
+  /** 打开「选择识别模型」弹窗（由 AsrPage 持有弹窗状态） */
+  onSwitchOpen: () => void;
 }
 
 /**
  * 基础配置（macOS 设置行）：
- * 当前模型（名称 + 就绪/未下载 Badge + 可展开完整路径）/ 麦克风来源（复用全局 DeviceSelect）+
- * 底部「下载模型 / 测试识别」操作按钮。
+ * 当前模型（名称 + 就绪/未下载 Badge + 切换模型 + 可展开完整路径）/ 麦克风来源（复用全局 DeviceSelect）+
+ * 底部「下载模型 / 选择模型 / 测试识别」操作按钮。
  */
-export function AsrBasicConfig({ onTestOpen }: AsrBasicConfigProps) {
+export function AsrBasicConfig({ onTestOpen, onSwitchOpen }: AsrBasicConfigProps) {
   const {
     asr,
     devices: { error: devicesError },
@@ -30,6 +32,9 @@ export function AsrBasicConfig({ onTestOpen }: AsrBasicConfigProps) {
   const modelsPresent = config?.models_present ?? false;
   const modelPath = config?.model_dir ?? "";
   const modelName = modelNameFromDir(modelPath);
+  // 当前模型是否为默认双语：只有它才允许用 legacy「下载模型」一键下载
+  // （download_asr_model 固定装双语 + 标点；其他模型缺失时走「选择模型」弹窗）
+  const isDefaultModel = isDefaultAsrModelDir(modelPath);
 
   const percent =
     progress?.stage === "downloading" ? Math.max(0, Math.min(100, progress.percent)) : 100;
@@ -73,7 +78,9 @@ export function AsrBasicConfig({ onTestOpen }: AsrBasicConfigProps) {
             <CircleAlert className="h-4 w-4" />
             <AlertTitle>模型文件缺失</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">
-              模型文件缺失（{config.model_dir}）。点击下方「下载模型」按钮下载后即可开始识别。
+              {isDefaultModel
+                ? `模型文件缺失（${config.model_dir}）。点击下方「下载模型」按钮下载后即可开始识别。`
+                : `当前模型文件缺失（${config.model_dir}）。点击下方「选择模型」换回已安装模型，或在弹窗中重新下载。`}
             </AlertDescription>
           </Alert>
         </div>
@@ -111,6 +118,16 @@ export function AsrBasicConfig({ onTestOpen }: AsrBasicConfigProps) {
               >
                 {modelsPresent ? "已就绪" : "未下载"}
               </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shadow-none"
+                onClick={onSwitchOpen}
+                aria-label="切换识别模型"
+              >
+                <Repeat2 className="h-3.5 w-3.5" />
+                切换模型
+              </Button>
             </span>
             {showPath && modelPath && (
               <p className="mt-1 truncate font-mono text-xs text-text-muted" title={modelPath}>
@@ -139,12 +156,18 @@ export function AsrBasicConfig({ onTestOpen }: AsrBasicConfigProps) {
       )}
 
       <div className="flex flex-wrap gap-2 border-t border-divider px-3.5 py-2.5">
-        {!modelsPresent && (
-          <Button onClick={download} disabled={busy}>
-            <Download className="h-4 w-4" />
-            {busy ? "下载中…" : "下载模型"}
-          </Button>
-        )}
+        {!modelsPresent &&
+          (isDefaultModel ? (
+            <Button onClick={download} disabled={busy}>
+              <Download className="h-4 w-4" />
+              {busy ? "下载中…" : "下载模型"}
+            </Button>
+          ) : (
+            <Button onClick={onSwitchOpen}>
+              <Download className="h-4 w-4" />
+              选择模型
+            </Button>
+          ))}
         <Button
           variant="secondary"
           className="shadow-none"

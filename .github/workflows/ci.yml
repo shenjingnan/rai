@@ -138,12 +138,26 @@ jobs:
           fail_ci_if_error: false
 
   app-check:
-    name: Tauri App Check
-    runs-on: ubuntu-latest
+    # zapmomo-app 的平台门控代码（#[cfg(windows)] 等）只有本 job 用 -p 显式选中
+    # 才会编译（workspace default-members 只含根 CLI crate，test job 碰不到
+    # src-tauri）。v0.1.17 release 曾因 cfg(windows) 代码 E0308 在 windows-latest
+    # 首次编译即失败而 PR CI 全绿，故矩阵补 windows；macOS 由开发者本机日常
+    # 编译覆盖，不另开腿。
+    name: Tauri App Check (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    env:
+      # 同 test job：让 cmake 用静态 CRT（/MT）。check/clippy 不链接，目前用不上；
+      # 防止日后把本 job 升级为真实 build 时踩 MSVC 运行库坑。Linux 下 cmake 忽略该变量。
+      CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Linux deps
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
 
       - name: Setup Rust toolchain

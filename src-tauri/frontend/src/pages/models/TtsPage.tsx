@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { TtsAdvancedParams } from "@/components/tts/TtsAdvancedParams";
 import { TtsBasicConfig } from "@/components/tts/TtsBasicConfig";
+import { TtsModelDialog } from "@/components/tts/TtsModelDialog";
 import { TtsModelInfo } from "@/components/tts/TtsModelInfo";
 import { TtsRunControl } from "@/components/tts/TtsRunControl";
 import { TtsTestDialog } from "@/components/tts/TtsTestDialog";
@@ -12,6 +13,7 @@ import { TtsVoicesDialog } from "@/components/tts/TtsVoicesDialog";
 export function TtsPage() {
   const [testOpen, setTestOpen] = useState(false);
   const [voicesOpen, setVoicesOpen] = useState(false);
+  const [modelDialogOpen, setModelDialogOpen] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -33,6 +35,7 @@ export function TtsPage() {
       <TtsBasicConfig
         onTestOpen={() => setTestOpen(true)}
         onManageVoices={() => setVoicesOpen(true)}
+        onOpenModelDialog={() => setModelDialogOpen(true)}
       />
 
       <TtsModelInfo />
@@ -47,6 +50,8 @@ export function TtsPage() {
       />
 
       <TtsVoicesDialog open={voicesOpen} onClose={() => setVoicesOpen(false)} />
+
+      <TtsModelDialog open={modelDialogOpen} onClose={() => setModelDialogOpen(false)} />
     </div>
   );
 }

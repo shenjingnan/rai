@@ -181,6 +181,10 @@ pub struct Selections {
 pub struct RuntimeActuals<'a> {
     pub kws: Option<&'a Path>,
     pub asr: Option<&'a Path>,
+    /// TTS 无常驻引擎：actual = 当前 selection（与 current 判定同源）
+    pub tts: Option<&'a Path>,
+    /// 是否有合成线程在跑（在飞合成用旧配置完成，下次合成读新配置）
+    pub tts_active: bool,
     pub llm: Option<&'a Path>,
     pub llm_switching: bool,
     pub llm_switch_target: Option<&'a Path>,
@@ -358,7 +362,7 @@ pub fn is_path_current(mt: ModelType, path: &Path) -> bool {
     selection_path(mt).is_some_and(|p| paths_equal(&p, path))
 }
 
-/// 设置当前模型（只写 `model_dir` / `model_path`，绝不写 enabled）。
+/// 设置当前模型（写 `model_dir` / `model_path` 并重置文件级覆盖，绝不写 enabled）。
 pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
     let path_str = path.to_string_lossy().to_string();
     update_settings(|cfg| match mt {
@@ -374,10 +378,30 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             kws.keywords_file = None;
         }
         ModelType::Asr => {
-            cfg.asr.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let asr = cfg.asr.get_or_insert_with(Default::default);
+            asr.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖会污染新模型的文件探测，
+            // 交回 resolve 自动探测（与 KWS 分支同款取舍）。
+            asr.encoder = None;
+            asr.decoder = None;
+            asr.joiner = None;
+            asr.tokens = None;
         }
         ModelType::Tts => {
-            cfg.tts.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let tts = cfg.tts.get_or_insert_with(Default::default);
+            tts.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
+            // 会污染新模型的文件探测，交回 resolve 自动探测（与 KWS/ASR 分支同款取舍）。
+            // reference_wav/text 指向旧模型目录内的参考音频，一并重置回默认音色；
+            // enabled / voice / num_steps / speed 等用户偏好不重置。
+            tts.encoder = None;
+            tts.decoder = None;
+            tts.vocoder = None;
+            tts.tokens = None;
+            tts.lexicon = None;
+            tts.data_dir = None;
+            tts.reference_wav = None;
+            tts.reference_text = None;
         }
         ModelType::Llm => {
             cfg.llm.get_or_insert_with(Default::default).model_path = Some(path_str);
@@ -446,7 +470,7 @@ pub fn enrich_runtime_status(models: &mut [LibraryModel], a: &RuntimeActuals) {
             ModelType::Kws => (a.kws, a.kws.is_some()),
             ModelType::Asr => (a.asr, a.asr.is_some()),
             ModelType::Llm => (a.llm, a.llm.is_some()),
-            ModelType::Tts => (None, false),
+            ModelType::Tts => (a.tts, a.tts_active),
         };
         let switching = m.model_type == ModelType::Llm
             && a.llm_switching
@@ -1103,21 +1127,7 @@ pub fn install_managed_model(
         return Err(ModelError::Cancelled);
     }
 
-    // 资产清单：required + optional（optional 计入总字节，保证总体进度 ≤ 100%）
-    let mut roles: Vec<&str> = model.required_assets.iter().map(String::as_str).collect();
-    roles.extend(model.optional_assets.iter().map(String::as_str));
-    let mut total_bytes: u64 = 0;
-    let mut assets: Vec<(
-        &'static crate::kws::model::ModelAsset,
-        &'static [&'static str],
-    )> = Vec::new();
-    for role in &roles {
-        let asset = crate::kws::model::asset_by_role(role)
-            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
-        total_bytes += asset.size_bytes;
-        assets.push((asset, registry::required_files_for_role(role)));
-    }
-
+    let (assets, total_bytes) = staged_assets(model)?;
     let final_dir = stage_and_commit(model, &assets, total_bytes, on_progress, cancel)?;
 
     // optional assets best-effort（独立目录，失败仅 warn，不回滚主模型）
@@ -1146,6 +1156,37 @@ pub fn install_managed_model(
     }
 
     Ok(final_dir)
+}
+
+/// staging 安装清单条目：（资产, 安装完成所需文件名清单）。
+type StagedAsset = (
+    &'static crate::kws::model::ModelAsset,
+    &'static [&'static str],
+);
+
+/// 收集 staging 安装清单与总字节：required 资产进清单，optional 资产只计入字节。
+///
+/// optional（如 ASR 的 punctuation）是独立目录的 tar.bz2，绝不能进 staging——
+/// `extract_and_place` 的原子落位是「目标已存在先移除」，第二个 tar.bz2 落到同一
+/// staging 目录会摧毁先解压的主模型文件，导致安装后完整性校验必然失败（ASR 模型库
+/// 下载必失败的根因）。optional 的实际安装由 [`install_managed_model`] commit 后的
+/// best-effort 循环装到各自独立目录。
+fn staged_assets(model: &RegistryModel) -> Result<(Vec<StagedAsset>, u64), ModelError> {
+    let mut total_bytes: u64 = 0;
+    let mut assets: Vec<StagedAsset> = Vec::new();
+    for role in model
+        .required_assets
+        .iter()
+        .chain(model.optional_assets.iter())
+    {
+        let asset = crate::kws::model::asset_by_role(role)
+            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
+        total_bytes += asset.size_bytes;
+        if model.required_assets.contains(role) {
+            assets.push((asset, registry::required_files_for_role(role)));
+        }
+    }
+    Ok((assets, total_bytes))
 }
 
 /// staging + 整体校验 + commit 的可测试核心：给定具体资产（可注入本地测试服务器）。
@@ -1293,6 +1334,66 @@ mod tests {
         );
     }
 
+    /// 测试用最小 TTS LibraryModel（enrich 只读 current / model_type / local_path）。
+    fn tts_library_model(current: bool) -> LibraryModel {
+        LibraryModel {
+            id: "tts-zipvoice-distill-int8".to_string(),
+            name: "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia".to_string(),
+            display_name: "ZipVoice TTS zh-en".to_string(),
+            model_type: ModelType::Tts,
+            runtime: "sherpa-onnx".to_string(),
+            format: "ONNX".to_string(),
+            description: String::new(),
+            languages: vec![],
+            tags: vec![],
+            parameter_count: None,
+            quantization: None,
+            version: "distill-int8".to_string(),
+            size_bytes: None,
+            homepage: None,
+            downloadable: true,
+            source: ModelSource::Registry,
+            ownership: StorageOwnership::Managed,
+            install_state: InstallState::Installed,
+            current,
+            runtime_status: RuntimeStatus::Inactive,
+            local_path: Some("/models/zipvoice".to_string()),
+            installed_at: None,
+            install_id: None,
+            repo_id: None,
+            compatibility: None,
+        }
+    }
+
+    #[test]
+    fn test_enrich_runtime_status_tts() {
+        let dir = Path::new("/models/zipvoice");
+        // 合成中：当前模型 Active、非当前恒 Inactive
+        let mut models = vec![tts_library_model(true), tts_library_model(false)];
+        let actuals = RuntimeActuals {
+            kws: None,
+            asr: None,
+            tts: Some(dir),
+            tts_active: true,
+            llm: None,
+            llm_switching: false,
+            llm_switch_target: None,
+            llm_load_error_path: None,
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Active);
+        assert_eq!(models[1].runtime_status, RuntimeStatus::Inactive);
+
+        // 空闲（无合成线程）：当前模型 Inactive
+        let mut models = vec![tts_library_model(true)];
+        let actuals = RuntimeActuals {
+            tts_active: false,
+            ..actuals
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Inactive);
+    }
+
     #[test]
     fn test_current_selection_and_set_restore() {
         run_with_temp_home(|home| {
@@ -1352,6 +1453,89 @@ mod tests {
             assert_eq!(kws.keywords_file, None);
             // enabled 不受切换影响
             assert_eq!(kws.enabled, Some(true));
+        });
+    }
+
+    #[test]
+    fn test_set_selected_asr_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟双语时代的手写配置）
+            update_settings(|cfg| {
+                let asr = cfg.asr.get_or_insert_with(Default::default);
+                asr.model_dir = Some("old-model".to_string());
+                asr.encoder = Some("old-encoder.onnx".to_string());
+                asr.decoder = Some("old-decoder.onnx".to_string());
+                asr.joiner = Some("old-joiner.onnx".to_string());
+                asr.tokens = Some("old-tokens.txt".to_string());
+                asr.enabled = Some(true);
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/zh-14m");
+            set_selected_model(ModelType::Asr, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let asr = cfg.asr.as_ref().expect("asr 段应存在");
+            assert_eq!(
+                asr.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(asr.encoder, None);
+            assert_eq!(asr.decoder, None);
+            assert_eq!(asr.joiner, None);
+            assert_eq!(asr.tokens, None);
+            // enabled 不受切换影响
+            assert_eq!(asr.enabled, Some(true));
+        });
+    }
+
+    #[test]
+    fn test_set_selected_tts_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟手工改过的配置）
+            update_settings(|cfg| {
+                let tts = cfg.tts.get_or_insert_with(Default::default);
+                tts.model_dir = Some("old-model".to_string());
+                tts.encoder = Some("old-encoder.onnx".to_string());
+                tts.decoder = Some("old-decoder.onnx".to_string());
+                tts.vocoder = Some("old-vocoder.onnx".to_string());
+                tts.tokens = Some("old-tokens.txt".to_string());
+                tts.lexicon = Some("old-lexicon.txt".to_string());
+                tts.data_dir = Some("old-espeak-ng-data".to_string());
+                tts.reference_wav = Some("old-ref.wav".to_string());
+                tts.reference_text = Some("旧参考文本".to_string());
+                tts.enabled = Some(true);
+                tts.voice = Some("leijun-1".to_string());
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/zipvoice");
+            set_selected_model(ModelType::Tts, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let tts = cfg.tts.as_ref().expect("tts 段应存在");
+            assert_eq!(
+                tts.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(tts.encoder, None);
+            assert_eq!(tts.decoder, None);
+            assert_eq!(tts.vocoder, None);
+            assert_eq!(tts.tokens, None);
+            assert_eq!(tts.lexicon, None);
+            assert_eq!(tts.data_dir, None);
+            // reference_wav/text 是旧模型目录内的参考音频，一并重置回默认音色
+            assert_eq!(tts.reference_wav, None);
+            assert_eq!(tts.reference_text, None);
+            // enabled / 音色偏好 / 参数不受切换影响
+            assert_eq!(tts.enabled, Some(true));
+            assert_eq!(tts.voice, Some("leijun-1".to_string()));
         });
     }
 
@@ -1502,6 +1686,34 @@ mod tests {
             let err = delete_managed_dir(&outside).unwrap_err();
             assert!(err.contains("管理目录内"));
         });
+    }
+
+    /// 回归：optional 资产（如 punctuation）绝不能进 staging 安装清单。
+    ///
+    /// 进了会因 extract_and_place「目标已存在先移除」的原子落位摧毁主模型文件，
+    /// 曾导致模型库下载任何 ASR 模型都在「安装后完整性校验失败」处必败。
+    #[test]
+    fn test_staged_assets_excludes_optional() {
+        // ASR：required 1 个 + optional punctuation → staging 只装 required，字节两者都计
+        let asr = registry::model_by_id("asr-streaming-zh-14m").unwrap();
+        let (assets, total) = staged_assets(asr).unwrap();
+        assert_eq!(assets.len(), 1, "punctuation 不得进 staging 清单");
+        assert_eq!(assets[0].0.role, "asr-zh-14m");
+        let req = crate::kws::model::asset_by_role("asr-zh-14m")
+            .unwrap()
+            .size_bytes;
+        let opt = crate::kws::model::asset_by_role("punctuation")
+            .unwrap()
+            .size_bytes;
+        assert_eq!(total, req + opt, "optional 只计字节（进度总量）");
+
+        // KWS（无 optional）单资产；TTS（tts + tts-vocoder 双 required）两资产
+        let (kws_assets, _) =
+            staged_assets(registry::model_by_id("kws-zipformer-zh-en-3m").unwrap()).unwrap();
+        assert_eq!(kws_assets.len(), 1);
+        let (tts_assets, _) =
+            staged_assets(registry::model_by_id("tts-zipvoice-distill-int8").unwrap()).unwrap();
+        assert_eq!(tts_assets.len(), 2);
     }
 
     fn test_reg_model(name: &str, id: &str) -> RegistryModel {

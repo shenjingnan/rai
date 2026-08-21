@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { CircleAlert, Pencil, Sparkles, Star, Trash2, Upload } from "lucide-react";
+import { CircleAlert, Info, Pencil, Sparkles, Star, Trash2, Upload } from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -19,10 +19,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCompanionLibrary } from "@/hooks/useCompanionLibrary";
 import { api, toAssetUrl } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import type { CompanionModelInfo, CompanionWindowLayer } from "@/types/tauri";
+import type { CompanionDragMode, CompanionModelInfo, CompanionWindowLayer } from "@/types/tauri";
 
 /**
  * 把 Live2D 渲染画布截取为缩小的 PNG 字节数组（供保存为封面）。
@@ -385,11 +386,13 @@ export function CompanionPage() {
   // 桌宠尺寸（缩放百分比，25%~200%）与透明度（20%~100%）：写入 settings 并通知桌宠窗口即时生效。
   // 点击穿透（窗口级行为，与选中哪个伙伴无关）：开启后桌宠窗口对所有鼠标事件透明。
   // 显示层级（置顶/置底，窗口级）：写入 settings 并通知桌宠窗口即时生效。
+  // 拖拽模式（窗口级）：modifier = 需按住 ⌘/Ctrl 才能拖动，direct = 直接拖动。
   const [percent, setPercent] = useState(100);
   const [opacityPercent, setOpacityPercent] = useState(100);
   const [clickThrough, setClickThrough] = useState(false);
   const [layer, setLayer] = useState<CompanionWindowLayer>("front");
   const [locked, setLocked] = useState(false);
+  const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
   useEffect(() => {
     void api
       .getLive2dConfig()
@@ -400,6 +403,7 @@ export function CompanionPage() {
         setClickThrough(cfg.click_through ?? false);
         if (cfg.window_layer) setLayer(cfg.window_layer);
         setLocked(cfg.locked ?? false);
+        setDragMode(cfg.drag_mode ?? "direct");
       })
       .catch(() => {});
   }, []);
@@ -425,6 +429,11 @@ export function CompanionPage() {
   const handleToggleLocked = useCallback((enabled: boolean) => {
     setLocked(enabled);
     void api.setCompanionLocked({ enabled });
+  }, []);
+  const handleToggleDragMode = useCallback((enabled: boolean) => {
+    const next: CompanionDragMode = enabled ? "modifier" : "direct";
+    setDragMode(next);
+    void api.setCompanionDragMode({ mode: next });
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -536,7 +545,7 @@ export function CompanionPage() {
               {selected && (
                 <>
                   <div className="flex w-full items-center gap-2">
-                    <span className="w-12 shrink-0">尺寸</span>
+                    <span className="w-20 shrink-0">尺寸</span>
                     <Slider
                       aria-label="尺寸"
                       value={[percent]}
@@ -549,7 +558,7 @@ export function CompanionPage() {
                     <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
                   </div>
                   <div className="flex w-full items-center gap-2">
-                    <span className="w-12 shrink-0">透明度</span>
+                    <span className="w-20 shrink-0">透明度</span>
                     <Slider
                       aria-label="透明度"
                       value={[opacityPercent]}
@@ -565,43 +574,79 @@ export function CompanionPage() {
               )}
               {/* 显示层级：置顶 = 悬浮浮层（默认，现状）；置底 = 沉到窗口之下并点穿（窗口级） */}
               <div className="flex w-full items-center gap-2">
-                <span className="w-12 shrink-0">层级</span>
+                <span className="w-20 shrink-0">层级</span>
                 <Switch
                   aria-label="置顶"
                   checked={layer === "front"}
                   onCheckedChange={handleLayerChange}
                 />
-                <span className="flex-1 text-xs text-muted-foreground">
+                <span className="min-w-0 flex-1 text-xs text-muted-foreground">
                   {layer === "front"
                     ? "置顶：悬浮在所有窗口之上"
                     : "置底：沉到所有窗口之下（点穿，无法拖拽/右键）"}
                 </span>
               </div>
-              {/* 点击穿透（窗口级） */}
-              <div className="flex w-full items-center justify-between gap-2">
-                <span className="shrink-0">点击穿透</span>
+              {/* 点击穿透（窗口级）：说明收进 Info icon 的 tooltip，对齐「锁定位置」的展示方式 */}
+              <div className="flex w-full items-center gap-2">
+                <span className="w-20 shrink-0">点击穿透</span>
                 <Switch
                   aria-label="点击穿透"
                   checked={clickThrough}
                   onCheckedChange={handleToggleClickThrough}
                 />
+                <Tooltip>
+                  <TooltipTrigger
+                    aria-label="点击穿透说明"
+                    className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-text-primary focus-visible:outline-none"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    开启后鼠标点击穿过模型直达背后内容；拖动、滚轮缩放与右键菜单将失效，可随时在此或托盘菜单关闭
+                  </TooltipContent>
+                </Tooltip>
               </div>
-              {/* 位置锁定（窗口级） */}
+              {/* 位置锁定（窗口级）：说明收进 Info icon 的 tooltip，避免占满整行 */}
               <div className="flex w-full items-center gap-2">
-                <span className="shrink-0">锁定位置</span>
+                <span className="w-20 shrink-0">锁定位置</span>
                 <Switch
                   aria-label="锁定位置"
                   checked={locked}
                   onCheckedChange={handleToggleLocked}
                 />
-                <span className="flex-1 text-xs text-muted-foreground">
-                  开启后禁止拖动窗口，滚轮缩放与右键菜单不受影响
-                </span>
+                <Tooltip>
+                  <TooltipTrigger
+                    aria-label="锁定位置说明"
+                    className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-text-primary focus-visible:outline-none"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    开启后禁止拖动窗口，滚轮缩放与右键菜单不受影响
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              {/* 拖拽模式（窗口级）：modifier = 需按住 cmd/Ctrl 才能拖动，与锁定正交（锁定优先），说明收进 Info icon 的 tooltip */}
+              <div className="flex w-full items-center gap-2">
+                <span className="w-20 shrink-0">修饰键拖动</span>
+                <Switch
+                  aria-label="修饰键拖动"
+                  checked={dragMode === "modifier"}
+                  onCheckedChange={handleToggleDragMode}
+                />
+                <Tooltip>
+                  <TooltipTrigger
+                    aria-label="修饰键拖动说明"
+                    className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-text-primary focus-visible:outline-none"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    开启后需按住 ⌘/Ctrl 才能拖动窗口，滚轮缩放与右键菜单不受影响
+                  </TooltipContent>
+                </Tooltip>
               </div>
             </div>
-            <p className="text-xs leading-relaxed text-muted-foreground/80">
-              开启后鼠标点击穿过模型直达背后内容；拖动、滚轮缩放与右键菜单将失效，可随时在此或托盘菜单关闭
-            </p>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col">
             {/* 已是当前使用时不显示 CTA（左侧「使用中」徽标已标识） */}

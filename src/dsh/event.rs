@@ -1,5 +1,6 @@
 /// dsh 桥事件：deepseek-harness 插件推送到 `/dsh/events` 的语义化任务事件。
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// 任务事件（序列化为 kebab-case `type` 判别字段，与前端 `DshEventInfo` 对应）。
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -71,26 +72,40 @@ impl DshEvent {
     }
 }
 
-/// 宽容解析用的原始载荷：全字段可缺省，未知 `type` 不报错（前向兼容）。
-#[derive(Debug, Default, Deserialize)]
+/// 宽容解析用的原始载荷：全字段可缺省且类型漂移不致命（`Value` 逐字段提取），
+/// 未知 `type` 不报错（前向兼容）。
+#[derive(Debug, Deserialize)]
 struct RawEvent {
     #[serde(default)]
-    r#type: String,
+    r#type: Value,
     #[serde(default)]
-    session_id: String,
+    session_id: Value,
     #[serde(default)]
-    title: Option<String>,
+    title: Option<Value>,
     #[serde(default)]
-    reason: Option<String>,
+    reason: Option<Value>,
     #[serde(default)]
-    detail: Option<String>,
+    detail: Option<Value>,
 }
 
-/// 解析一条事件载荷。
+/// 从 JSON 值中提取字符串（null / 类型漂移 → None，字段坏只丢字段不丢事件）。
+fn value_as_string(v: &Value) -> Option<String> {
+    v.as_str().map(str::to_owned)
+}
+
+/// 规范化文本字段：trim 首尾空白（不进气泡文本）、截断 200 字符（多生产者护栏），
+/// 空白视为缺失。
+fn normalize_text(s: Option<String>) -> Option<String> {
+    let s = s?.trim().to_owned();
+    (!s.is_empty()).then(|| s.chars().take(200).collect())
+}
+
+/// 解析一条事件载荷（逐字段宽容：字段类型漂移只丢字段不丢事件）。
 ///
 /// - 非法 JSON / 非 JSON 对象 → `Err`（HTTP 层回 400）
-/// - 未知 `type` → `Ok(None)`（调用方记 debug 后忽略）
-/// - 已知 `type` → 规范化为 [`DshEvent`]（detail 截断 200 字符，空 title/reason 视为缺失）
+/// - `type` 缺失/null/非字符串或未知值 → `Ok(None)`（调用方记 debug 后忽略）
+/// - 已知 `type` → 规范化为 [`DshEvent`]：文本字段 trim + 截断 200 字符、空白视为
+///   缺失；`session_id` 类型漂移退化为空串（节流 key 退化为 `("", kind)`，属已知行为）
 pub fn parse_event(body: &str) -> Result<Option<DshEvent>, String> {
     let RawEvent {
         r#type,
@@ -99,11 +114,14 @@ pub fn parse_event(body: &str) -> Result<Option<DshEvent>, String> {
         reason,
         detail,
     } = serde_json::from_str(body).map_err(|e| format!("事件载荷不是合法 JSON 对象: {e}"))?;
-    let title = title.filter(|t| !t.trim().is_empty());
-    let reason = reason.filter(|r| !r.trim().is_empty());
-    let detail = detail
-        .map(|d| d.chars().take(200).collect::<String>())
-        .filter(|d| !d.trim().is_empty());
+    // `type` 非字符串（null/数字/对象）按未知类型处理，整条忽略而非报错
+    let Some(r#type) = value_as_string(&r#type) else {
+        return Ok(None);
+    };
+    let session_id = value_as_string(&session_id).unwrap_or_default();
+    let title = normalize_text(title.as_ref().and_then(value_as_string));
+    let reason = normalize_text(reason.as_ref().and_then(value_as_string));
+    let detail = normalize_text(detail.as_ref().and_then(value_as_string));
     Ok(match r#type.as_str() {
         "task-started" => Some(DshEvent::TaskStarted { session_id, title }),
         "task-finished" => Some(DshEvent::TaskFinished {
@@ -206,6 +224,107 @@ mod tests {
             ),
         ] {
             assert_eq!(parse_event(body).unwrap().unwrap().kind(), kind);
+        }
+    }
+
+    #[test]
+    fn test_serialize_type_tag_matches_kind() {
+        // 判别串存在于三处（serde rename_all 推导 / kind() / parse_event match），
+        // 此测试锁定序列化 tag 与 kind() 的一致性契约
+        for ev in [
+            DshEvent::TaskStarted {
+                session_id: "s".to_string(),
+                title: None,
+            },
+            DshEvent::TaskFinished {
+                session_id: "s".to_string(),
+                title: None,
+                reason: None,
+            },
+            DshEvent::TaskFailed {
+                session_id: "s".to_string(),
+                title: None,
+                reason: None,
+                detail: None,
+            },
+            DshEvent::TaskInterrupted {
+                session_id: "s".to_string(),
+                title: None,
+                reason: None,
+            },
+        ] {
+            assert_eq!(
+                serde_json::to_value(&ev).unwrap()["type"].as_str(),
+                Some(ev.kind())
+            );
+        }
+    }
+
+    #[test]
+    fn test_field_type_drift_only_drops_field() {
+        // dsh 原生 turn/end 的 reason 是对象 {"kind":...}，类型漂移只丢字段不丢事件
+        let ev = parse_event(
+            r#"{"type":"task-finished","session_id":"s","title":5,"reason":{"kind":"completed"}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        match ev {
+            DshEvent::TaskFinished {
+                session_id,
+                title,
+                reason,
+            } => {
+                assert_eq!(session_id, "s");
+                assert_eq!(title, None);
+                assert_eq!(reason, None);
+            }
+            other => panic!("应为 TaskFinished: {other:?}"),
+        }
+        // session_id 类型漂移 → 退化为空串，事件仍解析成功
+        let ev = parse_event(r#"{"type":"task-started","session_id":123}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ev.session_id(), "");
+    }
+
+    #[test]
+    fn test_null_type_treated_as_unknown() {
+        assert!(
+            parse_event(r#"{"type":null,"session_id":"s"}"#)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_empty_object_returns_none() {
+        // 空对象全默认：type 为 null → 按未知类型忽略
+        assert!(parse_event("{}").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_missing_session_id_defaults_empty() {
+        // 已知行为：空 session_id 会让节流 key 退化为 ("", kind)，3s 窗口内不同任务互相吞
+        let ev = parse_event(r#"{"type":"task-started"}"#).unwrap().unwrap();
+        assert_eq!(ev.session_id(), "");
+    }
+
+    #[test]
+    fn test_detail_truncation_cjk_safe() {
+        // 按字符（非字节）截断：CJK 多字节字符不被切断、不产生 replacement char
+        let long = "汉".repeat(300);
+        let ev = parse_event(&format!(
+            r#"{{"type":"task-failed","session_id":"s","detail":"{long}"}}"#
+        ))
+        .unwrap()
+        .unwrap();
+        match ev {
+            DshEvent::TaskFailed { detail, .. } => {
+                let d = detail.expect("CJK detail 截断后仍应保留");
+                assert_eq!(d.chars().count(), 200);
+                assert!(d.chars().all(|c| c == '汉'));
+            }
+            other => panic!("应为 TaskFailed: {other:?}"),
         }
     }
 }

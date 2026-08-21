@@ -25,13 +25,12 @@ jobs:
         working-directory: integrations/dsh-plugin
     steps:
       - uses: actions/checkout@v7
-      # 版本单一来源 .node-version（= 24，与本地 fnm / 其它 CI 读同一文件）
+      # 版本单一来源 .node-version（= 24，与本地 fnm / 其它 CI 读同一文件）。
+      # Node 24 捆绑 npm >= 11.17（本地实测 24.19.0 -> npm 11.17.0），满足 OIDC 要求的 >= 11.5.1，
+      # 无需额外升级 npm。
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
-      # OIDC 发布需要 npm CLI >= 11.5.1；升级保证满足（即使 Node 24 自带 npm 11 也保险）
-      - name: Upgrade npm for OIDC
-        run: npm install -g npm@latest
       # package.json version 未变时 npm publish 会以 E403（already published）拒绝——正常保护。
       # 发布后 package.json 的 version 记得递增，再打 dsh-plugin-vX.Y.Z tag。
       - name: Publish to npm

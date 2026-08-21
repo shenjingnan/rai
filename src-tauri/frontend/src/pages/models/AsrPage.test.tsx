@@ -5,9 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import type { AsrConfigInfo } from "@/types/tauri";
 
-const { invokeMock, listeners } = vi.hoisted(() => ({
+const { invokeMock, listeners, dialogOpenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listeners: new Map<string, (e: { payload: unknown }) => void>(),
+  dialogOpenMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -19,6 +20,10 @@ vi.mock("@tauri-apps/api/event", () => ({
     listeners.set(event, handler);
     return Promise.resolve(() => {});
   }),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: dialogOpenMock,
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -48,6 +53,7 @@ const KWS_CONFIG = {
 
 const ASR_CONFIG: AsrConfigInfo = {
   enabled: false,
+  model_type: "zipformer",
   model_dir:
     "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
   provider: "cpu",
@@ -65,6 +71,7 @@ const ASR_CONFIG: AsrConfigInfo = {
   debug: false,
   models_present: false,
   punctuation_present: false,
+  vad_present: false,
   model_downloading: false,
   settings_path: "/home/user/.zapmomo/settings.toml",
 };
@@ -110,6 +117,9 @@ let asrConfig: typeof ASR_CONFIG;
 
 /** 模拟后端正在识别的运行时标志（is_asr_listening）。 */
 let asrListening = false;
+
+/** 模拟后端正在听写的运行时标志（is_asr_dictating）。 */
+let asrDictating = false;
 
 /** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
 let mic = "";
@@ -184,12 +194,26 @@ function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
     case "stop_asr_listen":
       asrListening = false;
       return Promise.resolve(undefined);
+    case "is_asr_dictating":
+      return Promise.resolve(asrDictating);
+    case "start_asr_dictate":
+      asrDictating = true;
+      return Promise.resolve(undefined);
+    case "stop_asr_dictate":
+      asrDictating = false;
+      return Promise.resolve(undefined);
     case "set_asr_params":
       asrConfig = { ...asrConfig, ...(args?.params ?? {}) };
       return Promise.resolve(undefined);
     case "download_asr_model":
       asrConfig = { ...asrConfig, models_present: true };
       return Promise.resolve(undefined);
+    case "transcribe_audio":
+      return Promise.resolve({
+        text: "你好，世界",
+        model_type: "sensevoice",
+        model_dir: "/home/user/.zapmomo/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8",
+      });
     case "list_model_library":
       return Promise.resolve(modelLibrary);
     case "set_current_model":
@@ -227,6 +251,7 @@ beforeEach(() => {
   listeners.clear();
   asrConfig = { ...ASR_CONFIG };
   asrListening = false;
+  asrDictating = false;
   mic = "";
   modelLibrary = defaultAsrModelLibrary();
   invokeMock.mockImplementation(defaultInvoke);
@@ -268,6 +293,72 @@ describe("AsrPage（语音识别配置）", () => {
     expect(screen.getByRole("switch", { name: "语音识别开关" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "下载模型" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "测试识别" })).toBeEnabled();
+  });
+
+  it("离线模型（SenseVoice）：听写开关可用、测试识别/转写文件可用", async () => {
+    asrConfig = { ...asrConfig, models_present: true, model_type: "sensevoice" };
+    renderAsrPage();
+    await screen.findByText("语音识别（ASR）配置");
+    expect(screen.getByText("已就绪")).toBeInTheDocument();
+    // 离线模型下顶部是「离线听写开关」（可开启听写），不再是「语音识别开关」
+    expect(screen.getByRole("switch", { name: "离线听写开关" })).toBeEnabled();
+    expect(screen.queryByRole("switch", { name: "语音识别开关" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "测试识别" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "转写文件" })).toBeEnabled();
+  });
+
+  it("离线模型：顶部开关 ON 调 start_asr_dictate、OFF 调 stop_asr_dictate，听写面板渲染", async () => {
+    asrConfig = { ...asrConfig, models_present: true, model_type: "sensevoice" };
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("语音识别（ASR）配置");
+    expect(screen.getByText("免提连续听写")).toBeInTheDocument();
+    // 顶部开关状态与面板状态各显示一处「未听写」
+    expect(screen.getAllByText("未听写").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("switch", { name: "离线听写开关" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_asr_dictate", { device: null });
+    });
+
+    await user.click(screen.getByRole("switch", { name: "离线听写开关" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("stop_asr_dictate");
+    });
+  });
+
+  it("离线模型测试识别：自动转写自带示例音频（wavPath=null）", async () => {
+    asrConfig = { ...asrConfig, models_present: true, model_type: "sensevoice" };
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("语音识别（ASR）配置");
+
+    await user.click(screen.getByRole("button", { name: "测试识别" }));
+    expect(await screen.findByText("转写音频文件")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("transcribe_audio", { wavPath: null });
+    });
+    expect(await screen.findByText("你好，世界")).toBeInTheDocument();
+  });
+
+  it("转写文件：选择 wav → transcribe_audio → 展示结果", async () => {
+    asrConfig = { ...asrConfig, models_present: true, model_type: "sensevoice" };
+    dialogOpenMock.mockResolvedValue("/tmp/input.wav");
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("语音识别（ASR）配置");
+
+    await user.click(screen.getByRole("button", { name: "转写文件" }));
+    expect(await screen.findByText("转写音频文件")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "选择音频文件…" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("transcribe_audio", { wavPath: "/tmp/input.wav" });
+    });
+    expect(await screen.findByText("你好，世界")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制" })).toBeInTheDocument();
   });
 
   it("顶部开关 ON 调用 start_asr_listen（默认 null 设备）", async () => {

@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
 import type { AsrConfigInfo, AsrParamsPatch } from "@/types/tauri";
+import { isStreamingAsr } from "./asrMeta";
 
 type NumericKey =
   | "num_threads"
@@ -86,20 +87,18 @@ const NUMERIC_META: Record<NumericKey, NumericMeta> = {
   },
 };
 
-function toDraft(params: AsrConfigInfo): Record<NumericKey, string> {
-  return {
-    num_threads: String(params.num_threads),
-    chunk_size: String(params.chunk_size),
-    rule1_min_trailing_silence: String(params.rule1_min_trailing_silence),
-    rule2_min_trailing_silence: String(params.rule2_min_trailing_silence),
-    rule3_min_utterance_length: String(params.rule3_min_utterance_length),
-    blank_penalty: String(params.blank_penalty),
-  };
+function toDraft(params: AsrConfigInfo, keys: NumericKey[]): Record<NumericKey, string> {
+  const out = {} as Record<NumericKey, string>;
+  for (const k of keys) out[k] = String(params[k]);
+  return out;
 }
 
-function parseNumericDraft(draft: Record<NumericKey, string>): Record<NumericKey, number> | null {
+function parseNumericDraft(
+  draft: Record<NumericKey, string>,
+  keys: NumericKey[],
+): Record<NumericKey, number> | null {
   const out = {} as Record<NumericKey, number>;
-  for (const k of NUMERIC_KEYS) {
+  for (const k of keys) {
     const raw = draft[k].trim();
     if (raw === "") return null;
     const v = Number(raw);
@@ -112,11 +111,12 @@ function parseNumericDraft(draft: Record<NumericKey, string>): Record<NumericKey
 function isPristine(
   draft: Record<NumericKey, string> | null,
   params: AsrConfigInfo | null | undefined,
+  keys: NumericKey[],
 ): boolean {
   if (!draft || !params) return true;
-  const parsed = parseNumericDraft(draft);
+  const parsed = parseNumericDraft(draft, keys);
   if (!parsed) return false; // 非法值视为已修改，允许点保存触发校验
-  return NUMERIC_KEYS.every((k) => Math.abs(parsed[k] - params[k]) < 1e-6);
+  return keys.every((k) => Math.abs(parsed[k] - params[k]) < 1e-6);
 }
 
 interface NumericRowProps {
@@ -170,16 +170,25 @@ export function AsrAdvancedParams() {
 
   const params = asr.config.config;
   const punctAvailable = params?.punctuation_present ?? false;
+  // 离线模型（SenseVoice/Whisper）无流式语义：隐藏 chunk_size/断句/空白惩罚/热词/端点检测
+  const streaming = isStreamingAsr(params?.model_type);
+  const numericKeys: NumericKey[] = streaming
+    ? NUMERIC_KEYS
+    : NUMERIC_KEYS.filter((k) => k === "num_threads");
 
   // hydrate：config 就绪时填充草稿；数字草稿在 dirty 时保留用户编辑，开关/热词仅首次填充
   useEffect(() => {
     if (!params) return;
-    setDraft((prev) => (prev === null || isPristine(prev, params) ? toDraft(params) : prev));
+    setDraft((prev) =>
+      prev === null || isPristine(prev, params, numericKeys)
+        ? toDraft(params, numericKeys)
+        : prev,
+    );
     setHotwordsDraft((prev) => (prev === null ? (params.hotwords ?? "") : prev));
     setEndpointDraft((prev) => (prev === null ? params.enable_endpoint : prev));
     setPunctDraft((prev) => (prev === null ? params.enable_punctuation : prev));
     setDebugDraft((prev) => (prev === null ? params.debug : prev));
-  }, [params]);
+  }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hydrated =
     draft !== null &&
@@ -190,7 +199,7 @@ export function AsrAdvancedParams() {
     params != null;
   const pristine =
     hydrated &&
-    isPristine(draft, params) &&
+    isPristine(draft, params, numericKeys) &&
     hotwordsDraft === (params.hotwords ?? "") &&
     endpointDraft === params.enable_endpoint &&
     punctDraft === params.enable_punctuation &&
@@ -206,12 +215,12 @@ export function AsrAdvancedParams() {
 
   const handleSave = async () => {
     if (!draft || !params) return;
-    const numeric = parseNumericDraft(draft);
+    const numeric = parseNumericDraft(draft, numericKeys);
     if (!numeric) {
       setSaveError("请将全部参数填写为有效数字");
       return;
     }
-    for (const k of NUMERIC_KEYS) {
+    for (const k of numericKeys) {
       const meta = NUMERIC_META[k];
       const v = numeric[k];
       if (v < meta.min || v > meta.max) {
@@ -221,8 +230,9 @@ export function AsrAdvancedParams() {
     }
     const patch: AsrParamsPatch = {
       ...numeric,
-      hotwords: hotwordsDraft ?? "",
-      enable_endpoint: endpointDraft ?? params.enable_endpoint,
+      // 离线模型无流式语义：热词/端点不随保存下发（后端缺省不修改）
+      hotwords: streaming ? (hotwordsDraft ?? "") : undefined,
+      enable_endpoint: streaming ? (endpointDraft ?? params.enable_endpoint) : undefined,
       enable_punctuation: punctDraft ?? params.enable_punctuation,
       debug: debugDraft ?? params.debug,
     };
@@ -262,7 +272,7 @@ export function AsrAdvancedParams() {
         </CollapsibleTrigger>
         <CollapsibleContent className="border-t border-divider">
           <div>
-            {NUMERIC_KEYS.map((k) => (
+            {numericKeys.map((k) => (
               <NumericRow
                 key={k}
                 key_={k}
@@ -271,42 +281,46 @@ export function AsrAdvancedParams() {
               />
             ))}
 
-            <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
-              <div className="min-w-0">
-                <p className="text-sm text-text-primary">热词增强</p>
-                <p className="mt-0.5 text-xs text-text-muted">
-                  空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。
-                </p>
-              </div>
-              <Input
-                className="w-64 shrink-0"
-                value={hotwordsDraft ?? ""}
-                onChange={(e) => {
-                  setSaveError(null);
-                  setHotwordsDraft(e.target.value);
-                }}
-                placeholder="如：文森特卡索 ZapMomo"
-                aria-label="热词增强"
-              />
-            </div>
+            {streaming && (
+              <>
+                <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm text-text-primary">热词增强</p>
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。
+                    </p>
+                  </div>
+                  <Input
+                    className="w-64 shrink-0"
+                    value={hotwordsDraft ?? ""}
+                    onChange={(e) => {
+                      setSaveError(null);
+                      setHotwordsDraft(e.target.value);
+                    }}
+                    placeholder="如：文森特卡索 ZapMomo"
+                    aria-label="热词增强"
+                  />
+                </div>
 
-            <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
-              <div className="min-w-0">
-                <p className="text-sm text-text-primary">端点检测</p>
-                <p className="mt-0.5 text-xs text-text-muted">
-                  静音自动断句，开启后说一句话自动出最终结果。
-                </p>
-              </div>
-              <Switch
-                aria-label="端点检测"
-                checked={endpointDraft ?? params?.enable_endpoint ?? true}
-                onCheckedChange={(v) => {
-                  setSaveError(null);
-                  setEndpointDraft(v);
-                }}
-                trackClass="bg-emerald-500"
-              />
-            </div>
+                <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm text-text-primary">端点检测</p>
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      静音自动断句，开启后说一句话自动出最终结果。
+                    </p>
+                  </div>
+                  <Switch
+                    aria-label="端点检测"
+                    checked={endpointDraft ?? params?.enable_endpoint ?? true}
+                    onCheckedChange={(v) => {
+                      setSaveError(null);
+                      setEndpointDraft(v);
+                    }}
+                    trackClass="bg-emerald-500"
+                  />
+                </div>
+              </>
+            )}
 
             <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
               <div className="min-w-0">

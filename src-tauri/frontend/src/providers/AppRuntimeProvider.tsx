@@ -2,6 +2,8 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { useToast } from "@/components/ui/toast";
 import { useAppInfo } from "@/hooks/useAppInfo";
 import { useAsrConfig } from "@/hooks/useAsrConfig";
+import { useAsrDictate } from "@/hooks/useAsrDictate";
+import { useAsrDictateResults } from "@/hooks/useAsrDictateResults";
 import { useAsrListening } from "@/hooks/useAsrListening";
 import { useAsrModelDownload } from "@/hooks/useAsrModelDownload";
 import { useAsrResults } from "@/hooks/useAsrResults";
@@ -34,6 +36,8 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
   const asrDownload = useAsrModelDownload(asrConfig.refresh);
   const asrListening = useAsrListening();
   const asrResults = useAsrResults();
+  const asrDictate = useAsrDictate();
+  const asrDictateResults = useAsrDictateResults();
   const llm = useLlm();
   const tts = useTts();
   const voice = useVoiceSession();
@@ -107,7 +111,8 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
     }
   }, [kwsConfig.config?.custom_keywords]);
 
-  const anyListening = listening.isListening || asrListening.isListening || voice.running;
+  const anyListening =
+    listening.isListening || asrListening.isListening || asrDictate.isDictating || voice.running;
 
   const value: RuntimeState = {
     appInfo,
@@ -117,6 +122,8 @@ export function AppRuntimeProvider({ children }: { children: ReactNode }) {
       config: asrConfig,
       download: asrDownload,
       listening: asrListening,
+      dictate: asrDictate,
+      dictateResults: asrDictateResults,
       results: asrResults,
     },
     llm: { ...llm, download: llmDownload },

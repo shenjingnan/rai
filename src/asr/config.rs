@@ -3,7 +3,7 @@
 /// 负责把 `settings.toml` 的 `[asr]` 表与 CLI flag 合并成一份已展开、已填默认值的
 /// `ResolvedAsrConfig`。优先级：CLI `--model-dir` > settings > 内置默认。
 use crate::config::settings::{AsrSettings, resolve_env_ref};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// 模型包内默认文件名。
@@ -29,12 +29,108 @@ pub const DEFAULT_PUNCT_MODEL: &str = "model.onnx";
 /// 标点模型安装完成所需的文件（相对目标目录）。
 pub const PUNCT_REQUIRED_FILES: [&str; 1] = [DEFAULT_PUNCT_MODEL];
 
+/// ASR 模型类型（sherpa-onnx `OfflineModelConfig` / `OnlineModelConfig` 的分支）。
+///
+/// 全链路显式传递：`[asr].model_type`（持久化）→ `ResolvedAsrConfig.model_type` →
+/// 引擎构造分支（`AsrEngine` 流式 / `offline::OfflineAsrEngine` 离线）。默认 Zipformer
+/// （streaming zipformer transducer，现状 6 个注册模型），老配置无该字段时按目录内容探测兜底。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AsrModelKind {
+    /// 流式 zipformer transducer（encoder/decoder/joiner/tokens 四件套）
+    #[default]
+    Zipformer,
+    /// 离线 SenseVoice：单 `model.onnx` + `tokens.txt`（多语言 + 情绪/事件标签）
+    #[serde(rename = "sensevoice")]
+    SenseVoice,
+    /// 离线 Whisper：`<size>-encoder.onnx` + `<size>-decoder.onnx` + `<size>-tokens.txt`
+    Whisper,
+}
+
+impl AsrModelKind {
+    /// snake_case 字符串（配置/JSON 直传）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Zipformer => "zipformer",
+            Self::SenseVoice => "sensevoice",
+            Self::Whisper => "whisper",
+        }
+    }
+
+    /// 解析 snake_case 字符串（与 `ModelType::from_str_value` 同款命名）。
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "zipformer" => Some(Self::Zipformer),
+            "sensevoice" => Some(Self::SenseVoice),
+            "whisper" => Some(Self::Whisper),
+            _ => None,
+        }
+    }
+
+    /// 是否流式（可走实时语音会话 / `AsrEngine`）。
+    pub fn is_streaming(&self) -> bool {
+        matches!(self, Self::Zipformer)
+    }
+
+    /// 是否离线（仅整段文件转写，走 `offline::OfflineAsrEngine`）。
+    pub fn is_offline(&self) -> bool {
+        !self.is_streaming()
+    }
+}
+
+/// SenseVoice 主模型默认文件名（注册 int8 变体
+/// `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`；fp32 包 999MB，桌面伙伴不划算）。
+pub const SENSEVOICE_MODEL: &str = "model.int8.onnx";
+
+/// SenseVoice 模型安装完成所需的文件（相对目标目录）。
+pub const SENSEVOICE_REQUIRED_FILES: [&str; 2] = [SENSEVOICE_MODEL, DEFAULT_TOKENS];
+
+/// Whisper tiny 模型安装完成所需的文件（sherpa-onnx-whisper-tiny）。
+pub const WHISPER_TINY_ENCODER: &str = "tiny-encoder.onnx";
+pub const WHISPER_TINY_DECODER: &str = "tiny-decoder.onnx";
+pub const WHISPER_TINY_TOKENS: &str = "tiny-tokens.txt";
+pub const WHISPER_TINY_REQUIRED_FILES: [&str; 3] = [
+    WHISPER_TINY_ENCODER,
+    WHISPER_TINY_DECODER,
+    WHISPER_TINY_TOKENS,
+];
+
+/// Whisper base 模型安装完成所需的文件（sherpa-onnx-whisper-base）。
+pub const WHISPER_BASE_ENCODER: &str = "base-encoder.onnx";
+pub const WHISPER_BASE_DECODER: &str = "base-decoder.onnx";
+pub const WHISPER_BASE_TOKENS: &str = "base-tokens.txt";
+pub const WHISPER_BASE_REQUIRED_FILES: [&str; 3] = [
+    WHISPER_BASE_ENCODER,
+    WHISPER_BASE_DECODER,
+    WHISPER_BASE_TOKENS,
+];
+
+/// 各模型类型安装完成所需的文件（相对模型目录）。
+///
+/// Whisper 因 tiny/base 尺寸前缀不同返回空，运行时由目录探测
+/// （`detect_whisper_prefix`）兜底；安装完整性按 registry role 精确声明。
+pub fn required_files(kind: AsrModelKind) -> &'static [&'static str] {
+    match kind {
+        AsrModelKind::Zipformer => &REQUIRED_FILES,
+        AsrModelKind::SenseVoice => &SENSEVOICE_REQUIRED_FILES,
+        AsrModelKind::Whisper => &[],
+    }
+}
+
 /// 解析后的完整 ASR 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAsrConfig {
     /// 是否启用 ASR（语音会话「能识别」的前提），缺省 false
     pub enabled: bool,
+    /// 模型类型（决定引擎构造分支；默认 Zipformer，老配置按目录探测兜底）
+    pub model_type: AsrModelKind,
     pub model_dir: PathBuf,
+    /// SenseVoice 主模型 `model.onnx`（whisper/zipformer 为 None）
+    pub model: Option<PathBuf>,
+    /// SenseVoice/Whisper 转写语言（None = 自动检测）
+    pub language: Option<String>,
+    /// SenseVoice 反向文本正则化（数字/标点，缺省 true）
+    pub use_itn: Option<bool>,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
     pub joiner: PathBuf,
@@ -68,6 +164,10 @@ impl Default for ResolvedAsrConfig {
         let join = |name: &str| model_dir.join(name);
         Self {
             enabled: false,
+            model_type: AsrModelKind::Zipformer,
+            model: None,
+            language: None,
+            use_itn: None,
             encoder: join(DEFAULT_ENCODER),
             decoder: join(DEFAULT_DECODER),
             joiner: join(DEFAULT_JOINER),
@@ -218,16 +318,92 @@ fn detect_default_name(field: &str, model_dir: &Path, fallback: &str) -> String 
     }
 }
 
-/// 目录内是否探测得到完整的一套 ASR 模型文件（模型无关，替代按默认文件名硬编码的
-/// 判定，供模型库 external/HF 导入的完整性检查复用；对称 KWS 的 `kws_files_present`）。
+/// 目录内匹配 SenseVoice 主模型：`model.onnx` / `model.int8.onnx` / `model-*.onnx`。
+///
+/// 与 `detect_default_onnx` 的 `{prefix}-` 前缀探测不同：SenseVoice 是 `model.onnx`（无连字符），
+/// 用等值/前缀双匹配，候选字母序取第一个。
+fn detect_model_onnx(model_dir: &Path) -> Option<String> {
+    let Ok(entries) = std::fs::read_dir(model_dir) else {
+        return None;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n == "model.onnx" || n == "model.int8.onnx" || n.starts_with("model-"))
+        .filter(|n| n.ends_with(".onnx"))
+        .collect();
+    names.sort();
+    names.into_iter().next()
+}
+
+/// 从 `*-encoder.onnx` / `*-encoder.int8.onnx` 推断 whisper 尺寸前缀（tiny/base/...）。
+///
+/// 字母序取第一个（`base` < `tiny`，确定性），无匹配返回 None。
+fn detect_whisper_prefix(model_dir: &Path) -> Option<String> {
+    let Ok(entries) = std::fs::read_dir(model_dir) else {
+        return None;
+    };
+    let mut prefixes: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter_map(|n| {
+            n.strip_suffix("-encoder.onnx")
+                .or_else(|| n.strip_suffix("-encoder.int8.onnx"))
+                .map(str::to_string)
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    prefixes.sort();
+    prefixes.into_iter().next()
+}
+
+/// 目录内容探测模型类型（settings 未配置 `model_type` 时的兜底）。
+///
+/// 文件探针：`model.onnx`+tokens → SenseVoice；`*-encoder.onnx` 系 → Whisper；
+/// 否则 Zipformer（含空目录/不存在）。managed 安装目录名 == registry name 的
+/// 权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
+pub fn detect_kind_from_dir(model_dir: &Path) -> AsrModelKind {
+    if detect_model_onnx(model_dir).is_some() && model_dir.join(DEFAULT_TOKENS).is_file() {
+        return AsrModelKind::SenseVoice;
+    }
+    if let Some(prefix) = detect_whisper_prefix(model_dir)
+        && model_dir.join(format!("{prefix}-decoder.onnx")).is_file()
+        && model_dir.join(format!("{prefix}-tokens.txt")).is_file()
+    {
+        return AsrModelKind::Whisper;
+    }
+    AsrModelKind::Zipformer
+}
+
+/// 按模型类型判定目录是否探测得到完整的一套模型文件（供 `asr_files_present` 分派）。
+pub fn asr_files_present_for_kind(model_dir: &Path, kind: AsrModelKind) -> bool {
+    match kind {
+        AsrModelKind::Zipformer => {
+            let files = [
+                detect_default_onnx(model_dir, "encoder", DEFAULT_ENCODER, true),
+                detect_default_onnx(model_dir, "decoder", DEFAULT_DECODER, false),
+                detect_default_onnx(model_dir, "joiner", DEFAULT_JOINER, true),
+                DEFAULT_TOKENS.to_string(),
+            ];
+            files.iter().all(|f| model_dir.join(f).is_file())
+        }
+        AsrModelKind::SenseVoice => {
+            detect_model_onnx(model_dir).is_some() && model_dir.join(DEFAULT_TOKENS).is_file()
+        }
+        AsrModelKind::Whisper => detect_whisper_prefix(model_dir).is_some_and(|prefix| {
+            model_dir.join(format!("{prefix}-encoder.onnx")).is_file()
+                && model_dir.join(format!("{prefix}-decoder.onnx")).is_file()
+                && model_dir.join(format!("{prefix}-tokens.txt")).is_file()
+        }),
+    }
+}
+
+/// 目录内是否探测得到完整的一套 ASR 模型文件（模型无关 + 族感知，替代按默认文件名
+/// 硬编码的判定，供模型库 external/HF 导入的完整性检查复用；对称 KWS 的 `kws_files_present`）。
 pub fn asr_files_present(model_dir: &Path) -> bool {
-    let files = [
-        detect_default_onnx(model_dir, "encoder", DEFAULT_ENCODER, true),
-        detect_default_onnx(model_dir, "decoder", DEFAULT_DECODER, false),
-        detect_default_onnx(model_dir, "joiner", DEFAULT_JOINER, true),
-        DEFAULT_TOKENS.to_string(),
-    ];
-    files.iter().all(|f| model_dir.join(f).is_file())
+    asr_files_present_for_kind(model_dir, detect_kind_from_dir(model_dir))
 }
 
 /// 解析模型目录：CLI > settings > 默认。
@@ -279,10 +455,37 @@ pub fn resolve(
         resolve_file(value, &detected, &cfg.model_dir)
     };
 
-    cfg.encoder = file("encoder", DEFAULT_ENCODER)?;
-    cfg.decoder = file("decoder", DEFAULT_DECODER)?;
-    cfg.joiner = file("joiner", DEFAULT_JOINER)?;
-    cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
+    // 模型类型来源：settings 显式配置 > 目录内容探测（老用户无字段 → Zipformer，零行为变化）
+    let kind = s
+        .and_then(|s| s.model_type)
+        .unwrap_or_else(|| detect_kind_from_dir(&cfg.model_dir));
+    cfg.model_type = kind;
+    cfg.language = s.and_then(|s| s.language.clone());
+    cfg.use_itn = s.and_then(|s| s.use_itn);
+
+    match kind {
+        AsrModelKind::Zipformer => {
+            cfg.encoder = file("encoder", DEFAULT_ENCODER)?;
+            cfg.decoder = file("decoder", DEFAULT_DECODER)?;
+            cfg.joiner = file("joiner", DEFAULT_JOINER)?;
+            cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
+        }
+        AsrModelKind::SenseVoice => {
+            // 主模型探测 `model*.onnx`（回退默认常量名）；encoder/decoder/joiner 不消费
+            let detected =
+                detect_model_onnx(&cfg.model_dir).unwrap_or_else(|| SENSEVOICE_MODEL.to_string());
+            cfg.model = Some(cfg.model_dir.join(detected));
+            cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
+        }
+        AsrModelKind::Whisper => {
+            // 尺寸前缀探测（tiny/base/...），回退 "tiny"；settings 显式文件名覆盖优先
+            let prefix =
+                detect_whisper_prefix(&cfg.model_dir).unwrap_or_else(|| "tiny".to_string());
+            cfg.encoder = file("encoder", &format!("{prefix}-encoder.onnx"))?;
+            cfg.decoder = file("decoder", &format!("{prefix}-decoder.onnx"))?;
+            cfg.tokens = file("tokens", &format!("{prefix}-tokens.txt"))?;
+        }
+    }
 
     cfg.enabled = s.and_then(|s| s.enabled).unwrap_or(false);
     cfg.provider = s
@@ -334,6 +537,10 @@ pub struct AsrParamsPatch {
     pub blank_penalty: Option<f32>,
     pub hotwords: Option<String>,
     pub enable_punctuation: Option<bool>,
+    /// 转写语言（SenseVoice/Whisper；空串清空为自动检测）
+    pub language: Option<String>,
+    /// SenseVoice 反向文本正则化
+    pub use_itn: Option<bool>,
     pub debug: Option<bool>,
 }
 
@@ -401,6 +608,16 @@ impl AsrParamsPatch {
         }
         if let Some(v) = self.enable_punctuation {
             asr.enable_punctuation = Some(v);
+        }
+        if let Some(v) = &self.language {
+            asr.language = if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            };
+        }
+        if let Some(v) = self.use_itn {
+            asr.use_itn = Some(v);
         }
         if let Some(v) = self.debug {
             asr.debug = Some(v);
@@ -640,6 +857,8 @@ mod tests {
             blank_penalty: Some(0.5),
             hotwords: Some("你好小智 文森特卡索".to_string()),
             enable_punctuation: Some(false),
+            language: Some("zh".to_string()),
+            use_itn: Some(true),
             debug: Some(true),
         };
         let mut asr = AsrSettings::default();
@@ -653,6 +872,8 @@ mod tests {
         assert_eq!(asr.blank_penalty, Some(0.5));
         assert_eq!(asr.hotwords, Some("你好小智 文森特卡索".to_string()));
         assert_eq!(asr.enable_punctuation, Some(false));
+        assert_eq!(asr.language, Some("zh".to_string()));
+        assert_eq!(asr.use_itn, Some(true));
         assert_eq!(asr.debug, Some(true));
     }
 
@@ -954,5 +1175,175 @@ mod tests {
         )
         .unwrap();
         assert!(!asr_files_present(dir.path()), "缺 encoder 应为 false");
+    }
+
+    // ---- AsrModelKind / 多族探测与解析 ----
+
+    #[test]
+    fn test_model_kind_str_and_semantics() {
+        for (kind, s) in [
+            (AsrModelKind::Zipformer, "zipformer"),
+            (AsrModelKind::SenseVoice, "sensevoice"),
+            (AsrModelKind::Whisper, "whisper"),
+        ] {
+            assert_eq!(kind.as_str(), s);
+            assert_eq!(AsrModelKind::parse_str(s), Some(kind));
+        }
+        assert_eq!(AsrModelKind::parse_str("unknown"), None);
+        assert!(AsrModelKind::Zipformer.is_streaming());
+        assert!(!AsrModelKind::Zipformer.is_offline());
+        assert!(!AsrModelKind::SenseVoice.is_streaming());
+        assert!(AsrModelKind::SenseVoice.is_offline());
+        assert!(!AsrModelKind::Whisper.is_streaming());
+        assert!(AsrModelKind::Whisper.is_offline());
+        // serde snake_case 往返
+        assert_eq!(
+            serde_json::from_str::<AsrModelKind>("\"sensevoice\"").unwrap(),
+            AsrModelKind::SenseVoice
+        );
+        assert_eq!(
+            serde_json::to_string(&AsrModelKind::Whisper).unwrap(),
+            "\"whisper\""
+        );
+    }
+
+    #[test]
+    fn test_required_files_by_kind() {
+        assert_eq!(required_files(AsrModelKind::Zipformer).len(), 4);
+        assert_eq!(
+            required_files(AsrModelKind::SenseVoice),
+            &[SENSEVOICE_MODEL, DEFAULT_TOKENS]
+        );
+        // whisper 因 tiny/base 文件名不同，安装清单按 role 精确声明，此处运行时返回空（探测兜底）
+        assert!(required_files(AsrModelKind::Whisper).is_empty());
+    }
+
+    #[test]
+    fn test_detect_kind_from_dir_probes() {
+        // SenseVoice：model.onnx + tokens.txt
+        let sense = tempfile::tempdir().unwrap();
+        std::fs::write(sense.path().join("model.onnx"), b"x").unwrap();
+        std::fs::write(sense.path().join(DEFAULT_TOKENS), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(sense.path()), AsrModelKind::SenseVoice);
+
+        // Whisper：*-encoder.onnx + *-decoder.onnx + *-tokens.txt
+        let whisper = tempfile::tempdir().unwrap();
+        for name in ["tiny-encoder.onnx", "tiny-decoder.onnx", "tiny-tokens.txt"] {
+            std::fs::write(whisper.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(detect_kind_from_dir(whisper.path()), AsrModelKind::Whisper);
+
+        // Zipformer：四件套
+        let zip = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder-epoch-99-avg-1.int8.onnx",
+            "decoder-epoch-99-avg-1.onnx",
+            "joiner-epoch-99-avg-1.int8.onnx",
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(zip.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(detect_kind_from_dir(zip.path()), AsrModelKind::Zipformer);
+
+        // 空目录 → Zipformer 兜底
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(detect_kind_from_dir(empty.path()), AsrModelKind::Zipformer);
+    }
+
+    #[test]
+    fn test_resolve_sensevoice_sets_model_and_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model.onnx"), b"x").unwrap();
+        std::fs::write(dir.path().join(DEFAULT_TOKENS), b"x").unwrap();
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::SenseVoice),
+            language: Some("zh".to_string()),
+            use_itn: Some(true),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.model_type, AsrModelKind::SenseVoice);
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some(dir.path().join("model.onnx").as_path())
+        );
+        assert_eq!(cfg.tokens, dir.path().join(DEFAULT_TOKENS));
+        assert_eq!(cfg.language.as_deref(), Some("zh"));
+        assert_eq!(cfg.use_itn, Some(true));
+        // 离线族不消费 joiner/encoder/decoder 探测，保留默认常量
+        assert_eq!(cfg.encoder.file_name().unwrap(), DEFAULT_ENCODER);
+    }
+
+    #[test]
+    fn test_resolve_whisper_sets_encoder_decoder_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["base-encoder.onnx", "base-decoder.onnx", "base-tokens.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Whisper),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.model_type, AsrModelKind::Whisper);
+        assert_eq!(cfg.encoder.file_name().unwrap(), "base-encoder.onnx");
+        assert_eq!(cfg.decoder.file_name().unwrap(), "base-decoder.onnx");
+        assert_eq!(cfg.tokens.file_name().unwrap(), "base-tokens.txt");
+        assert_eq!(cfg.model, None);
+    }
+
+    #[test]
+    fn test_resolve_whisper_falls_back_tiny_prefix() {
+        // 目录无 whisper 文件但显式指定 Whisper → prefix 回退 "tiny"
+        let dir = tempfile::tempdir().unwrap();
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Whisper),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.encoder.file_name().unwrap(), "tiny-encoder.onnx");
+        assert_eq!(cfg.decoder.file_name().unwrap(), "tiny-decoder.onnx");
+        assert_eq!(cfg.tokens.file_name().unwrap(), "tiny-tokens.txt");
+    }
+
+    #[test]
+    fn test_resolve_zipformer_unchanged_for_legacy() {
+        run_with_temp_home(|_| {
+            // 老配置（无 model_type 字段）→ Zipformer，行为与现状一致
+            let cfg = resolve(None, None).unwrap();
+            assert_eq!(cfg.model_type, AsrModelKind::Zipformer);
+            assert_eq!(cfg.encoder.file_name().unwrap(), DEFAULT_ENCODER);
+            assert_eq!(cfg.decoder.file_name().unwrap(), DEFAULT_DECODER);
+            assert_eq!(cfg.joiner.file_name().unwrap(), DEFAULT_JOINER);
+            assert_eq!(cfg.tokens.file_name().unwrap(), DEFAULT_TOKENS);
+            assert_eq!(cfg.model, None);
+        });
+    }
+
+    #[test]
+    fn test_asr_files_present_family_aware() {
+        // SenseVoice 目录
+        let sense = tempfile::tempdir().unwrap();
+        std::fs::write(sense.path().join("model.onnx"), b"x").unwrap();
+        std::fs::write(sense.path().join(DEFAULT_TOKENS), b"x").unwrap();
+        assert!(asr_files_present(sense.path()));
+
+        // Whisper 目录
+        let whisper = tempfile::tempdir().unwrap();
+        for name in ["tiny-encoder.onnx", "tiny-decoder.onnx", "tiny-tokens.txt"] {
+            std::fs::write(whisper.path().join(name), b"x").unwrap();
+        }
+        assert!(asr_files_present(whisper.path()));
+
+        // 缺 tokens → false
+        std::fs::remove_file(whisper.path().join("tiny-tokens.txt")).unwrap();
+        assert!(!asr_files_present(whisper.path()));
+
+        // 空目录 / 不存在 → false
+        assert!(!asr_files_present(tempfile::tempdir().unwrap().path()));
+        assert!(!asr_files_present(Path::new("/nonexistent-asr")));
     }
 }

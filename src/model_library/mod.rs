@@ -380,12 +380,29 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
         ModelType::Asr => {
             let asr = cfg.asr.get_or_insert_with(Default::default);
             asr.model_dir = Some(path_str);
-            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖会污染新模型的文件探测，
-            // 交回 resolve 自动探测（与 KWS 分支同款取舍）。
+            // 切换时同步持久化模型类型：managed 安装目录名 == registry `name`，据此
+            // 推导 sensevoice/whisper；streaming zipformer 与 external 目录无 asr_kind
+            // （None），resolve 会按目录内容兜底探测（对称 TTS 分支）。
+            if let Some(name) = path.file_name() {
+                let base = name.to_string_lossy().to_string();
+                if let Some(kind) = crate::model_library::registry::all_models()
+                    .iter()
+                    .filter(|m| m.model_type == ModelType::Asr)
+                    .find(|m| m.name == base)
+                    .and_then(|m| m.asr_kind)
+                {
+                    asr.model_type = Some(kind);
+                }
+            }
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/decoder/joiner/
+            // tokens）与族专属参数（language/use_itn）会污染新模型，交回 resolve 自动探测
+            // （与 KWS/TTS 分支同款取舍）。
             asr.encoder = None;
             asr.decoder = None;
             asr.joiner = None;
             asr.tokens = None;
+            asr.language = None;
+            asr.use_itn = None;
         }
         ModelType::Tts => {
             let tts = cfg.tts.get_or_insert_with(Default::default);
@@ -1594,6 +1611,48 @@ mod tests {
     }
 
     #[test]
+    fn test_set_selected_asr_persists_model_type_from_registry_name() {
+        run_with_temp_home(|home| {
+            // managed 安装目录名 == registry `name` → 切换时推导并持久化对应 kind
+            let sense = home.join("models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17");
+            set_selected_model(ModelType::Asr, &sense).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.asr.as_ref().and_then(|a| a.model_type),
+                Some(crate::asr::config::AsrModelKind::SenseVoice)
+            );
+
+            let whisper = home.join("models/sherpa-onnx-whisper-tiny");
+            set_selected_model(ModelType::Asr, &whisper).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.asr.as_ref().and_then(|a| a.model_type),
+                Some(crate::asr::config::AsrModelKind::Whisper)
+            );
+
+            // streaming zipformer：asr_kind 缺省 None → 不覆盖已推导 kind（resolve 按目录兜底）
+            let zip =
+                home.join("models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20");
+            set_selected_model(ModelType::Asr, &zip).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.asr.as_ref().and_then(|a| a.model_type),
+                Some(crate::asr::config::AsrModelKind::Whisper),
+                "无 asr_kind 的 streaming 目录不应覆盖已推导 kind"
+            );
+
+            // 文件级覆盖与族专属参数全部重置
+            let a = cfg.asr.as_ref().unwrap();
+            assert_eq!(a.encoder, None);
+            assert_eq!(a.decoder, None);
+            assert_eq!(a.joiner, None);
+            assert_eq!(a.tokens, None);
+            assert_eq!(a.language, None);
+            assert_eq!(a.use_itn, None);
+        });
+    }
+
+    #[test]
     fn test_add_local_model_registry_binding() {
         run_with_temp_home(|home| {
             // 造一个合法的 GGUF（magic 头）
@@ -1777,6 +1836,7 @@ mod tests {
             display_name: name.to_string(),
             model_type: ModelType::Kws,
             tts_kind: None,
+            asr_kind: None,
             runtime: "sherpa-onnx".into(),
             format: "ONNX".into(),
             description: String::new(),

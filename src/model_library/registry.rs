@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
+use crate::asr::config::AsrModelKind;
 use crate::kws::model::{ModelAsset, asset_by_role};
 use crate::tts::config::TtsModelKind;
 
@@ -62,6 +63,9 @@ pub struct RegistryModel {
     /// TTS 子类型（zipvoice/vits/matcha/...；仅 `model_type == Tts` 有意义，其余为 None）
     #[serde(default)]
     pub tts_kind: Option<TtsModelKind>,
+    /// ASR 子类型（zipformer/sensevoice/whisper；仅 `model_type == Asr` 有意义，其余为 None）
+    #[serde(default)]
+    pub asr_kind: Option<AsrModelKind>,
     pub runtime: String,
     pub format: String,
     pub description: String,
@@ -139,6 +143,10 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
     match role {
         "wake-word" => &crate::kws::model::KWS_REQUIRED_FILES,
         "wake-word-wenetspeech" => &crate::kws::model::KWS_WENETSPEECH_REQUIRED_FILES,
+        // 离线 ASR：精确 role 必须在 asr-* 通配之前，否则被通配吞掉返回错误 4 件套
+        "asr-sensevoice" => &crate::asr::config::SENSEVOICE_REQUIRED_FILES,
+        "asr-whisper-tiny" => &crate::asr::config::WHISPER_TINY_REQUIRED_FILES,
+        "asr-whisper-base" => &crate::asr::config::WHISPER_BASE_REQUIRED_FILES,
         // 所有 streaming zipformer ASR（含每个 ASR 的唯一 role）共用同一组 4 文件
         r if r == "asr" || r.starts_with("asr-") => &crate::asr::config::REQUIRED_FILES,
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
@@ -157,6 +165,11 @@ pub fn registry_tts_kind(id: &str) -> Option<TtsModelKind> {
     model_by_id(id).and_then(|m| m.tts_kind)
 }
 
+/// 按 registry id 查 ASR 子类型（非 ASR 或无 `asr_kind` 时返回 None）。
+pub fn registry_asr_kind(id: &str) -> Option<AsrModelKind> {
+    model_by_id(id).and_then(|m| m.asr_kind)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,8 +179,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            20,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS"
+            23,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR"
         );
         assert!(
             models
@@ -245,6 +258,15 @@ mod tests {
         assert_eq!(ws.len(), 5);
         assert!(ws.contains(&"encoder-epoch-12-avg-2-chunk-16-left-64.onnx"));
         assert!(ws.contains(&"test_wavs/test_keywords.txt"));
+        // 新离线 ASR：精确 role 优先于 asr-* 通配
+        assert_eq!(required_files_for_role("asr-sensevoice").len(), 2);
+        assert!(required_files_for_role("asr-sensevoice").contains(&"model.int8.onnx"));
+        assert_eq!(required_files_for_role("asr-whisper-tiny").len(), 3);
+        assert!(required_files_for_role("asr-whisper-tiny").contains(&"tiny-tokens.txt"));
+        assert_eq!(required_files_for_role("asr-whisper-base").len(), 3);
+        assert!(required_files_for_role("asr-whisper-base").contains(&"base-encoder.onnx"));
+        // 回归：既有 streaming zipformer role 仍为 4 件套（不被新精确 arm 吞掉）
+        assert_eq!(required_files_for_role("asr-zh-14m").len(), 4);
         assert!(required_files_for_role("unknown").is_empty());
     }
 
@@ -265,6 +287,28 @@ mod tests {
         // 非 TTS 或无 tts_kind → None
         assert_eq!(registry_tts_kind("qwen3-1.7b-q4-k-m"), None);
         assert_eq!(registry_tts_kind("不存在"), None);
+    }
+
+    #[test]
+    fn test_registry_asr_kind() {
+        use crate::asr::config::AsrModelKind;
+        assert_eq!(
+            registry_asr_kind("asr-sensevoice-zh-en-ja-ko-yue"),
+            Some(AsrModelKind::SenseVoice)
+        );
+        assert_eq!(
+            registry_asr_kind("asr-whisper-tiny"),
+            Some(AsrModelKind::Whisper)
+        );
+        assert_eq!(
+            registry_asr_kind("asr-whisper-base"),
+            Some(AsrModelKind::Whisper)
+        );
+        // 既有 streaming zipformer：asr_kind 缺省 → None（老行为）
+        assert_eq!(registry_asr_kind("asr-streaming-bilingual-zh-en"), None);
+        // 非 ASR 或不存在 → None
+        assert_eq!(registry_asr_kind("tts-zipvoice-distill-int8"), None);
+        assert_eq!(registry_asr_kind("不存在"), None);
     }
 
     #[test]

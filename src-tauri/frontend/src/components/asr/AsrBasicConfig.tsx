@@ -1,4 +1,4 @@
-import { CircleAlert, Download, FolderOpen, Mic, Repeat2, Settings2 } from "lucide-react";
+import { CircleAlert, Download, FileAudio, FolderOpen, Mic, Repeat2, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { DeviceSelect } from "@/components/DeviceSelect";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -12,6 +12,8 @@ interface AsrBasicConfigProps {
   onTestOpen: () => void;
   /** 打开「选择识别模型」弹窗（由 AsrPage 持有弹窗状态） */
   onSwitchOpen: () => void;
+  /** 打开「转写文件」弹窗（离线模型主入口；流式模型也可用） */
+  onTranscribeOpen: () => void;
 }
 
 /**
@@ -19,7 +21,11 @@ interface AsrBasicConfigProps {
  * 当前模型（名称 + 就绪/未下载 Badge + 切换模型 + 可展开完整路径）/ 麦克风来源（复用全局 DeviceSelect）+
  * 底部「下载模型 / 选择模型 / 测试识别」操作按钮。
  */
-export function AsrBasicConfig({ onTestOpen, onSwitchOpen }: AsrBasicConfigProps) {
+export function AsrBasicConfig({
+  onTestOpen,
+  onSwitchOpen,
+  onTranscribeOpen,
+}: AsrBasicConfigProps) {
   const {
     asr,
     devices: { error: devicesError },
@@ -176,6 +182,15 @@ export function AsrBasicConfig({ onTestOpen, onSwitchOpen }: AsrBasicConfigProps
         >
           <Mic className="h-4 w-4" />
           测试识别
+        </Button>
+        <Button
+          variant="secondary"
+          className="shadow-none"
+          disabled={!modelsPresent}
+          onClick={onTranscribeOpen}
+        >
+          <FileAudio className="h-4 w-4" />
+          转写文件
         </Button>
       </div>
 

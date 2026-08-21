@@ -25,12 +25,13 @@
 ///
 /// 打断序列：KWS 命中 → `llm.cancel()` + `speaker.stop()` + `synth.cancel_all()` +
 /// `current_gen += 1`（作废在途合成结果）+ 回 Armed 前 `skip_for` 丢回声尾巴。
-use crate::asr::{AsrEngine, AsrReaction, AsrResult};
+use crate::asr::{AsrReaction, AsrResult};
 use crate::kws::{KwsEngine, KwsResult, Reaction, ReactionOutcome};
 use crate::llm::LlmEngine;
 use crate::llm::LlmEvent;
 use crate::llm::types::{ChatMessage, ChatRole, InputItem};
 use crate::tts::TtsEngine;
+use crate::voice::asr_backend::AsrBackend;
 use crate::voice::config::ResolvedSessionConfig;
 use crate::voice::events::{ErrorKind, StoppedReason, VoiceEvent};
 use crate::voice::listen::{MicEvent, MicLoop};
@@ -59,7 +60,8 @@ const LLM_LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct VoiceSession {
     cfg: ResolvedSessionConfig,
     kws: KwsEngine,
-    asr: AsrEngine,
+    /// ASR 后端（按 `model_type` 分派流式 zipformer / 离线 SenseVoice/Whisper）
+    asr: AsrBackend,
     llm: Arc<LlmEngine>,
     /// 会话订阅的 LLM 事件流（与 GUI 的 forward 订阅互不抢事件）
     llm_rx: Receiver<LlmEvent>,
@@ -70,7 +72,6 @@ pub struct VoiceSession {
     speaker: Box<dyn AudioPlayer>,
     synth: SynthHandle,
     mic: MicLoop,
-    asr_stream: OnlineStream,
     kws_stream: OnlineStream,
 
     state: SessionState,
@@ -128,7 +129,8 @@ impl VoiceSession {
     ) -> Result<Self, String> {
         cfg.asr.enable_endpoint = false;
         let kws = KwsEngine::new(cfg.kws.clone())?;
-        let asr = AsrEngine::new(cfg.asr.clone())?;
+        // 按 model_type 构造 ASR 后端：zipformer 走流式、SenseVoice/Whisper 走离线
+        let asr = AsrBackend::new(&cfg.asr)?;
         let llm = if let Some(slot) = &llm_slot {
             // 宿主共享引擎：槽内应有引擎（start_voice_session_impl 已确保）；为空则自建兜底
             match slot
@@ -168,7 +170,6 @@ impl VoiceSession {
         )?;
         let speaker = Box::new(crate::voice::player::Speaker::try_new()?);
         let kws_stream = Self::make_kws_stream(&kws, &cfg)?;
-        let asr_stream = asr.create_stream(cfg.asr.hotwords.as_deref());
 
         Ok(Self {
             cfg,
@@ -180,7 +181,6 @@ impl VoiceSession {
             speaker,
             synth,
             mic,
-            asr_stream,
             kws_stream,
             state: SessionState::Idle,
             running,
@@ -297,7 +297,8 @@ impl VoiceSession {
         self.state = next;
         match next {
             SessionState::Listening => {
-                self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
+                // 复位后端：流式重建流（丢上轮识别状态）；离线清空 PCM 缓冲
+                self.asr.reset(&self.cfg.asr);
                 self.silence_accum = 0.0;
             }
             SessionState::WaitingSpeech => {
@@ -394,18 +395,21 @@ impl VoiceSession {
         Ok(())
     }
 
-    /// Listening：喂 ASR（流式字幕）+ RMS 静音累计；连续静音达 `asr_max_trailing_silence`
-    /// 判定说完（强制 flush 取最终文本）→ 入历史 → 发起 LLM 生成。
+    /// Listening：喂 ASR（流式字幕 / 离线 PCM 缓冲）+ RMS 静音累计；连续静音达
+    /// `asr_max_trailing_silence` 判定说完（取最终文本）→ 入历史 → 发起 LLM 生成。
     fn step_listening(&mut self) -> Result<(), String> {
         let chunk = match self.mic.next(MIC_POLL)? {
             MicEvent::Chunk(c) => c,
             MicEvent::Timeout => return Ok(()),
             MicEvent::Disconnected => return Err("麦克风已断开".to_string()),
         };
-        self.asr.feed(&self.asr_stream, &chunk);
+        // RMS 门控：该块是否超过音量门限（离线用此标记缓冲内是否真有语音，防静音空转写）
+        let chunk_secs = self.cfg.asr.chunk_size as f32 / self.cfg.asr.sample_rate as f32;
+        let speech_active = chunk_rms(&chunk) > self.cfg.vad_silence_threshold;
+        self.asr.feed_chunk(&chunk, speech_active);
         let mut collector = AsrCollector::default();
-        let _ = self.asr.decode_loop(&self.asr_stream, &mut collector);
-        // 流式字幕：部分识别结果逐步刷新（覆盖同一行）
+        self.asr.decode_into(&mut collector);
+        // 流式字幕：部分识别结果逐步刷新（覆盖同一行）；离线无 partial，天然不发
         if !collector.partial.is_empty() {
             (self.emit)(VoiceEvent::Transcript {
                 text: collector.partial.clone(),
@@ -413,13 +417,12 @@ impl VoiceSession {
             });
         }
         // RMS 静音累计：有语音则重置，否则累加当前块时长
-        let chunk_secs = self.cfg.asr.chunk_size as f32 / self.cfg.asr.sample_rate as f32;
-        if chunk_rms(&chunk) > self.cfg.vad_silence_threshold {
+        if speech_active {
             self.silence_accum = 0.0;
         } else {
             self.silence_accum += chunk_secs;
         }
-        // 结束判定：sherpa is_final（兜底）或连续静音达到 asr_max_trailing_silence
+        // 结束判定：sherpa is_final（流式兜底）或连续静音达到 asr_max_trailing_silence
         if let Some(text) = collector.final_text {
             self.handle_user_final(text)?;
         } else if self.silence_accum >= self.cfg.asr_max_trailing_silence {
@@ -435,9 +438,9 @@ impl VoiceSession {
         let text = text.trim().to_string();
         self.silence_accum = 0.0;
         if text.is_empty() {
-            // force_finalize 已终结旧 ASR 流，重建后继续聆听（不回待唤醒）
+            // force_finalize 已终结旧句，复位后端后继续聆听（不回待唤醒）
             tracing::debug!("[voice] ASR 空识别，保持聆听");
-            self.asr_stream = self.asr.create_stream(self.cfg.asr.hotwords.as_deref());
+            self.asr.reset(&self.cfg.asr);
             return Ok(());
         }
         (self.emit)(VoiceEvent::Transcript {
@@ -465,19 +468,10 @@ impl VoiceSession {
         self.set_state(SessionEvent::UserUtteranceFinal)
     }
 
-    /// 强制结束当前句：补尾部静音 + `input_finished` + drain，取最终识别文本
-    /// （模式同 `asr::transcribe_wav`）。
+    /// 强制结束当前句取最终文本：流式补尾部静音 + drain；离线整段 `transcribe_samples`
+    /// （按模型族分派到 `AsrBackend::finalize`）。
     fn force_finalize_asr(&mut self) -> String {
-        let tail = vec![0.0f32; (self.cfg.asr.sample_rate as usize) / 2];
-        self.asr.feed(&self.asr_stream, &tail);
-        self.asr.finish(&self.asr_stream);
-        while self.asr.is_ready(&self.asr_stream) {
-            self.asr.decode(&self.asr_stream);
-        }
-        self.asr
-            .get_result(&self.asr_stream)
-            .map(|r| self.asr.punctuate_text(&r.text))
-            .unwrap_or_default()
+        self.asr.finalize(&self.cfg.asr)
     }
 
     /// 进入一轮新生成前的重置（gen 递增、清空上一轮回复状态、复位合成取消）。

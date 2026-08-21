@@ -278,6 +278,111 @@
       }
     },
     {
+      "id": "asr-sensevoice-zh-en-ja-ko-yue",
+      "name": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+      "display_name": "SenseVoice ASR (int8)",
+      "model_type": "asr",
+      "asr_kind": "sensevoice",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "离线多语言识别（zh/en/ja/ko/yue）+ 情绪/事件标签；int8 轻量版，识别速度远超实时。",
+      "languages": [
+        "zh",
+        "en",
+        "ja",
+        "ko",
+        "yue"
+      ],
+      "tags": [
+        "asr",
+        "offline",
+        "multilingual",
+        "emotion-aware",
+        "lightweight"
+      ],
+      "parameter_count": null,
+      "quantization": "int8",
+      "version": "2024-07-17",
+      "size_bytes": 163002883,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-sensevoice"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "asr-sensevoice",
+        "extra_roles": [],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-whisper-tiny",
+      "name": "sherpa-onnx-whisper-tiny",
+      "display_name": "Whisper ASR tiny",
+      "model_type": "asr",
+      "asr_kind": "whisper",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "OpenAI Whisper tiny 离线转写，多语言、轻量低资源。",
+      "languages": [
+        "multilingual"
+      ],
+      "tags": [
+        "asr",
+        "offline",
+        "whisper",
+        "multilingual",
+        "lightweight"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "tiny",
+      "size_bytes": 116204861,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-whisper-tiny"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "asr-whisper-tiny",
+        "extra_roles": [],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-whisper-base",
+      "name": "sherpa-onnx-whisper-base",
+      "display_name": "Whisper ASR base",
+      "model_type": "asr",
+      "asr_kind": "whisper",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "OpenAI Whisper base 离线转写，多语言、更高准确率。",
+      "languages": [
+        "multilingual"
+      ],
+      "tags": [
+        "asr",
+        "offline",
+        "whisper",
+        "multilingual"
+      ],
+      "parameter_count": null,
+      "quantization": null,
+      "version": "base",
+      "size_bytes": 207557382,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-whisper-base"
+      ],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "asr-whisper-base",
+        "extra_roles": [],
+        "kind": "archive"
+      }
+    },
+    {
       "id": "tts-zipvoice-distill-int8",
       "name": "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia",
       "display_name": "ZipVoice TTS zh-en",

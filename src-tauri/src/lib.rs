@@ -19,6 +19,7 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
@@ -2651,6 +2652,69 @@ fn set_hide_dock_icon(app: AppHandle, hide: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 自启动拉起检测：命令行精确携带 `--autostart`（开启自启动时由插件附加到
+/// 系统启动项）。前缀/去杠变体（`--autostart-x`、`autostart`）不命中。
+fn is_launched_by_autostart<I>(args: I) -> bool
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--autostart")
+}
+
+/// 自启动菜单项的 (id, 文案)：按当前状态显示相反动作，点击应用固定值（幂等）。
+fn autostart_item_labels(enabled: bool) -> (&'static str, &'static str) {
+    if enabled {
+        ("disable_autostart", "关闭开机自启动")
+    } else {
+        ("enable_autostart", "开机自启动")
+    }
+}
+
+/// 读当前开机自启动状态。
+///
+/// 注意：与 hide_dock_icon 等落盘开关不同，自启动是系统级注册（注册表 Run 键 /
+/// LaunchAgent / XDG .desktop），不随应用退出消失，用户可在系统设置外部增删；
+/// 系统状态即唯一真值，不在 settings.toml 落盘，读取直查插件（单次本地文件 /
+/// 注册表检查，调用点仅 command 与托盘重建，无需缓存）。
+fn current_autostart_enabled(app: &AppHandle) -> bool {
+    // 函数内 use：避免与 tauri-nspanel 的同名 ManagerExt trait 冲突。
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// 设置并生效开机自启动（内部实现，供 command 与原生菜单事件共用）。
+///
+/// 注册/移除系统启动项后经 `autostart-changed` 事件通知设置页刷新开关，并重建
+/// 托盘菜单翻转「开机自启动/关闭开机自启动」文案。
+fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if enabled {
+        app.autolaunch()
+            .enable()
+            .map_err(|e| format!("开启开机自启动失败（写入系统启动项被拒）：{e}"))?;
+    } else {
+        app.autolaunch()
+            .disable()
+            .map_err(|e| format!("关闭开机自启动失败（移除系统启动项被拒）：{e}"))?;
+    }
+    let _ = app.emit("autostart-changed", enabled);
+    rebuild_tray_menu(app);
+    Ok(())
+}
+
+/// 读取是否开启开机自启动（系统注册状态直读）。
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    Ok(current_autostart_enabled(&app))
+}
+
+/// 设置开机自启动（设置页经此 command 间接操作插件，不暴露权限给前端）。
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_autostart(&app, enabled)
+}
+
 /// 处理应用菜单、托盘菜单与角色窗口右键菜单事件。
 fn handle_menu(app: &AppHandle, id: &str) {
     match id {
@@ -2673,6 +2737,13 @@ fn handle_menu(app: &AppHandle, id: &str) {
         }
         "disable_lock" => {
             let _ = apply_companion_locked(app, false);
+        }
+        // 开机自启动：同为按当前状态显示相反动作的菜单项，点击应用固定值（幂等）。
+        "enable_autostart" => {
+            let _ = apply_autostart(app, true);
+        }
+        "disable_autostart" => {
+            let _ = apply_autostart(app, false);
         }
         _ => {
             if let Some(scale) = scale_from_id(id) {
@@ -2726,6 +2797,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
     let locked = build_locked_item(app)?;
+    let autostart = build_autostart_item(app)?;
     let toggle_companion =
         MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
@@ -2741,6 +2813,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &tray_layer,
             &click_through,
             &locked,
+            &autostart,
             &open_settings,
             &restart,
             &quit,
@@ -2857,6 +2930,16 @@ fn build_locked_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
         true,
         None::<&str>,
     )
+}
+
+/// 构建「开机自启动」菜单项（仅托盘菜单；右键菜单不加——低频设置项，设置页与
+/// 托盘两入口已足够）。
+///
+/// 与 build_locked_item 同理不用 CheckMenuItem：其 checked 自动切换与取反逻辑
+/// 叠加，一次点击可能触发正反两个 apply，净效果为零（表现为「点击无效」）。
+fn build_autostart_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let (id, label) = autostart_item_labels(current_autostart_enabled(app));
+    MenuItem::with_id(app, id, label, true, None::<&str>)
 }
 
 /// 构建「显示层级」子菜单（角色右键菜单与托盘菜单共用）。
@@ -4272,8 +4355,28 @@ fn default_bottom_right_position(app: &AppHandle) -> Option<(f64, f64)> {
 pub fn run() {
     zapmomo::logging::init_logging();
     tauri::Builder::default()
+        // 单实例防护：官方要求注册为第一个插件。自启常驻后用户再手动点图标时，
+        // 回调在已有实例内执行（第二进程自行退出）：恢复可能隐藏的桌宠并前置设置窗。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("companion")
+                && !window.is_visible().unwrap_or(true)
+            {
+                let _ = window.show();
+                // 置底时 show 会把窗口顶到 Z 序顶部：Windows 需压回底部（同 toggle_companion_window）。
+                if cfg!(windows) && current_companion_layer() == CompanionWindowLayer::Back {
+                    apply_companion_layer_platform(app, CompanionWindowLayer::Back);
+                }
+            }
+            show_settings_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 开机自启动：macOS 用 LaunchAgent（AppleScript 变体依赖 osascript，无必要）；
+        // 注册时附加 `--autostart` 参数，setup 检测到则跳过设置窗自动弹出（静默启动）。
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(ListenState::new())
         .manage(DownloadState::default())
         .manage(AsrListenState::new())
@@ -4379,6 +4482,8 @@ pub fn run() {
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,
+            get_autostart,
+            set_autostart,
             open_settings,
             get_shortcuts,
             set_shortcut,
@@ -4585,10 +4690,13 @@ pub fn run() {
 
             // 自动打开设置窗口：仅用于「无全局菜单栏」的场景（macOS Accessory 模式或非 macOS），
             // 否则 Cmd+, 快捷键不可靠，自动打开可避免「找不到设置」；普通模式有菜单栏，无需自动弹出。
+            // 自启动拉起（--autostart）时跳过：桌宠静默出现，设置窗不自动弹出；
+            // 手动启动行为不变。
+            let launched_by_autostart = is_launched_by_autostart(std::env::args());
             #[cfg(target_os = "macos")]
-            let auto_open_settings = !hide_dock_icon;
+            let auto_open_settings = !hide_dock_icon && !launched_by_autostart;
             #[cfg(not(target_os = "macos"))]
-            let auto_open_settings = true;
+            let auto_open_settings = !launched_by_autostart;
             if auto_open_settings {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -4862,5 +4970,48 @@ mod companion_menu_tests {
         assert_eq!(entries[0].label, "mochi");
         assert!(!entries[0].checked);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod autostart_tests {
+    use super::{autostart_item_labels, is_launched_by_autostart};
+
+    #[test]
+    fn test_autostart_flag_hits_at_any_position() {
+        // 尾部命中（系统拉起的典型形态：可执行路径 + 插件附加参数）
+        assert!(is_launched_by_autostart([
+            "/usr/bin/ZapMomo",
+            "--autostart"
+        ]));
+        // 中段命中（未来若再附加其它参数）
+        assert!(is_launched_by_autostart([
+            "/Applications/ZapMomo.app/Contents/MacOS/ZapMomo",
+            "--autostart",
+            "--other"
+        ]));
+    }
+
+    #[test]
+    fn test_autostart_flag_requires_exact_match() {
+        // 空命令行 / 仅可执行路径
+        assert!(!is_launched_by_autostart(Vec::<String>::new()));
+        assert!(!is_launched_by_autostart(["target/debug/ZapMomo"]));
+        // 前缀 / 去杠 / 赋值变体均不命中（精确匹配，避免误吞用户显式参数）
+        assert!(!is_launched_by_autostart(["--autostart-x"]));
+        assert!(!is_launched_by_autostart(["autostart"]));
+        assert!(!is_launched_by_autostart(["--autostart=1"]));
+    }
+
+    #[test]
+    fn test_autostart_item_labels_flip_by_state() {
+        assert_eq!(
+            autostart_item_labels(false),
+            ("enable_autostart", "开机自启动")
+        );
+        assert_eq!(
+            autostart_item_labels(true),
+            ("disable_autostart", "关闭开机自启动")
+        );
     }
 }

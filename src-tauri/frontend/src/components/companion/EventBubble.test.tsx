@@ -50,6 +50,23 @@ describe("EventBubble", () => {
     expect(screen.queryByText("任务搞定啦！")).toBeNull();
   });
 
+  it("淡出窗 opacity 翻转：8s 内可见，最后 600ms opacity 置 0，随后消失", async () => {
+    await renderReady();
+    emitSpeak("淡出测试");
+    expect(screen.getByText("淡出测试")).toBeTruthy();
+    // 进入 600ms 淡出窗（剩余 400ms）：interval 强制推进重渲染，opacity 已翻转。
+    act(() => {
+      vi.advanceTimersByTime(7600);
+    });
+    const bubble = screen.getByText("淡出测试").closest("div[style]") as HTMLElement | null;
+    expect(bubble?.style.opacity).toBe("0");
+    // 越过 8s 到期点：气泡被裁剪。
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(screen.queryByText("淡出测试")).toBeNull();
+  });
+
   it("同时最多显示 2 条：第 3 条出现时最旧的让位", async () => {
     await renderReady();
     emitSpeak("一");

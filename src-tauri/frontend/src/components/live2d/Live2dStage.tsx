@@ -122,6 +122,7 @@ export function Live2dStage({
     void (async () => {
       modelRef.current?.destroy();
       modelRef.current = null;
+      onModelLoadedRef.current?.(null);
       try {
         // 显式关闭 autoInteract：原版默认值是 true（眼睛跟随鼠标 + 点击触发动作），
         // 必须显式传 false 才能关闭；呼吸/眨眼等自动动画仍由 PIXI ticker 驱动。

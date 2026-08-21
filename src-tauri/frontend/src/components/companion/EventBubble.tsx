@@ -41,14 +41,19 @@ export function EventBubble() {
     };
   }, []);
 
-  // 定期裁剪过期气泡（interval 依赖 bubbles：空列表不挂定时器）
+  // 定期裁剪过期气泡 + 推进淡出（interval 依赖 bubbles：空列表不挂定时器）。
+  // 淡出窗内返回新引用：无新事件时 React 也能重渲染，让 opacity 过渡到 0，
+  // 避免单气泡场景 8s 整「硬消失」。
   useEffect(() => {
     if (bubbles.length === 0) return;
     const timer = setInterval(() => {
-      const now = Date.now();
-      setBubbles((prev) =>
-        prev.some((b) => b.until <= now) ? prev.filter((b) => b.until > now) : prev,
-      );
+      setBubbles((prev) => {
+        const now = Date.now();
+        // 进入 600ms 淡出窗（尚未过期）：返回新引用驱动重渲染。
+        if (prev.some((b) => b.until - now < 600 && b.until > now)) return [...prev];
+        // 已过期：裁剪。
+        return prev.some((b) => b.until <= now) ? prev.filter((b) => b.until > now) : prev;
+      });
     }, PRUNE_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [bubbles]);

@@ -217,6 +217,8 @@ export function CompanionRoot() {
     const unlisten = onDshSpeak(({ event }) => {
       const model = modelRef.current;
       if (!model) return;
+      // motionManager 类型上非空，但运行时缺组/初始化异常时可能缺失，防御跳过。
+      if (!model.internalModel.motionManager) return;
       const groups = Object.keys(
         (model.internalModel.motionManager.definitions ?? {}) as Record<string, unknown>,
       );

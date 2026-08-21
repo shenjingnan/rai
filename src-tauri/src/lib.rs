@@ -2476,7 +2476,7 @@ fn apply_companion_layer_platform(app: &AppHandle, layer: CompanionWindowLayer) 
             // 一次性把窗口沉到 Z 序底部；hide/show 后由 toggle_companion_window 按 layer 重放。
             let _ = SetWindowPos(
                 hwnd,
-                HWND_BOTTOM,
+                Some(HWND_BOTTOM),
                 0,
                 0,
                 0,

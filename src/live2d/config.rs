@@ -252,6 +252,88 @@ pub fn find_cover_image(dir: &Path) -> Option<PathBuf> {
     keyword_match.or_else(|| (generic.len() == 1).then(|| generic[0].clone()))
 }
 
+/// 道具键所属的手。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hand {
+    Left,
+    Right,
+}
+
+/// 一个按键贴图（爪子按在某键上的预渲染图）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BongoCatKey {
+    /// 键名（文件名第一个 `.` 之前，如 `KeyA`、`CapsLock`）。
+    pub key: String,
+    /// 贴图文件路径。
+    pub path: PathBuf,
+    /// 所属的手。
+    pub hand: Hand,
+}
+
+/// BongoCat 格式道具资源探测结果。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BongoCatProps {
+    /// 键盘背景图（`resources/background.png`）。
+    pub background: Option<PathBuf>,
+    /// 按键贴图清单（left-keys + right-keys）。
+    pub keys: Vec<BongoCatKey>,
+}
+
+/// 探测模型目录是否带 BongoCat 格式道具资源。
+///
+/// 判定标准与 BongoCat 资源包规范一致：`resources/background.png` 存在，且
+/// `left-keys/` / `right-keys/` 至少一个目录含图片。图片扩展白名单与 BongoCat
+/// `isImage` 对齐；键名取文件名第一个 `.` 之前的部分（`KeyA.png` → `KeyA`）。
+///
+/// `model_dir` 应为模型清单（`*.model3.json`）所在目录（BongoCat 模型的
+/// `resources/` 与 model3.json 平级），而非托管根目录。
+pub fn detect_bongocat(model_dir: &Path) -> Option<BongoCatProps> {
+    const IMAGE_EXTS: &[&str] = &[
+        "jpg", "jpeg", "png", "webp", "avif", "gif", "svg", "bmp", "ico", "tif", "tiff", "heic",
+        "apng",
+    ];
+
+    let resources = model_dir.join("resources");
+    let background = resources.join("background.png");
+    let background = background.is_file().then_some(background);
+
+    let mut keys = Vec::new();
+    for (hand, dir_name) in [(Hand::Left, "left-keys"), (Hand::Right, "right-keys")] {
+        let dir = resources.join(dir_name);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let lower = name.to_lowercase();
+            if !IMAGE_EXTS
+                .iter()
+                .any(|ext| lower.ends_with(&format!(".{ext}")))
+            {
+                continue;
+            }
+            // 键名 = 文件名第一个 `.` 之前（与 BongoCat `name.split('.')[0]` 对齐）
+            let key = name.split('.').next().unwrap_or(&name).to_string();
+            if key.is_empty() {
+                continue;
+            }
+            keys.push(BongoCatKey { key, path, hand });
+        }
+    }
+
+    if background.is_none() || keys.is_empty() {
+        return None;
+    }
+    Some(BongoCatProps { background, keys })
+}
+
 /// 把清单里的相对引用解析到 model3.json 所在目录，拒绝绝对路径与 `..` 越界。
 ///
 /// 注意 `Path::starts_with` 是纯词法比较、不规范化 `..`，因此不能依赖它做越界防护；
@@ -511,5 +593,124 @@ mod tests {
             let err = validate_managed_model(&dir).unwrap_err();
             assert!(err.contains("越界"), "应拒绝越界路径: {err}");
         });
+    }
+
+    // ---------- detect_bongocat ----------
+
+    /// 在临时目录搭建 BongoCat 风格资源骨架（resources/background.png + 指定贴图）。
+    fn make_bongocat_resources(dir: &Path, left: &[&str], right: &[&str]) {
+        std::fs::create_dir_all(dir.join("resources")).unwrap();
+        std::fs::write(dir.join("resources/background.png"), b"bg").unwrap();
+        for key in left {
+            std::fs::create_dir_all(dir.join("resources/left-keys")).unwrap();
+            std::fs::write(dir.join(format!("resources/left-keys/{key}.png")), b"img").unwrap();
+        }
+        for key in right {
+            std::fs::create_dir_all(dir.join("resources/right-keys")).unwrap();
+            std::fs::write(dir.join(format!("resources/right-keys/{key}.png")), b"img").unwrap();
+        }
+    }
+
+    #[test]
+    fn test_detect_bongocat_full_model() {
+        let dir = tempfile::tempdir().unwrap();
+        make_bongocat_resources(dir.path(), &["KeyA", "KeyB"], &["ShiftLeft"]);
+        let props = detect_bongocat(dir.path()).unwrap();
+        assert_eq!(
+            props.background,
+            Some(dir.path().join("resources/background.png"))
+        );
+        assert_eq!(props.keys.len(), 3);
+        let a = props.keys.iter().find(|k| k.key == "KeyA").unwrap();
+        assert_eq!(a.hand, Hand::Left);
+        assert!(a.path.ends_with("left-keys/KeyA.png"));
+        let s = props.keys.iter().find(|k| k.key == "ShiftLeft").unwrap();
+        assert_eq!(s.hand, Hand::Right);
+    }
+
+    #[test]
+    fn test_detect_bongocat_left_only_ok() {
+        // standard 模式：只有左手键（右手在鼠标上），仍应判定为 BongoCat
+        let dir = tempfile::tempdir().unwrap();
+        make_bongocat_resources(dir.path(), &["KeyA"], &[]);
+        assert!(detect_bongocat(dir.path()).is_some());
+    }
+
+    #[test]
+    fn test_detect_bongocat_missing_background_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("resources/left-keys")).unwrap();
+        std::fs::write(dir.path().join("resources/left-keys/KeyA.png"), b"img").unwrap();
+        // 无 background.png → 不判定
+        assert!(detect_bongocat(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_detect_bongocat_no_keys_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("resources")).unwrap();
+        std::fs::write(dir.path().join("resources/background.png"), b"bg").unwrap();
+        // 有背景但无 keys 目录 → 不判定
+        assert!(detect_bongocat(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_detect_bongocat_filters_non_image_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("resources/left-keys")).unwrap();
+        std::fs::write(dir.path().join("resources/background.png"), b"bg").unwrap();
+        std::fs::write(dir.path().join("resources/left-keys/KeyA.png"), b"img").unwrap();
+        std::fs::write(dir.path().join("resources/left-keys/readme.txt"), b"text").unwrap();
+        let props = detect_bongocat(dir.path()).unwrap();
+        assert_eq!(props.keys.len(), 1, "txt 不应计入");
+        assert_eq!(props.keys[0].key, "KeyA");
+    }
+
+    #[test]
+    fn test_detect_bongocat_key_name_takes_first_dot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("resources/left-keys")).unwrap();
+        std::fs::write(dir.path().join("resources/background.png"), b"bg").unwrap();
+        std::fs::write(dir.path().join("resources/left-keys/foo.bar.png"), b"img").unwrap();
+        let props = detect_bongocat(dir.path()).unwrap();
+        assert_eq!(
+            props.keys[0].key, "foo",
+            "键名取第一个点之前，与 BongoCat split('.')[0] 对齐"
+        );
+    }
+
+    #[test]
+    fn test_detect_bongocat_extension_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("resources/left-keys")).unwrap();
+        std::fs::write(dir.path().join("resources/background.png"), b"bg").unwrap();
+        std::fs::write(dir.path().join("resources/left-keys/KeyA.PNG"), b"img").unwrap();
+        let props = detect_bongocat(dir.path()).unwrap();
+        assert_eq!(props.keys.len(), 1);
+        assert_eq!(props.keys[0].key, "KeyA");
+    }
+
+    #[test]
+    fn test_detect_bongocat_empty_dir_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_bongocat(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_bongocat_props_serializes_snake_case_hand() {
+        let props = BongoCatProps {
+            background: Some(PathBuf::from("/x/resources/background.png")),
+            keys: vec![BongoCatKey {
+                key: "KeyA".to_string(),
+                path: PathBuf::from("/x/resources/left-keys/KeyA.png"),
+                hand: Hand::Left,
+            }],
+        };
+        let s = serde_json::to_string(&props).unwrap();
+        assert!(
+            s.contains(r#""hand":"left""#),
+            "hand 应序列化为 snake_case: {s}"
+        );
+        assert!(s.contains(r#""key":"KeyA""#), "key 字段: {s}");
     }
 }

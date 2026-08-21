@@ -28,6 +28,7 @@ import type {
   CompanionLibraryView,
   CompanionWindowLayer,
   ConversationRecord,
+  DeviceEventPayload,
   DownloadProgress,
   ImportCompanionResult,
   KwsConfigInfo,
@@ -42,6 +43,9 @@ import type {
   LlmParamsPatch,
   LlmStatus,
   LlmToken,
+  PerformanceScene,
+  PerformanceStartedPayload,
+  PerformanceStoppedPayload,
   SaveTtsVoiceRequest,
   ShortcutActionId,
   TtsConfigInfo,
@@ -193,6 +197,9 @@ export const api = {
   setCompanionDragMode: (args: { mode: CompanionDragMode }) =>
     invoke<void>("set_companion_drag_mode", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
+  startPerformance: (args: { scene: PerformanceScene }) => invoke<void>("start_performance", args),
+  stopPerformance: () => invoke<void>("stop_performance"),
+  isPerforming: () => invoke<PerformanceScene | null>("is_performing"),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
   getAutostart: () => invoke<boolean>("get_autostart"),
@@ -296,6 +303,27 @@ export function onCompanionDragModeChanged(
   handler: (mode: CompanionDragMode) => void,
 ): Promise<UnlistenFn> {
   return listen<CompanionDragMode>("companion-drag-mode-changed", (e) => handler(e.payload));
+}
+
+/** 表演开始（桌宠窗口为唯一订阅者）。 */
+export function onPerformanceStarted(
+  handler: (payload: PerformanceStartedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<PerformanceStartedPayload>("performance-started", (e) => handler(e.payload));
+}
+
+/** 表演停止（桌宠窗口为唯一订阅者）。 */
+export function onPerformanceStopped(
+  handler: (payload: PerformanceStoppedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<PerformanceStoppedPayload>("performance-stopped", (e) => handler(e.payload));
+}
+
+/** 模拟键鼠事件流（与 BongoCat device-changed 逐字节同构；桌宠窗口为唯一订阅者）。 */
+export function onDeviceChanged(
+  handler: (payload: DeviceEventPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<DeviceEventPayload>("device-changed", (e) => handler(e.payload));
 }
 
 /** 开机自启动状态变化（设置页为唯一订阅者：托盘菜单改动后同步开关）。 */

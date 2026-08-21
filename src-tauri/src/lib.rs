@@ -43,6 +43,10 @@ use zapmomo::model_library::{
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
     storage::StorageInfoView,
 };
+use zapmomo::performance::{
+    DeviceEvent, MouseSimulator, PerformanceScene, PerformanceSource, Rect, Rng, StopSignal,
+    TypingSimulator, run_source,
+};
 use zapmomo::tts::config::TtsParamsPatch;
 use zapmomo::voice::VoiceSession;
 use zapmomo::voice::config::CliOverrides as VoiceCliOverrides;
@@ -1975,6 +1979,55 @@ fn set_microphone(
     Ok(())
 }
 
+/// 前端展示用的 BongoCat 道具资源信息（非 BongoCat 模型为 `None`）。
+#[derive(Clone, Serialize)]
+struct PerformancePropsView {
+    /// 键盘背景图绝对路径（`resources/background.png`）。
+    background: Option<String>,
+    /// 按键贴图清单（爪子按在某键上的预渲染图）。
+    keys: Vec<PerformanceKeyView>,
+}
+
+#[derive(Clone, Serialize)]
+struct PerformanceKeyView {
+    /// 键名（如 `KeyA`、`CapsLock`）。
+    key: String,
+    /// 贴图绝对路径。
+    path: String,
+    /// 所属的手：`"left"` / `"right"`。
+    hand: String,
+}
+
+/// 把探测到的 BongoCat 道具资源转成前端可用的视图（绝对路径字符串）。
+fn props_view(props: &zapmomo::live2d::config::BongoCatProps) -> PerformancePropsView {
+    PerformancePropsView {
+        background: props.background.as_ref().map(|p| p.display().to_string()),
+        keys: props
+            .keys
+            .iter()
+            .map(|k| PerformanceKeyView {
+                key: k.key.clone(),
+                path: k.path.display().to_string(),
+                hand: match k.hand {
+                    zapmomo::live2d::config::Hand::Left => "left",
+                    zapmomo::live2d::config::Hand::Right => "right",
+                }
+                .to_string(),
+            })
+            .collect(),
+    }
+}
+
+/// 探测 active 伙伴是否带 BongoCat 道具资源（相对模型清单所在目录）。
+fn detect_active_bongocat_props() -> Option<PerformancePropsView> {
+    let lib = zapmomo::companion::load_library_fast().ok()?;
+    let active = zapmomo::companion::active_model(&lib)?;
+    let model_dir = Path::new(&active.model_file)
+        .parent()
+        .unwrap_or(Path::new(&active.model_dir));
+    zapmomo::live2d::config::detect_bongocat(model_dir).map(|p| props_view(&p))
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -1989,6 +2042,8 @@ struct Live2dConfigInfo {
     locked: Option<bool>,
     drag_mode: Option<CompanionDragMode>,
     settings_path: String,
+    /// BongoCat 道具资源（非 BongoCat 模型为 `null`）。
+    props: Option<PerformancePropsView>,
 }
 
 /// 读取 Live2D 配置，并在模型目录存在时重新放行 asset 协议 scope。
@@ -2027,6 +2082,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         locked,
         drag_mode,
         settings_path: settings::get_settings_path().display().to_string(),
+        props: detect_active_bongocat_props(),
     })
 }
 
@@ -2037,6 +2093,8 @@ struct Live2dModelInfo {
     model_dir: Option<String>,
     model_file: Option<String>,
     format: Option<String>,
+    /// BongoCat 道具资源（非 BongoCat 模型为 `null`）。
+    props: Option<PerformancePropsView>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2120,10 +2178,16 @@ fn reconcile_active(
             app.asset_protocol_scope()
                 .allow_directory(Path::new(&model.model_dir), true)
                 .map_err(|e| format!("无法放行模型目录: {e}"))?;
+            // BongoCat 道具探测相对模型清单所在目录（毫秒级小 IO，与 validate 同量级）。
+            let model_dir = Path::new(&model.model_file)
+                .parent()
+                .unwrap_or(Path::new(&model.model_dir));
+            let props = zapmomo::live2d::config::detect_bongocat(model_dir).map(|p| props_view(&p));
             let info = Live2dModelInfo {
                 model_dir: Some(model.model_dir.clone()),
                 model_file: Some(model.model_file.clone()),
                 format: Some(model.format.clone()),
+                props,
             };
             // 通知常驻角色窗口即时重载新模型（同进程事件，跨窗口同步）。
             let _ = app.emit("live2d-model-changed", &info);
@@ -2134,6 +2198,7 @@ fn reconcile_active(
                 model_dir: None,
                 model_file: None,
                 format: None,
+                props: None,
             };
             let _ = app.emit("live2d-model-changed", &info);
         }
@@ -2233,6 +2298,7 @@ async fn import_companion(
     let lib = zapmomo::companion::load_library_fast()?;
     let became_active = lib.active_model_id.as_deref() == Some(model.id.as_str());
     if became_active {
+        stop_performance_inner(&app);
         let active = zapmomo::companion::active_model(&lib);
         reconcile_active(&app, active)?;
     }
@@ -2249,6 +2315,7 @@ async fn import_companion(
 /// 设置「当前使用」伙伴（Library 先持久化成功，再 reconcile 同步 settings 与桌宠）。
 #[tauri::command]
 async fn set_active_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    stop_performance_inner(&app);
     let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::set_active(&id))
         .await
         .map_err(|e| e.to_string())??;
@@ -2280,6 +2347,8 @@ async fn rename_companion(
 /// 并 reconcile 同步桌宠（切换到新 active 或清屏）。
 #[tauri::command]
 async fn remove_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    // 删除的若是 active，先停表演（reconcile 清屏/切换前让 stopped 先发出）。
+    stop_performance_inner(&app);
     let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::remove(&id))
         .await
         .map_err(|e| e.to_string())??;
@@ -2394,6 +2463,165 @@ fn apply_companion_drag_mode(app: &AppHandle, mode: CompanionDragMode) -> Result
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 表演（BongoCat 兼容模拟表演）运行时
+//
+// 事件流与 BongoCat `device-changed` 逐字节同构，仅事件由模拟 PerformanceSource
+// 产生——**绝不监听真实键鼠**。控制事件（performance-started/stopped）定向
+// `companion` 窗口，避免 60-120 msg/s 的鼠标事件灌进设置窗口。
+// ---------------------------------------------------------------------------
+
+/// 当前表演状态（`None` = 未表演）。static Mutex 供主线程菜单与异步命令共用。
+static PERFORMANCE: Mutex<Option<PerformanceState>> = Mutex::new(None);
+
+struct PerformanceState {
+    /// 每个活动通道一个停止信号（Both 场景有两个 worker）。
+    stops: Vec<StopSignal>,
+    scene: PerformanceScene,
+}
+
+/// 主显示器物理像素活动区域（取不到时回退 1920×1080）。
+fn primary_monitor_rect(app: &AppHandle) -> Rect {
+    let fallback = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1920.0,
+        height: 1080.0,
+    };
+    match app.primary_monitor() {
+        Ok(Some(m)) => {
+            let s = m.size();
+            let p = m.position();
+            Rect {
+                x: p.x as f64,
+                y: p.y as f64,
+                width: s.width as f64,
+                height: s.height as f64,
+            }
+        }
+        _ => fallback,
+    }
+}
+
+/// 停止当前表演（若有）并发出 `performance-stopped`；不做托盘重建（调用方负责）。
+fn stop_performance_inner(app: &AppHandle) {
+    let mut guard = PERFORMANCE.lock().unwrap();
+    if let Some(state) = guard.take() {
+        for stop in &state.stops {
+            stop.stop(); // 立即唤醒 worker；被打断的在途事件不发出
+        }
+        let _ = app.emit_to(
+            "companion",
+            "performance-stopped",
+            serde_json::json!({ "scene": state.scene.as_str() }),
+        );
+        tracing::info!("已停止表演：{}", state.scene.as_str());
+    }
+}
+
+/// 启动一个模拟器 worker 线程（发 `device-changed` 到 companion 窗口），
+/// 停止信号登记进 `stops`。Both 场景会调用两次（typing + mouse 各一个线程）。
+fn spawn_performance_worker(
+    mut source: Box<dyn PerformanceSource>,
+    app: &AppHandle,
+    stops: &mut Vec<StopSignal>,
+) {
+    let stop = StopSignal::new();
+    stops.push(stop.clone());
+    let emit_app = app.clone();
+    let mut rng = Rng::from_entropy();
+    std::thread::spawn(move || {
+        let mut emit = |ev: &DeviceEvent| {
+            let _ = emit_app.emit_to("companion", "device-changed", ev);
+        };
+        run_source(source.as_mut(), &mut rng, &stop, &mut emit);
+    });
+}
+
+/// 启动表演（供 command 与菜单事件共用）。
+fn start_performance_impl(app: &AppHandle, scene: PerformanceScene) -> Result<(), String> {
+    let props = detect_active_bongocat_props()
+        .ok_or_else(|| "当前伙伴不支持表演（需要 BongoCat 格式模型）".to_string())?;
+
+    // 锁内先停旧表演（旧 worker 静默退出、不再发 stopped，避免新旧线程清理竞态）。
+    let mut guard = PERFORMANCE.lock().unwrap();
+    if let Some(old) = guard.take() {
+        for stop in &old.stops {
+            stop.stop();
+        }
+    }
+
+    // 键池来自模型实际贴图键名（无贴图的键不会出现在事件流）。
+    let keys: Vec<String> = props.keys.iter().map(|k| k.key.clone()).collect();
+    let area = primary_monitor_rect(app);
+    let mut stops = Vec::new();
+
+    // 按场景启动一个或多个通道 worker（Both = 键鼠同动，两个线程并发）。
+    if scene.has_typing() {
+        spawn_performance_worker(
+            Box::new(TypingSimulator::new(keys.clone())),
+            app,
+            &mut stops,
+        );
+    }
+    if scene.has_mouse() {
+        spawn_performance_worker(Box::new(MouseSimulator::new(area)), app, &mut stops);
+    }
+
+    // 先发 started（消费者先于第一个 device 事件就绪）。带鼠标通道时下发 play_area。
+    let started_payload = if scene.has_mouse() {
+        serde_json::json!({
+            "scene": scene.as_str(),
+            "play_area": { "x": area.x, "y": area.y, "width": area.width, "height": area.height },
+        })
+    } else {
+        serde_json::json!({ "scene": scene.as_str() })
+    };
+    let _ = app.emit_to("companion", "performance-started", &started_payload);
+
+    *guard = Some(PerformanceState { stops, scene });
+    tracing::info!("已开始表演：{}", scene.as_str());
+    Ok(())
+}
+
+/// 开始表演（场景名 "typing" / "mouse"；供设置页/未来 AI 编排调用）。
+#[tauri::command]
+fn start_performance(app: AppHandle, scene: String) -> Result<(), String> {
+    let scene = match scene.as_str() {
+        "typing" => PerformanceScene::Typing,
+        "mouse" => PerformanceScene::Mouse,
+        "both" => PerformanceScene::Both,
+        other => return Err(format!("未知表演场景: {other}")),
+    };
+    start_performance_impl(&app, scene)?;
+    rebuild_tray_menu_threadsafe(&app);
+    Ok(())
+}
+
+/// 停止表演（幂等）。
+#[tauri::command]
+fn stop_performance(app: AppHandle) -> Result<(), String> {
+    stop_performance_inner(&app);
+    rebuild_tray_menu_threadsafe(&app);
+    Ok(())
+}
+
+/// 查询当前是否在表演及场景（dev HMR 重载后前端重同步用）。
+#[tauri::command]
+fn is_performing() -> Option<String> {
+    PERFORMANCE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.scene.as_str().to_string())
+}
+
+/// 主线程停止表演（handle_menu / 菜单切换伙伴 / 隐藏窗口用）。
+fn stop_performance_sync(app: &AppHandle) {
+    stop_performance_inner(app);
+    rebuild_tray_menu(app);
+}
+
 /// 读取持久化的角色窗口显示层级（缺省置顶）。
 fn current_companion_layer() -> CompanionWindowLayer {
     settings::load_settings()
@@ -2411,6 +2639,8 @@ fn current_companion_layer() -> CompanionWindowLayer {
 /// `validate_managed_model` 深校验是毫秒级小 IO（读 model3.json + 查文件存在性），
 /// 与 handle_menu 里现有同步 load/save settings 同量级。
 fn apply_active_companion(app: &AppHandle, id: &str) {
+    // 切换伙伴前先停表演（stopped 先于 model-changed 发出，同线程 emit 保序）。
+    stop_performance_inner(app);
     match zapmomo::companion::set_active(id) {
         Ok(lib) => {
             let active = zapmomo::companion::active_model(&lib);
@@ -2771,6 +3001,29 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "disable_autostart" => {
             let _ = apply_autostart(app, false);
         }
+        // 表演动作（模拟键鼠，与真实输入无关）。
+        "perform_typing" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Typing) {
+                tracing::warn!("启动敲键盘表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_mouse" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Mouse) {
+                tracing::warn!("启动玩鼠标表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_both" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Both) {
+                tracing::warn!("启动键鼠同动表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_stop" => stop_performance_sync(app),
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
@@ -2785,9 +3038,47 @@ fn handle_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// 构建角色窗口的右键菜单（切换伙伴/窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 当前 active 伙伴是否为 BongoCat 格式（探测式，毫秒级）。
+fn current_companion_is_bongocat() -> bool {
+    detect_active_bongocat_props().is_some()
+}
+
+/// 构建「表演」子菜单（敲键盘 / 玩鼠标 / 键鼠同动 / 停止表演）。
+///
+/// 非 BongoCat 伙伴或表演进行中时前三项禁用；未表演时 stop 禁用。
+/// 右键菜单每次弹出重建，勾选/可用态天然最新；托盘菜单需在 start/stop 后重建。
+fn build_performance_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let bongo = current_companion_is_bongocat();
+    let performing = PERFORMANCE.lock().unwrap().is_some();
+    let typing = MenuItem::with_id(
+        app,
+        "perform_typing",
+        "表演：敲键盘",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let mouse = MenuItem::with_id(
+        app,
+        "perform_mouse",
+        "表演：玩鼠标",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let both = MenuItem::with_id(
+        app,
+        "perform_both",
+        "表演：键鼠同动",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let stop = MenuItem::with_id(app, "perform_stop", "停止表演", performing, None::<&str>)?;
+    Submenu::with_items(app, "表演", true, &[&typing, &mouse, &both, &stop])
+}
+
+/// 构建角色窗口的右键菜单（切换伙伴/表演/窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let companion_submenu = build_companion_switch_submenu(app)?;
+    let performance_submenu = build_performance_submenu(app)?;
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let layer_submenu = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2800,6 +3091,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         &[
             &companion_submenu,
+            &performance_submenu,
             &scale_submenu,
             &opacity_submenu,
             &layer_submenu,
@@ -2819,6 +3111,7 @@ const TRAY_ID: &str = "zapmomo-tray";
 /// 构建托盘菜单：显示/隐藏角色、切换伙伴、窗口尺寸/透明度/显示层级、打开设置、重启、退出。
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let companion_submenu = build_companion_switch_submenu(app)?;
+    let performance_submenu = build_performance_submenu(app)?;
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
     let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2834,6 +3127,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &toggle_companion,
             &companion_submenu,
+            &performance_submenu,
             &tray_scale,
             &tray_opacity,
             &tray_layer,
@@ -3098,6 +3392,7 @@ fn toggle_companion_window(app: &AppHandle) {
         return;
     };
     if window.is_visible().unwrap_or(true) {
+        stop_performance_sync(app);
         let _ = window.hide();
     } else {
         let _ = window.show();
@@ -3267,8 +3562,9 @@ fn clear_shortcut(app: AppHandle, action: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 隐藏角色窗口。
+/// 隐藏角色窗口（隐藏时停表演，防幽灵表演态）。
 fn hide_companion_window(app: &AppHandle) {
+    stop_performance_sync(app);
     if let Some(window) = app.get_webview_window("companion") {
         let _ = window.hide();
     }
@@ -4507,6 +4803,9 @@ pub fn run() {
             set_companion_locked,
             set_companion_drag_mode,
             show_companion_menu,
+            start_performance,
+            stop_performance,
+            is_performing,
             get_hide_dock_icon,
             set_hide_dock_icon,
             get_autostart,

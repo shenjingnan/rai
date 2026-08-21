@@ -1,6 +1,12 @@
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Live2dStage } from "@/components/live2d/Live2dStage";
+import {
+  Live2dStage,
+  type Live2dStageHandle,
+  type ModelLayout,
+} from "@/components/live2d/Live2dStage";
+import { PropsLayer } from "@/components/performance/PropsLayer";
+import { usePerformance } from "@/components/performance/usePerformance";
 import { VoiceStatusDot } from "@/components/voice/VoiceStatusDot";
 import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
@@ -15,7 +21,7 @@ import {
   toAssetUrl,
 } from "@/lib/tauri";
 import { centeredResizeTarget } from "@/lib/windowResize";
-import type { CompanionDragMode, CompanionWindowLayer } from "@/types/tauri";
+import type { CompanionDragMode, CompanionWindowLayer, PerformancePropsInfo } from "@/types/tauri";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
 const BASE_HEIGHT = 480;
@@ -58,6 +64,11 @@ export function CompanionRoot() {
   // 拖拽模式：modifier = 需按住 cmd/ctrl 才能拖动（缺省 direct = 直接拖动）。
   const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
+  // 表演（BongoCat 兼容模拟键鼠）：道具资源、模型布局与引擎。
+  const stageRef = useRef<Live2dStageHandle | null>(null);
+  const [props, setProps] = useState<PerformancePropsInfo | null>(null);
+  const [modelLayout, setModelLayout] = useState<ModelLayout | null>(null);
+  const { pressedKeys } = usePerformance(props, stageRef);
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
   const aspectRatioRef = useRef(aspectRatio);
@@ -122,11 +133,12 @@ export function CompanionRoot() {
   const applyScaleRef = useRef(applyScale);
   applyScaleRef.current = applyScale;
 
-  // 启动时恢复持久化的模型（顺带重放行 asset 协议 scope）。
+  // 启动时恢复持久化的模型（顺带重放行 asset 协议 scope）与 BongoCat 道具资源。
   useEffect(() => {
     if (config?.models_present && config.model_file) {
       setModelUrl(toAssetUrl(config.model_file));
     }
+    setProps(config?.props ?? null);
   }, [config]);
 
   // 恢复持久化的缩放比例与透明度，并据此 resize 一次（确保前端 state 与后端建窗尺寸一致）。
@@ -146,6 +158,7 @@ export function CompanionRoot() {
     const unlisten = onLive2dModelChanged((info) => {
       // 空 model_file = 清屏（active 伙伴被移除等场景）。
       setModelUrl(info.model_file ? toAssetUrl(info.model_file) : null);
+      setProps(info.props ?? null);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -285,10 +298,18 @@ export function CompanionRoot() {
       {/* 透明度只作用于模型本身，语音状态点保持不透明 */}
       <div style={{ opacity }}>
         <Live2dStage
+          ref={stageRef}
           modelUrl={modelUrl}
           width={size.width}
           height={size.height}
           onModelMetrics={handleModelMetrics}
+          onLayout={setModelLayout}
+        />
+        {/* BongoCat 道具层：键盘背景 + 爪子按键贴图（仅 BongoCat 伙伴有 props） */}
+        <PropsLayer
+          layout={modelLayout}
+          backgroundUrl={props?.background ? toAssetUrl(props.background) : null}
+          pressedKeys={pressedKeys}
         />
       </div>
       {/* 置底为纯背景装饰，不显示语音状态点 */}

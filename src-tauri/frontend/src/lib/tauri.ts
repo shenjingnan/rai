@@ -24,6 +24,7 @@ import type {
   AsrConfigInfo,
   AsrParamsPatch,
   AsrResult,
+  CompanionDragMode,
   CompanionLibraryView,
   CompanionWindowLayer,
   ConversationRecord,
@@ -189,6 +190,8 @@ export const api = {
   setCompanionLayer: (args: { layer: CompanionWindowLayer }) =>
     invoke<void>("set_companion_layer", args),
   setCompanionLocked: (args: { enabled: boolean }) => invoke<void>("set_companion_locked", args),
+  setCompanionDragMode: (args: { mode: CompanionDragMode }) =>
+    invoke<void>("set_companion_drag_mode", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
@@ -285,6 +288,12 @@ export function onCompanionLayerChanged(
 
 export function onCompanionLockedChanged(handler: (locked: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("companion-locked-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionDragModeChanged(
+  handler: (mode: CompanionDragMode) => void,
+): Promise<UnlistenFn> {
+  return listen<CompanionDragMode>("companion-drag-mode-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

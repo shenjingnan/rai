@@ -18,14 +18,11 @@ import {
 } from "@/components/models/capabilityStatus";
 import { KwsModelSwitchMenu } from "@/components/models/KwsModelSwitchMenu";
 import { LlmModelSwitchMenu } from "@/components/models/LlmModelSwitchMenu";
+import { TtsModelSwitchMenu } from "@/components/models/TtsModelSwitchMenu";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
 
 type StatusTone = "good" | "idle" | "loading" | "error";
 
@@ -252,7 +249,7 @@ export function ModelSummary() {
       accent: "bg-amber-100 text-amber-600",
       icon: Volume2,
       name: "语音合成（TTS）",
-      model: ttsConfigured ? basename(tts.config?.model_dir ?? "") : "未配置模型",
+      model: ttsConfigured ? <TtsModelSwitchMenu /> : "未配置模型",
       statusText: !ttsEnabled
         ? "已关闭"
         : tts.synthesizing

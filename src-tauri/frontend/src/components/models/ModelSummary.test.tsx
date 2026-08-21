@@ -30,6 +30,11 @@ vi.mock("@/components/asr/AsrModelDialog", () => ({
   AsrModelDialog: () => null,
 }));
 
+// TTS 选择模型弹窗同理：stub 避免 useTtsModelSwitch 的 useToast/invoke 依赖。
+vi.mock("@/components/tts/TtsModelDialog", () => ({
+  TtsModelDialog: () => null,
+}));
+
 // LLM 行快速切换菜单依赖 useLlmPresets（内部用 useToast/invoke）；mock 模块避免依赖 Provider。
 const { presetsState } = vi.hoisted(() => ({
   presetsState: {

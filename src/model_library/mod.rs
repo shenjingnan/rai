@@ -374,7 +374,14 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             kws.keywords_file = None;
         }
         ModelType::Asr => {
-            cfg.asr.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let asr = cfg.asr.get_or_insert_with(Default::default);
+            asr.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖会污染新模型的文件探测，
+            // 交回 resolve 自动探测（与 KWS 分支同款取舍）。
+            asr.encoder = None;
+            asr.decoder = None;
+            asr.joiner = None;
+            asr.tokens = None;
         }
         ModelType::Tts => {
             cfg.tts.get_or_insert_with(Default::default).model_dir = Some(path_str);
@@ -1352,6 +1359,42 @@ mod tests {
             assert_eq!(kws.keywords_file, None);
             // enabled 不受切换影响
             assert_eq!(kws.enabled, Some(true));
+        });
+    }
+
+    #[test]
+    fn test_set_selected_asr_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟双语时代的手写配置）
+            update_settings(|cfg| {
+                let asr = cfg.asr.get_or_insert_with(Default::default);
+                asr.model_dir = Some("old-model".to_string());
+                asr.encoder = Some("old-encoder.onnx".to_string());
+                asr.decoder = Some("old-decoder.onnx".to_string());
+                asr.joiner = Some("old-joiner.onnx".to_string());
+                asr.tokens = Some("old-tokens.txt".to_string());
+                asr.enabled = Some(true);
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/zh-14m");
+            set_selected_model(ModelType::Asr, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let asr = cfg.asr.as_ref().expect("asr 段应存在");
+            assert_eq!(
+                asr.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(asr.encoder, None);
+            assert_eq!(asr.decoder, None);
+            assert_eq!(asr.joiner, None);
+            assert_eq!(asr.tokens, None);
+            // enabled 不受切换影响
+            assert_eq!(asr.enabled, Some(true));
         });
     }
 

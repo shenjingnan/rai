@@ -200,9 +200,9 @@ pub fn user_model_dir() -> PathBuf {
     crate::kws::model::asr_user_model_dir()
 }
 
-/// 目标目录是否已装好 ASR 模型。
+/// 目标目录是否已装好 ASR 模型（探测式：按目录内容探测四件套，模型无关）。
 pub fn is_installed(dir: &Path) -> bool {
-    crate::kws::model::has_required_files(dir, &config::REQUIRED_FILES)
+    config::asr_files_present(dir)
 }
 
 /// 安装 ASR 模型到 `dest_dir`（默认 `~/.zapmomo/models/<name>`）。

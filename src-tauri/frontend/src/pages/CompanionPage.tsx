@@ -22,7 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { useCompanionLibrary } from "@/hooks/useCompanionLibrary";
 import { api, toAssetUrl } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import type { CompanionModelInfo, CompanionWindowLayer } from "@/types/tauri";
+import type { CompanionDragMode, CompanionModelInfo, CompanionWindowLayer } from "@/types/tauri";
 
 /**
  * 把 Live2D 渲染画布截取为缩小的 PNG 字节数组（供保存为封面）。
@@ -385,11 +385,13 @@ export function CompanionPage() {
   // 桌宠尺寸（缩放百分比，25%~200%）与透明度（20%~100%）：写入 settings 并通知桌宠窗口即时生效。
   // 点击穿透（窗口级行为，与选中哪个伙伴无关）：开启后桌宠窗口对所有鼠标事件透明。
   // 显示层级（置顶/置底，窗口级）：写入 settings 并通知桌宠窗口即时生效。
+  // 拖拽模式（窗口级）：modifier = 需按住 ⌘/Ctrl 才能拖动，direct = 直接拖动。
   const [percent, setPercent] = useState(100);
   const [opacityPercent, setOpacityPercent] = useState(100);
   const [clickThrough, setClickThrough] = useState(false);
   const [layer, setLayer] = useState<CompanionWindowLayer>("front");
   const [locked, setLocked] = useState(false);
+  const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
   useEffect(() => {
     void api
       .getLive2dConfig()
@@ -400,6 +402,7 @@ export function CompanionPage() {
         setClickThrough(cfg.click_through ?? false);
         if (cfg.window_layer) setLayer(cfg.window_layer);
         setLocked(cfg.locked ?? false);
+        setDragMode(cfg.drag_mode ?? "direct");
       })
       .catch(() => {});
   }, []);
@@ -425,6 +428,11 @@ export function CompanionPage() {
   const handleToggleLocked = useCallback((enabled: boolean) => {
     setLocked(enabled);
     void api.setCompanionLocked({ enabled });
+  }, []);
+  const handleToggleDragMode = useCallback((enabled: boolean) => {
+    const next: CompanionDragMode = enabled ? "modifier" : "direct";
+    setDragMode(next);
+    void api.setCompanionDragMode({ mode: next });
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -596,6 +604,18 @@ export function CompanionPage() {
                 />
                 <span className="flex-1 text-xs text-muted-foreground">
                   开启后禁止拖动窗口，滚轮缩放与右键菜单不受影响
+                </span>
+              </div>
+              {/* 拖拽模式（窗口级）：modifier = 需按住 cmd/Ctrl 才能拖动，与锁定正交（锁定优先） */}
+              <div className="flex w-full items-center gap-2">
+                <span className="shrink-0">修饰键拖动</span>
+                <Switch
+                  aria-label="修饰键拖动"
+                  checked={dragMode === "modifier"}
+                  onCheckedChange={handleToggleDragMode}
+                />
+                <span className="flex-1 text-xs text-muted-foreground">
+                  开启后需按住 ⌘/Ctrl 才能拖动窗口，滚轮缩放与右键菜单不受影响
                 </span>
               </div>
             </div>

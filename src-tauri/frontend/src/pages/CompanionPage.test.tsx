@@ -16,8 +16,12 @@ const { invokeMock, openMock, stageHandleMock, stageState, configState } = vi.ho
   },
   /** 供 mock 替身注入目录的可变容器（vi.mock 工厂只可靠引用 hoisted 变量）。 */
   stageState: { catalog: null as StageCatalog | null },
-  /** get_live2d_config 的 click_through / locked 覆盖值（null = 后端未返回该字段）。 */
-  configState: { clickThrough: null as boolean | null, locked: null as boolean | null },
+  /** get_live2d_config 的 click_through / locked / drag_mode 覆盖值（null = 后端未返回该字段）。 */
+  configState: {
+    clickThrough: null as boolean | null,
+    locked: null as boolean | null,
+    dragMode: null as string | null,
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -85,6 +89,7 @@ beforeEach(() => {
   stageState.catalog = null;
   configState.clickThrough = null;
   configState.locked = null;
+  configState.dragMode = null;
   library = { models: [], active_model_id: null };
   importSeq = 0;
 
@@ -104,6 +109,7 @@ beforeEach(() => {
             click_through: configState.clickThrough,
             window_layer: "front",
             locked: configState.locked,
+            drag_mode: configState.dragMode,
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
@@ -606,5 +612,41 @@ describe("CompanionPage 伙伴模型管理器", () => {
     renderPage();
 
     expect(await screen.findByRole("switch", { name: "锁定位置" })).toBeInTheDocument();
+  });
+
+  it("修饰键拖动开关默认关闭，点击后调用 set_companion_drag_mode 切到 modifier", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "修饰键拖动" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_drag_mode", { mode: "modifier" });
+    });
+  });
+
+  it("修饰键拖动开关从配置恢复为开启，再点击切回 direct", async () => {
+    library = { models: [MODEL_A], active_model_id: MODEL_A.id };
+    configState.dragMode = "modifier";
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("switch", { name: "修饰键拖动" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_companion_drag_mode", { mode: "direct" });
+    });
+  });
+
+  it("未选中伙伴时修饰键拖动开关仍然可见（窗口级行为）", async () => {
+    library = { models: [], active_model_id: null };
+    renderPage();
+
+    expect(await screen.findByRole("switch", { name: "修饰键拖动" })).toBeInTheDocument();
   });
 });

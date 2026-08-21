@@ -5,7 +5,7 @@
 //! - 监听循环跑在独立 `std::thread`，检测到唤醒词经 `TauriReaction`
 //!   以 `kws-detected` 事件推给前端；结束（正常/出错/手动停止）发 `kws-stopped`。
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,10 @@ use zapmomo::model_library::{
     InstallState as LibInstallState, LibraryModel, RuntimeAction as LibRuntimeAction,
     SetCurrentResult, SystemResources, registry::ModelType as LibModelType,
     storage::StorageInfoView,
+};
+use zapmomo::performance::{
+    DeviceEvent, MouseSimulator, PerformanceScene, PerformanceSource, Rect, Rng, StopSignal,
+    TypingSimulator, run_source,
 };
 use zapmomo::tts::config::TtsParamsPatch;
 use zapmomo::voice::VoiceSession;
@@ -1751,6 +1755,404 @@ fn is_voice_session_running(state: State<'_, VoiceSessionState>) -> bool {
     state.is_running()
 }
 
+// ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+
+/// dsh 桥状态：共享停止标志 + 线程句柄 + 实际监听端口（RuntimeActual）。
+///
+/// running/port 指向「当前一代」桥的标志：每次 start 整体替换为全新 Arc（fresh），
+/// 服务线程持有克隆。stop 超时分离的旧线程迟到退出时只作用于自己那一代——
+/// 不会读到新桥的 true 而复活，也不会把新桥的 running/port 清掉。
+struct DshBridgeState {
+    /// 当前代停止标志（false = 应退出）；start 时整体替换
+    running: Mutex<Arc<AtomicBool>>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 当前代实际监听端口（0 = 未运行/未就绪）；start 时整体替换
+    port: Mutex<Arc<AtomicU16>>,
+    /// 最近一次运行的错误（线程 epilogue 写入、start 清空；供前端轮询）
+    last_error: Mutex<Option<String>>,
+    /// 懒构建的播报器（TTS 模型未就绪时为 None，下次事件重试构建；失败不缓存）
+    announcer: Mutex<Option<std::sync::Arc<zapmomo::dsh::announce::Announcer>>>,
+}
+
+impl DshBridgeState {
+    fn new() -> Self {
+        Self {
+            running: Mutex::new(Arc::new(AtomicBool::new(false))),
+            handle: Mutex::new(None),
+            port: Mutex::new(Arc::new(AtomicU16::new(0))),
+            last_error: Mutex::new(None),
+            announcer: Mutex::new(None),
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.current_running().load(Ordering::Relaxed)
+    }
+
+    /// 当前代停止标志（克隆后读取，锁即刻释放）。
+    fn current_running(&self) -> Arc<AtomicBool> {
+        self.running
+            .lock()
+            .expect("dsh running lock poisoned")
+            .clone()
+    }
+
+    /// 给定标志是否仍是「当前代」（线程 epilogue 写共享状态前的守卫：
+    /// 分离的旧线程迟到退出时 start 已换新 Arc，此时不写 last_error、不发终态事件）。
+    fn is_current_generation(&self, running: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.current_running(), running)
+    }
+
+    /// 当前实际监听端口（0 = 未运行/未就绪）。
+    fn current_port(&self) -> u16 {
+        self.port
+            .lock()
+            .expect("dsh port lock poisoned")
+            .load(Ordering::Relaxed)
+    }
+}
+
+/// `dsh-speak` 事件载荷（气泡台词 + 原始事件）。
+#[derive(Clone, Serialize)]
+struct DshSpeakPayload {
+    text: String,
+    event: zapmomo::dsh::event::DshEvent,
+}
+
+/// `dsh-bridge-status` 事件载荷。
+#[derive(Clone, Serialize)]
+struct DshBridgeStatusPayload {
+    running: bool,
+    port: Option<u16>,
+    error: Option<String>,
+}
+
+/// dsh 事件处理管线：节流 → 模板台词 → `dsh-speak` emit → TTS 播报 + 对话记录落盘。
+fn handle_dsh_event(
+    app: &AppHandle,
+    throttle: &zapmomo::dsh::EventThrottle,
+    event: zapmomo::dsh::event::DshEvent,
+) {
+    if !throttle.allow(&event) {
+        tracing::debug!(
+            "dsh 事件被节流丢弃: kind={} session={}",
+            event.kind(),
+            event.session_id()
+        );
+        return;
+    }
+    let text = zapmomo::dsh::lines::pick_line(&event, zapmomo::dsh::lines::next_roll());
+    tracing::info!("dsh 事件播报: kind={} text={text}", event.kind());
+    // 先 emit 气泡（立即，不等语音），再异步语音与落盘
+    let _ = app.emit(
+        "dsh-speak",
+        DshSpeakPayload {
+            text: text.clone(),
+            event,
+        },
+    );
+
+    // 事件时实时读设置，开关即时生效
+    let settings = zapmomo::config::settings::load_settings().unwrap_or_default();
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    // 语音播报：voice 会话运行中不出声（不打断对话）；TTS 未就绪只出气泡
+    if cfg.voice_enabled
+        && !app.state::<VoiceSessionState>().is_running()
+        && let Some(announcer) = dsh_announcer(&app.state::<DshBridgeState>())
+    {
+        announcer.announce(&text);
+    }
+    // 落盘到对话记录（与语音会话同库，前端「对话记录」页可见）；
+    // 空文本不落盘（与 voice ReplyFinished 的守卫一致，防御性）
+    if cfg.record_to_history && !text.is_empty() {
+        records::append_record(records::ConversationRecord {
+            role: records::RecordRole::Assistant,
+            text: text.clone(),
+            at: iso_timestamp_now(),
+        });
+    }
+}
+
+/// 取（或懒构建）播报器：TTS 未就绪返回 None（只出气泡），失败不缓存。
+fn dsh_announcer(
+    state: &DshBridgeState,
+) -> Option<std::sync::Arc<zapmomo::dsh::announce::Announcer>> {
+    let mut slot = state.announcer.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(a) = slot.as_ref() {
+        return Some(a.clone());
+    }
+    match zapmomo::dsh::announce::Announcer::try_new() {
+        Ok(a) => {
+            let a = std::sync::Arc::new(a);
+            *slot = Some(a.clone());
+            Some(a)
+        }
+        Err(e) => {
+            // warn 而非 debug：默认 info 日志下让运维能看到「为什么只有气泡没声音」
+            // （合成失败路径在 worker 内已是 warn，两处对齐）
+            tracing::warn!("dsh 播报器不可用（本次只出气泡，TTS 就绪后自动恢复）: {e}");
+            None
+        }
+    }
+}
+
+/// 启动 dsh 桥：解析配置 → spawn 服务线程（绑 loopback、写发现文件、事件走管线）。
+fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), String> {
+    if state.is_running() {
+        return Err("dsh 桥已在运行".to_string());
+    }
+    let settings = zapmomo::config::settings::load_settings()?;
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    if !cfg.enabled {
+        return Err("dsh 桥未启用".to_string());
+    }
+    // 清陈旧发现文件（上次退出未清理的残留）
+    zapmomo::dsh::remove_discovery();
+
+    // fresh Arc：每次启动换全新一代标志（线程持有克隆）——stop 超时分离的旧线程
+    // 迟到退出只作用于自己那一代，不会复活（旧 running 恒 false）也不会污染新桥
+    let running = Arc::new(AtomicBool::new(true));
+    *state.running.lock().expect("dsh running lock poisoned") = running.clone();
+    let port_flag = Arc::new(AtomicU16::new(0));
+    *state.port.lock().expect("dsh port lock poisoned") = port_flag.clone();
+    *state
+        .last_error
+        .lock()
+        .expect("dsh last_error lock poisoned") = None;
+    // 每次启动重新探测播报器（清空懒构建缓存：TTS 模型下载后立即生效，无需等重启）
+    *state.announcer.lock().expect("dsh announcer lock poisoned") = None;
+    let thread_app = app;
+    let handle = std::thread::spawn(move || {
+        tracing::info!("dsh bridge thread started");
+        let token = zapmomo::dsh::generate_token();
+        let token_for_file = token.clone();
+        let port_for_ready = port_flag.clone();
+        let app_for_ready = thread_app.clone();
+        let mut on_ready = move |port: u16| {
+            port_for_ready.store(port, Ordering::Relaxed);
+            if let Err(e) = zapmomo::dsh::write_discovery(&zapmomo::dsh::DiscoveryInfo {
+                port,
+                token: token_for_file.clone(),
+            }) {
+                tracing::warn!("dsh 桥发现文件写入失败: {e}");
+            }
+            let _ = app_for_ready.emit(
+                "dsh-bridge-status",
+                DshBridgeStatusPayload {
+                    running: true,
+                    port: Some(port),
+                    error: None,
+                },
+            );
+        };
+        let throttle = zapmomo::dsh::EventThrottle::new(std::time::Duration::from_secs(3));
+        let app_for_sink = thread_app.clone();
+        let mut sink = move |event: zapmomo::dsh::event::DshEvent| {
+            handle_dsh_event(&app_for_sink, &throttle, event);
+        };
+        let result = zapmomo::dsh::serve(cfg.port, &token, &mut sink, &running, &mut on_ready);
+        port_flag.store(0, Ordering::Relaxed);
+        // token 条件清理：本线程若是迟到的分离线程，发现文件可能已属于重启后的
+        // 新桥——只有 token 一致（仍是自己的文件）才删
+        zapmomo::dsh::remove_discovery_if_token(&token);
+        running.store(false, Ordering::Relaxed);
+        match &result {
+            Ok(()) => tracing::info!("dsh bridge thread finished (clean)"),
+            Err(e) => tracing::error!("dsh bridge thread finished with error: {e}"),
+        }
+        // 本线程仍是当前代才写 last_error / 发终态事件（分离旧线程迟到退出
+        // 不污染新桥的轮询状态与前端事件）
+        let bridge_state = thread_app.state::<DshBridgeState>();
+        if bridge_state.is_current_generation(&running) {
+            let err = result.err();
+            *bridge_state
+                .last_error
+                .lock()
+                .expect("dsh last_error lock poisoned") = err.clone();
+            let _ = thread_app.emit(
+                "dsh-bridge-status",
+                DshBridgeStatusPayload {
+                    running: false,
+                    port: None,
+                    error: err,
+                },
+            );
+        }
+    });
+    *state
+        .handle
+        .lock()
+        .expect("dsh bridge handle lock poisoned") = Some(handle);
+    Ok(())
+}
+
+/// 停止 dsh 桥：置停止标志后有界等待线程退出。
+///
+/// serve 的停止保证覆盖「请求间」检查；停滞客户端可能把线程卡在单次请求的
+/// body 读取/响应抽干里（tiny_http 无 socket 读超时），此时超时后**分离线程**
+/// （不 join，不阻塞调用方；线程随客户端断开或进程退出自然终结），running
+/// 状态位仍保持一致。分离线程迟到退出只作用于自己那一代标志（fresh Arc）；
+/// 发现文件若因此未由 epilogue 清理，下次启动会清陈旧残留。
+fn stop_dsh_bridge_inner(state: &DshBridgeState) -> Result<(), String> {
+    if !state.is_running() {
+        return Err("dsh 桥未在运行".to_string());
+    }
+    state.current_running().store(false, Ordering::Relaxed);
+    let handle = state
+        .handle
+        .lock()
+        .expect("dsh bridge handle lock poisoned")
+        .take();
+    if let Some(handle) = handle {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            tracing::warn!("dsh 桥线程未在 2s 内退出（可能被停滞客户端阻塞），已分离");
+            // JoinHandle 无 Drop impl，forget 与 drop 同为分离语义；显式 forget 表达意图
+            std::mem::forget(handle);
+        }
+    }
+    Ok(())
+}
+
+/// GUI 展示用的 dsh 桥配置信息。
+#[derive(Serialize)]
+struct DshConfigInfo {
+    enabled: bool,
+    port: u16,
+    voice_enabled: bool,
+    record_to_history: bool,
+    running: bool,
+    /// 实际监听端口（RuntimeActual；None = 未就绪）
+    actual_port: Option<u16>,
+    /// 最近一次桥线程错误（启动失败/退出异常；None = 正常），供设置页展示
+    error: Option<String>,
+    discovery_path: String,
+}
+
+#[tauri::command]
+fn get_dsh_config(state: State<'_, DshBridgeState>) -> Result<DshConfigInfo, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    let actual = state.current_port();
+    Ok(DshConfigInfo {
+        enabled: cfg.enabled,
+        port: cfg.port,
+        voice_enabled: cfg.voice_enabled,
+        record_to_history: cfg.record_to_history,
+        running: state.is_running(),
+        actual_port: (actual != 0).then_some(actual),
+        error: state
+            .last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
+        discovery_path: zapmomo::dsh::discovery_file().display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_dsh_enabled(
+    app: AppHandle,
+    state: State<'_, DshBridgeState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = zapmomo::config::settings::load_settings()?.unwrap_or_default();
+    settings.dsh.get_or_insert_with(Default::default).enabled = Some(enabled);
+    zapmomo::config::settings::save_settings(&settings)?;
+    if enabled {
+        if state.is_running() {
+            // 幂等：目标态已达成直接成功（避免重复开关弹错误提示）
+            Ok(())
+        } else {
+            start_dsh_bridge_impl(app, state.inner())
+        }
+    } else if state.is_running() {
+        stop_dsh_bridge_inner(state.inner())
+    } else {
+        Ok(())
+    }
+}
+
+/// `set_dsh_params` 载荷：可调整项（缺省不修改）。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DshParamsPatch {
+    voice_enabled: Option<bool>,
+    record_to_history: Option<bool>,
+    port: Option<u16>,
+}
+
+#[tauri::command]
+fn set_dsh_params(
+    app: AppHandle,
+    state: State<'_, DshBridgeState>,
+    params: DshParamsPatch,
+) -> Result<(), String> {
+    if let Some(p) = params.port
+        && p != 0
+        && p < 1024
+    {
+        return Err(format!("端口需在 1024~65535 或 0（随机），当前 {p}"));
+    }
+    let mut settings = zapmomo::config::settings::load_settings()?.unwrap_or_default();
+    // 端口与当前配置相同（未配置 ≡ 0 随机）则无需重启桥
+    let port_changed = params
+        .port
+        .is_some_and(|p| settings.dsh.as_ref().and_then(|d| d.port).unwrap_or(0) != p);
+    let dsh = settings.dsh.get_or_insert_with(Default::default);
+    if let Some(v) = params.voice_enabled {
+        dsh.voice_enabled = Some(v);
+    }
+    if let Some(v) = params.record_to_history {
+        dsh.record_to_history = Some(v);
+    }
+    if let Some(v) = params.port {
+        dsh.port = Some(v);
+    }
+    zapmomo::config::settings::save_settings(&settings)?;
+    // 端口变化需重启桥生效；voice/record 项在事件时实时读取
+    if port_changed && state.is_running() {
+        stop_dsh_bridge_inner(state.inner())?;
+        start_dsh_bridge_impl(app, state.inner())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_dsh_bridge_status(state: State<'_, DshBridgeState>) -> DshBridgeStatusPayload {
+    let port = state.current_port();
+    DshBridgeStatusPayload {
+        running: state.is_running(),
+        port: (port != 0).then_some(port),
+        error: state
+            .last_error
+            .lock()
+            .expect("dsh last_error lock poisoned")
+            .clone(),
+    }
+}
+
+/// 测试播报：灌一条假事件进管线（设置页按钮全链路验收，不用 curl）。
+#[tauri::command]
+fn test_dsh_announce(app: AppHandle) -> Result<(), String> {
+    // 独立零窗口节流器：测试不受 3s 节流限制
+    let throttle = zapmomo::dsh::EventThrottle::new(std::time::Duration::ZERO);
+    handle_dsh_event(
+        &app,
+        &throttle,
+        zapmomo::dsh::event::DshEvent::TaskFinished {
+            session_id: "zapmomo-test".to_string(),
+            title: Some("桌宠测试播报".to_string()),
+            reason: Some("completed".to_string()),
+        },
+    );
+    Ok(())
+}
+
 /// 读取持久化的对话记录（`~/.zapmomo/conversations.json`），供前端「对话记录」页载入。
 #[tauri::command]
 fn get_conversation_records() -> Vec<records::ConversationRecord> {
@@ -1977,6 +2379,55 @@ fn set_microphone(
     Ok(())
 }
 
+/// 前端展示用的 BongoCat 道具资源信息（非 BongoCat 模型为 `None`）。
+#[derive(Clone, Serialize)]
+struct PerformancePropsView {
+    /// 键盘背景图绝对路径（`resources/background.png`）。
+    background: Option<String>,
+    /// 按键贴图清单（爪子按在某键上的预渲染图）。
+    keys: Vec<PerformanceKeyView>,
+}
+
+#[derive(Clone, Serialize)]
+struct PerformanceKeyView {
+    /// 键名（如 `KeyA`、`CapsLock`）。
+    key: String,
+    /// 贴图绝对路径。
+    path: String,
+    /// 所属的手：`"left"` / `"right"`。
+    hand: String,
+}
+
+/// 把探测到的 BongoCat 道具资源转成前端可用的视图（绝对路径字符串）。
+fn props_view(props: &zapmomo::live2d::config::BongoCatProps) -> PerformancePropsView {
+    PerformancePropsView {
+        background: props.background.as_ref().map(|p| p.display().to_string()),
+        keys: props
+            .keys
+            .iter()
+            .map(|k| PerformanceKeyView {
+                key: k.key.clone(),
+                path: k.path.display().to_string(),
+                hand: match k.hand {
+                    zapmomo::live2d::config::Hand::Left => "left",
+                    zapmomo::live2d::config::Hand::Right => "right",
+                }
+                .to_string(),
+            })
+            .collect(),
+    }
+}
+
+/// 探测 active 伙伴是否带 BongoCat 道具资源（相对模型清单所在目录）。
+fn detect_active_bongocat_props() -> Option<PerformancePropsView> {
+    let lib = zapmomo::companion::load_library_fast().ok()?;
+    let active = zapmomo::companion::active_model(&lib)?;
+    let model_dir = Path::new(&active.model_file)
+        .parent()
+        .unwrap_or(Path::new(&active.model_dir));
+    zapmomo::live2d::config::detect_bongocat(model_dir).map(|p| props_view(&p))
+}
+
 /// GUI 展示用的 Live2D 配置信息。
 #[derive(Serialize)]
 struct Live2dConfigInfo {
@@ -1991,6 +2442,8 @@ struct Live2dConfigInfo {
     locked: Option<bool>,
     drag_mode: Option<CompanionDragMode>,
     settings_path: String,
+    /// BongoCat 道具资源（非 BongoCat 模型为 `null`）。
+    props: Option<PerformancePropsView>,
 }
 
 /// 读取 Live2D 配置，并在模型目录存在时重新放行 asset 协议 scope。
@@ -2029,6 +2482,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         locked,
         drag_mode,
         settings_path: settings::get_settings_path().display().to_string(),
+        props: detect_active_bongocat_props(),
     })
 }
 
@@ -2039,6 +2493,8 @@ struct Live2dModelInfo {
     model_dir: Option<String>,
     model_file: Option<String>,
     format: Option<String>,
+    /// BongoCat 道具资源（非 BongoCat 模型为 `null`）。
+    props: Option<PerformancePropsView>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2122,10 +2578,16 @@ fn reconcile_active(
             app.asset_protocol_scope()
                 .allow_directory(Path::new(&model.model_dir), true)
                 .map_err(|e| format!("无法放行模型目录: {e}"))?;
+            // BongoCat 道具探测相对模型清单所在目录（毫秒级小 IO，与 validate 同量级）。
+            let model_dir = Path::new(&model.model_file)
+                .parent()
+                .unwrap_or(Path::new(&model.model_dir));
+            let props = zapmomo::live2d::config::detect_bongocat(model_dir).map(|p| props_view(&p));
             let info = Live2dModelInfo {
                 model_dir: Some(model.model_dir.clone()),
                 model_file: Some(model.model_file.clone()),
                 format: Some(model.format.clone()),
+                props,
             };
             // 通知常驻角色窗口即时重载新模型（同进程事件，跨窗口同步）。
             let _ = app.emit("live2d-model-changed", &info);
@@ -2136,6 +2598,7 @@ fn reconcile_active(
                 model_dir: None,
                 model_file: None,
                 format: None,
+                props: None,
             };
             let _ = app.emit("live2d-model-changed", &info);
         }
@@ -2235,6 +2698,7 @@ async fn import_companion(
     let lib = zapmomo::companion::load_library_fast()?;
     let became_active = lib.active_model_id.as_deref() == Some(model.id.as_str());
     if became_active {
+        stop_performance_inner(&app);
         let active = zapmomo::companion::active_model(&lib);
         reconcile_active(&app, active)?;
     }
@@ -2251,6 +2715,7 @@ async fn import_companion(
 /// 设置「当前使用」伙伴（Library 先持久化成功，再 reconcile 同步 settings 与桌宠）。
 #[tauri::command]
 async fn set_active_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    stop_performance_inner(&app);
     let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::set_active(&id))
         .await
         .map_err(|e| e.to_string())??;
@@ -2282,6 +2747,8 @@ async fn rename_companion(
 /// 并 reconcile 同步桌宠（切换到新 active 或清屏）。
 #[tauri::command]
 async fn remove_companion(app: AppHandle, id: String) -> Result<CompanionLibraryView, String> {
+    // 删除的若是 active，先停表演（reconcile 清屏/切换前让 stopped 先发出）。
+    stop_performance_inner(&app);
     let lib = tauri::async_runtime::spawn_blocking(move || zapmomo::companion::remove(&id))
         .await
         .map_err(|e| e.to_string())??;
@@ -2396,6 +2863,165 @@ fn apply_companion_drag_mode(app: &AppHandle, mode: CompanionDragMode) -> Result
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 表演（BongoCat 兼容模拟表演）运行时
+//
+// 事件流与 BongoCat `device-changed` 逐字节同构，仅事件由模拟 PerformanceSource
+// 产生——**绝不监听真实键鼠**。控制事件（performance-started/stopped）定向
+// `companion` 窗口，避免 60-120 msg/s 的鼠标事件灌进设置窗口。
+// ---------------------------------------------------------------------------
+
+/// 当前表演状态（`None` = 未表演）。static Mutex 供主线程菜单与异步命令共用。
+static PERFORMANCE: Mutex<Option<PerformanceState>> = Mutex::new(None);
+
+struct PerformanceState {
+    /// 每个活动通道一个停止信号（Both 场景有两个 worker）。
+    stops: Vec<StopSignal>,
+    scene: PerformanceScene,
+}
+
+/// 主显示器物理像素活动区域（取不到时回退 1920×1080）。
+fn primary_monitor_rect(app: &AppHandle) -> Rect {
+    let fallback = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1920.0,
+        height: 1080.0,
+    };
+    match app.primary_monitor() {
+        Ok(Some(m)) => {
+            let s = m.size();
+            let p = m.position();
+            Rect {
+                x: p.x as f64,
+                y: p.y as f64,
+                width: s.width as f64,
+                height: s.height as f64,
+            }
+        }
+        _ => fallback,
+    }
+}
+
+/// 停止当前表演（若有）并发出 `performance-stopped`；不做托盘重建（调用方负责）。
+fn stop_performance_inner(app: &AppHandle) {
+    let mut guard = PERFORMANCE.lock().unwrap();
+    if let Some(state) = guard.take() {
+        for stop in &state.stops {
+            stop.stop(); // 立即唤醒 worker；被打断的在途事件不发出
+        }
+        let _ = app.emit_to(
+            "companion",
+            "performance-stopped",
+            serde_json::json!({ "scene": state.scene.as_str() }),
+        );
+        tracing::info!("已停止表演：{}", state.scene.as_str());
+    }
+}
+
+/// 启动一个模拟器 worker 线程（发 `device-changed` 到 companion 窗口），
+/// 停止信号登记进 `stops`。Both 场景会调用两次（typing + mouse 各一个线程）。
+fn spawn_performance_worker(
+    mut source: Box<dyn PerformanceSource>,
+    app: &AppHandle,
+    stops: &mut Vec<StopSignal>,
+) {
+    let stop = StopSignal::new();
+    stops.push(stop.clone());
+    let emit_app = app.clone();
+    let mut rng = Rng::from_entropy();
+    std::thread::spawn(move || {
+        let mut emit = |ev: &DeviceEvent| {
+            let _ = emit_app.emit_to("companion", "device-changed", ev);
+        };
+        run_source(source.as_mut(), &mut rng, &stop, &mut emit);
+    });
+}
+
+/// 启动表演（供 command 与菜单事件共用）。
+fn start_performance_impl(app: &AppHandle, scene: PerformanceScene) -> Result<(), String> {
+    let props = detect_active_bongocat_props()
+        .ok_or_else(|| "当前伙伴不支持表演（需要 BongoCat 格式模型）".to_string())?;
+
+    // 锁内先停旧表演（旧 worker 静默退出、不再发 stopped，避免新旧线程清理竞态）。
+    let mut guard = PERFORMANCE.lock().unwrap();
+    if let Some(old) = guard.take() {
+        for stop in &old.stops {
+            stop.stop();
+        }
+    }
+
+    // 键池来自模型实际贴图键名（无贴图的键不会出现在事件流）。
+    let keys: Vec<String> = props.keys.iter().map(|k| k.key.clone()).collect();
+    let area = primary_monitor_rect(app);
+    let mut stops = Vec::new();
+
+    // 按场景启动一个或多个通道 worker（Both = 键鼠同动，两个线程并发）。
+    if scene.has_typing() {
+        spawn_performance_worker(
+            Box::new(TypingSimulator::new(keys.clone())),
+            app,
+            &mut stops,
+        );
+    }
+    if scene.has_mouse() {
+        spawn_performance_worker(Box::new(MouseSimulator::new(area)), app, &mut stops);
+    }
+
+    // 先发 started（消费者先于第一个 device 事件就绪）。带鼠标通道时下发 play_area。
+    let started_payload = if scene.has_mouse() {
+        serde_json::json!({
+            "scene": scene.as_str(),
+            "play_area": { "x": area.x, "y": area.y, "width": area.width, "height": area.height },
+        })
+    } else {
+        serde_json::json!({ "scene": scene.as_str() })
+    };
+    let _ = app.emit_to("companion", "performance-started", &started_payload);
+
+    *guard = Some(PerformanceState { stops, scene });
+    tracing::info!("已开始表演：{}", scene.as_str());
+    Ok(())
+}
+
+/// 开始表演（场景名 "typing" / "mouse"；供设置页/未来 AI 编排调用）。
+#[tauri::command]
+fn start_performance(app: AppHandle, scene: String) -> Result<(), String> {
+    let scene = match scene.as_str() {
+        "typing" => PerformanceScene::Typing,
+        "mouse" => PerformanceScene::Mouse,
+        "both" => PerformanceScene::Both,
+        other => return Err(format!("未知表演场景: {other}")),
+    };
+    start_performance_impl(&app, scene)?;
+    rebuild_tray_menu_threadsafe(&app);
+    Ok(())
+}
+
+/// 停止表演（幂等）。
+#[tauri::command]
+fn stop_performance(app: AppHandle) -> Result<(), String> {
+    stop_performance_inner(&app);
+    rebuild_tray_menu_threadsafe(&app);
+    Ok(())
+}
+
+/// 查询当前是否在表演及场景（dev HMR 重载后前端重同步用）。
+#[tauri::command]
+fn is_performing() -> Option<String> {
+    PERFORMANCE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.scene.as_str().to_string())
+}
+
+/// 主线程停止表演（handle_menu / 菜单切换伙伴 / 隐藏窗口用）。
+fn stop_performance_sync(app: &AppHandle) {
+    stop_performance_inner(app);
+    rebuild_tray_menu(app);
+}
+
 /// 读取持久化的角色窗口显示层级（缺省置顶）。
 fn current_companion_layer() -> CompanionWindowLayer {
     settings::load_settings()
@@ -2413,6 +3039,8 @@ fn current_companion_layer() -> CompanionWindowLayer {
 /// `validate_managed_model` 深校验是毫秒级小 IO（读 model3.json + 查文件存在性），
 /// 与 handle_menu 里现有同步 load/save settings 同量级。
 fn apply_active_companion(app: &AppHandle, id: &str) {
+    // 切换伙伴前先停表演（stopped 先于 model-changed 发出，同线程 emit 保序）。
+    stop_performance_inner(app);
     match zapmomo::companion::set_active(id) {
         Ok(lib) => {
             let active = zapmomo::companion::active_model(&lib);
@@ -2478,7 +3106,7 @@ fn apply_companion_layer_platform(app: &AppHandle, layer: CompanionWindowLayer) 
             // 一次性把窗口沉到 Z 序底部；hide/show 后由 toggle_companion_window 按 layer 重放。
             let _ = SetWindowPos(
                 hwnd,
-                HWND_BOTTOM,
+                Some(HWND_BOTTOM),
                 0,
                 0,
                 0,
@@ -2749,8 +3377,16 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "show_settings" | "open_settings" => show_settings_window(app),
         "toggle_companion" => toggle_companion_window(app),
         "hide_companion" => hide_companion_window(app),
-        "restart" => app.request_restart(),
-        "quit" => app.exit(0),
+        // 退出/重启前清理 dsh 桥发现文件：桥线程随进程终止无 epilogue，
+        // 不清理会残留指向死端口的文件（崩溃残留仍由下次启动兜底清理）
+        "restart" => {
+            zapmomo::dsh::remove_discovery();
+            app.request_restart();
+        }
+        "quit" => {
+            zapmomo::dsh::remove_discovery();
+            app.exit(0);
+        }
         // 点击穿透：菜单按当前状态显示「启用/禁用」项，点击后应用固定值（幂等，
         // 不受菜单事件重复派发影响）。
         "enable_click_through" => {
@@ -2773,6 +3409,29 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "disable_autostart" => {
             let _ = apply_autostart(app, false);
         }
+        // 表演动作（模拟键鼠，与真实输入无关）。
+        "perform_typing" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Typing) {
+                tracing::warn!("启动敲键盘表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_mouse" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Mouse) {
+                tracing::warn!("启动玩鼠标表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_both" => {
+            if let Err(e) = start_performance_impl(app, PerformanceScene::Both) {
+                tracing::warn!("启动键鼠同动表演失败: {e}");
+            } else {
+                rebuild_tray_menu(app);
+            }
+        }
+        "perform_stop" => stop_performance_sync(app),
         _ => {
             if let Some(scale) = scale_from_id(id) {
                 let _ = apply_companion_scale(app, scale);
@@ -2787,9 +3446,47 @@ fn handle_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// 构建角色窗口的右键菜单（切换伙伴/窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 当前 active 伙伴是否为 BongoCat 格式（探测式，毫秒级）。
+fn current_companion_is_bongocat() -> bool {
+    detect_active_bongocat_props().is_some()
+}
+
+/// 构建「表演」子菜单（敲键盘 / 玩鼠标 / 键鼠同动 / 停止表演）。
+///
+/// 非 BongoCat 伙伴或表演进行中时前三项禁用；未表演时 stop 禁用。
+/// 右键菜单每次弹出重建，勾选/可用态天然最新；托盘菜单需在 start/stop 后重建。
+fn build_performance_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let bongo = current_companion_is_bongocat();
+    let performing = PERFORMANCE.lock().unwrap().is_some();
+    let typing = MenuItem::with_id(
+        app,
+        "perform_typing",
+        "表演：敲键盘",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let mouse = MenuItem::with_id(
+        app,
+        "perform_mouse",
+        "表演：玩鼠标",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let both = MenuItem::with_id(
+        app,
+        "perform_both",
+        "表演：键鼠同动",
+        bongo && !performing,
+        None::<&str>,
+    )?;
+    let stop = MenuItem::with_id(app, "perform_stop", "停止表演", performing, None::<&str>)?;
+    Submenu::with_items(app, "表演", true, &[&typing, &mouse, &both, &stop])
+}
+
+/// 构建角色窗口的右键菜单（切换伙伴/表演/窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let companion_submenu = build_companion_switch_submenu(app)?;
+    let performance_submenu = build_performance_submenu(app)?;
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
     let layer_submenu = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2802,6 +3499,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         &[
             &companion_submenu,
+            &performance_submenu,
             &scale_submenu,
             &opacity_submenu,
             &layer_submenu,
@@ -2821,6 +3519,7 @@ const TRAY_ID: &str = "zapmomo-tray";
 /// 构建托盘菜单：显示/隐藏角色、切换伙伴、窗口尺寸/透明度/显示层级、打开设置、重启、退出。
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let companion_submenu = build_companion_switch_submenu(app)?;
+    let performance_submenu = build_performance_submenu(app)?;
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
     let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
@@ -2836,6 +3535,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &toggle_companion,
             &companion_submenu,
+            &performance_submenu,
             &tray_scale,
             &tray_opacity,
             &tray_layer,
@@ -3100,6 +3800,7 @@ fn toggle_companion_window(app: &AppHandle) {
         return;
     };
     if window.is_visible().unwrap_or(true) {
+        stop_performance_sync(app);
         let _ = window.hide();
     } else {
         let _ = window.show();
@@ -3269,8 +3970,9 @@ fn clear_shortcut(app: AppHandle, action: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 隐藏角色窗口。
+/// 隐藏角色窗口（隐藏时停表演，防幽灵表演态）。
 fn hide_companion_window(app: &AppHandle) {
+    stop_performance_sync(app);
     if let Some(window) = app.get_webview_window("companion") {
         let _ = window.hide();
     }
@@ -3282,15 +3984,17 @@ fn hide_companion(app: AppHandle) {
     hide_companion_window(&app);
 }
 
-/// 退出应用（供角色窗口右键菜单调用）。
+/// 退出应用（供角色窗口右键菜单调用）。退出前清理 dsh 桥发现文件（防死端口残留）。
 #[tauri::command]
 fn quit_app(app: AppHandle) {
+    zapmomo::dsh::remove_discovery();
     app.exit(0);
 }
 
-/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。
+/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。退出前清理 dsh 桥发现文件。
 #[tauri::command]
 fn restart_app(app: AppHandle) {
+    zapmomo::dsh::remove_discovery();
     app.request_restart();
 }
 
@@ -4419,6 +5123,7 @@ pub fn run() {
         .manage(TtsDownloadState::default())
         .manage(LlmState::new())
         .manage(VoiceSessionState::new())
+        .manage(DshBridgeState::new())
         .manage(ModelLibraryState::default())
         .manage(CatalogState::from_settings())
         .manage(Arc::new(DownloadManager::new(current_downloader())))
@@ -4472,6 +5177,11 @@ pub fn run() {
             start_voice_session,
             stop_voice_session,
             is_voice_session_running,
+            get_dsh_config,
+            set_dsh_enabled,
+            set_dsh_params,
+            get_dsh_bridge_status,
+            test_dsh_announce,
             get_conversation_records,
             clear_conversation_records,
             list_model_library,
@@ -4515,6 +5225,9 @@ pub fn run() {
             set_companion_locked,
             set_companion_drag_mode,
             show_companion_menu,
+            start_performance,
+            stop_performance,
+            is_performing,
             get_hide_dock_icon,
             set_hide_dock_icon,
             get_autostart,
@@ -4592,6 +5305,16 @@ pub fn run() {
                     .and_then(|k| k.custom_keywords.clone());
                 if let Err(e) = start_listen_impl(handle, state.inner(), mic, kw) {
                     tracing::warn!("自动监听 KWS 失败: {e}");
+                }
+            }
+
+            // 启动 dsh 桥（若启用）：loopback HTTP 接收 deepseek-harness 插件推送的
+            // 任务事件，桌宠以气泡+语音播报。失败静默降级（不影响主流程）。
+            if zapmomo::dsh::config::resolve(loaded.as_ref().and_then(|s| s.dsh.as_ref())).enabled {
+                let handle = app.handle().clone();
+                let state = app.state::<DshBridgeState>();
+                if let Err(e) = start_dsh_bridge_impl(handle, state.inner()) {
+                    tracing::warn!("自动启动 dsh 桥失败: {e}");
                 }
             }
 

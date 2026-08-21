@@ -28,7 +28,12 @@ import type {
   CompanionLibraryView,
   CompanionWindowLayer,
   ConversationRecord,
+  DeviceEventPayload,
   DownloadProgress,
+  DshBridgeStatus,
+  DshConfigInfo,
+  DshParamsPatch,
+  DshSpeakPayload,
   ImportCompanionResult,
   KwsConfigInfo,
   KwsParamsPatch,
@@ -42,6 +47,9 @@ import type {
   LlmParamsPatch,
   LlmStatus,
   LlmToken,
+  PerformanceScene,
+  PerformanceStartedPayload,
+  PerformanceStoppedPayload,
   SaveTtsVoiceRequest,
   ShortcutActionId,
   TtsConfigInfo,
@@ -136,6 +144,12 @@ export const api = {
   // ---- 对话记录（~/.zapmomo/conversations.json）----
   getConversationRecords: () => invoke<ConversationRecord[]>("get_conversation_records"),
   clearConversationRecords: () => invoke<void>("clear_conversation_records"),
+  // ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+  getDshConfig: () => invoke<DshConfigInfo>("get_dsh_config"),
+  setDshEnabled: (args: { enabled: boolean }) => invoke<void>("set_dsh_enabled", args),
+  setDshParams: (args: { params: DshParamsPatch }) => invoke<void>("set_dsh_params", args),
+  getDshBridgeStatus: () => invoke<DshBridgeStatus>("get_dsh_bridge_status"),
+  testDshAnnounce: () => invoke<void>("test_dsh_announce"),
   // ---- 模型库 ----
   listModelLibrary: () => invoke<LibraryModel[]>("list_model_library"),
   getSystemResources: () => invoke<SystemResources>("get_system_resources"),
@@ -193,6 +207,9 @@ export const api = {
   setCompanionDragMode: (args: { mode: CompanionDragMode }) =>
     invoke<void>("set_companion_drag_mode", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
+  startPerformance: (args: { scene: PerformanceScene }) => invoke<void>("start_performance", args),
+  stopPerformance: () => invoke<void>("stop_performance"),
+  isPerforming: () => invoke<PerformanceScene | null>("is_performing"),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
   getAutostart: () => invoke<boolean>("get_autostart"),
@@ -292,6 +309,27 @@ export function onCompanionDragModeChanged(
   return listen<CompanionDragMode>("companion-drag-mode-changed", (e) => handler(e.payload));
 }
 
+/** 表演开始（桌宠窗口为唯一订阅者）。 */
+export function onPerformanceStarted(
+  handler: (payload: PerformanceStartedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<PerformanceStartedPayload>("performance-started", (e) => handler(e.payload));
+}
+
+/** 表演停止（桌宠窗口为唯一订阅者）。 */
+export function onPerformanceStopped(
+  handler: (payload: PerformanceStoppedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<PerformanceStoppedPayload>("performance-stopped", (e) => handler(e.payload));
+}
+
+/** 模拟键鼠事件流（与 BongoCat device-changed 逐字节同构；桌宠窗口为唯一订阅者）。 */
+export function onDeviceChanged(
+  handler: (payload: DeviceEventPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<DeviceEventPayload>("device-changed", (e) => handler(e.payload));
+}
+
 /** 开机自启动状态变化（设置页为唯一订阅者：托盘菜单改动后同步开关）。 */
 export function onAutostartChanged(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("autostart-changed", (e) => handler(e.payload));
@@ -381,6 +419,18 @@ export function onVoiceSessionStopped(
   handler: (payload: VoiceStopped) => void,
 ): Promise<UnlistenFn> {
   return listen<VoiceStopped>("voice-session-stopped", (e) => handler(e.payload));
+}
+
+// ---- dsh 桥事件 ----
+
+export function onDshSpeak(handler: (payload: DshSpeakPayload) => void): Promise<UnlistenFn> {
+  return listen<DshSpeakPayload>("dsh-speak", (e) => handler(e.payload));
+}
+
+export function onDshBridgeStatus(
+  handler: (payload: DshBridgeStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<DshBridgeStatus>("dsh-bridge-status", (e) => handler(e.payload));
 }
 
 /**

@@ -115,6 +115,23 @@ export type CompanionWindowLayer = "front" | "back";
 /** 角色窗口拖拽模式：direct（左键直接拖动，默认）/ modifier（需按住 cmd/Ctrl） */
 export type CompanionDragMode = "direct" | "modifier";
 
+/** BongoCat 表演道具资源（非 BongoCat 模型为 null） */
+export interface PerformancePropsInfo {
+  /** 键盘背景图绝对路径（resources/background.png） */
+  background: string | null;
+  /** 按键贴图清单（爪子按在某键上的预渲染图） */
+  keys: PerformanceKeyInfo[];
+}
+
+export interface PerformanceKeyInfo {
+  /** 键名（如 KeyA、CapsLock） */
+  key: string;
+  /** 贴图绝对路径 */
+  path: string;
+  /** 所属的手：left / right */
+  hand: "left" | "right";
+}
+
 /** `get_live2d_config` 返回 */
 export interface Live2dConfigInfo {
   model_dir: string | null;
@@ -130,6 +147,8 @@ export interface Live2dConfigInfo {
   /** 拖拽模式（null = 旧后端未返回，视为 direct） */
   drag_mode: CompanionDragMode | null;
   settings_path: string;
+  /** BongoCat 道具资源（非 BongoCat 模型为 null） */
+  props: PerformancePropsInfo | null;
 }
 
 /** `live2d-model-changed` 事件载荷（切换伙伴 / 清屏；清屏时三字段均为 null） */
@@ -137,7 +156,30 @@ export interface Live2dModelInfo {
   model_dir: string | null;
   model_file: string | null;
   format: string | null;
+  /** BongoCat 道具资源（非 BongoCat 模型为 null） */
+  props: PerformancePropsInfo | null;
 }
+
+// ---- 表演（BongoCat 兼容模拟键鼠）----
+
+/** 表演场景（"both" = 键鼠同动，同时驱动键盘 + 鼠标两个通道） */
+export type PerformanceScene = "typing" | "mouse" | "both";
+
+/** `performance-started` 事件载荷（含鼠标通道时带 play_area） */
+export type PerformanceStartedPayload =
+  | { scene: "typing" }
+  | { scene: "mouse" | "both"; play_area: { x: number; y: number; width: number; height: number } };
+
+/** `performance-stopped` 事件载荷 */
+export interface PerformanceStoppedPayload {
+  scene: PerformanceScene;
+}
+
+/** `device-changed` 事件载荷（与 BongoCat device.rs 逐字节同构） */
+export type DeviceEventPayload =
+  | { kind: "KeyboardPress" | "KeyboardRelease"; value: string }
+  | { kind: "MousePress" | "MouseRelease"; value: string }
+  | { kind: "MouseMove"; value: { x: number; y: number } };
 
 /** `list_companions` / `set_active_companion` 里的单个伙伴 */
 export interface CompanionModelInfo {
@@ -362,3 +404,47 @@ export type ShortcutActionId =
   | "toggle_voice_session"
   | "interrupt_reply"
   | "open_settings";
+
+// ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+
+/** dsh 任务事件（后端 DshEvent 序列化；type 为 kebab-case 判别字段） */
+export interface DshEventInfo {
+  type: "task-started" | "task-finished" | "task-failed" | "task-interrupted";
+  session_id: string;
+  title?: string | null;
+  reason?: string | null;
+  detail?: string | null;
+}
+
+/** `dsh-speak` 事件载荷（气泡台词 + 原始事件） */
+export interface DshSpeakPayload {
+  text: string;
+  event: DshEventInfo;
+}
+
+/** `dsh-bridge-status` 事件载荷 / `get_dsh_bridge_status` 返回 */
+export interface DshBridgeStatus {
+  running: boolean;
+  port: number | null;
+  error: string | null;
+}
+
+/** `get_dsh_config` 返回 */
+export interface DshConfigInfo {
+  enabled: boolean;
+  port: number;
+  voice_enabled: boolean;
+  record_to_history: boolean;
+  running: boolean;
+  actual_port: number | null;
+  /** 最近一次桥线程错误（启动失败/退出异常；null = 正常），设置页展示 */
+  error: string | null;
+  discovery_path: string;
+}
+
+/** `set_dsh_params` 载荷（snake_case 直传，缺省项不修改） */
+export interface DshParamsPatch {
+  voice_enabled?: boolean;
+  record_to_history?: boolean;
+  port?: number;
+}

@@ -1763,6 +1763,8 @@ struct DshBridgeState {
     port: Mutex<Arc<AtomicU16>>,
     /// 最近一次运行的错误（线程 epilogue 写入、start 清空；供前端轮询）
     last_error: Mutex<Option<String>>,
+    /// 懒构建的播报器（TTS 模型未就绪时为 None，下次事件重试构建；失败不缓存）
+    announcer: Mutex<Option<std::sync::Arc<zapmomo::dsh::announce::Announcer>>>,
 }
 
 impl DshBridgeState {
@@ -1772,6 +1774,7 @@ impl DshBridgeState {
             handle: Mutex::new(None),
             port: Mutex::new(Arc::new(AtomicU16::new(0))),
             last_error: Mutex::new(None),
+            announcer: Mutex::new(None),
         }
     }
 
@@ -1817,8 +1820,7 @@ struct DshBridgeStatusPayload {
     error: Option<String>,
 }
 
-/// dsh 事件处理管线：节流 → 模板台词 → `dsh-speak` emit。
-/// （阶段 2 在 emit 后追加 TTS 播报与对话记录落盘。）
+/// dsh 事件处理管线：节流 → 模板台词 → `dsh-speak` emit → TTS 播报 + 对话记录落盘。
 fn handle_dsh_event(
     app: &AppHandle,
     throttle: &zapmomo::dsh::EventThrottle,
@@ -1834,7 +1836,54 @@ fn handle_dsh_event(
     }
     let text = zapmomo::dsh::lines::pick_line(&event, zapmomo::dsh::lines::next_roll());
     tracing::info!("dsh 事件播报: kind={} text={text}", event.kind());
-    let _ = app.emit("dsh-speak", DshSpeakPayload { text, event });
+    // 先 emit 气泡（立即，不等语音），再异步语音与落盘
+    let _ = app.emit(
+        "dsh-speak",
+        DshSpeakPayload {
+            text: text.clone(),
+            event,
+        },
+    );
+
+    // 事件时实时读设置，开关即时生效
+    let settings = zapmomo::config::settings::load_settings().unwrap_or_default();
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    // 语音播报：voice 会话运行中不出声（不打断对话）；TTS 未就绪只出气泡
+    if cfg.voice_enabled
+        && !app.state::<VoiceSessionState>().is_running()
+        && let Some(announcer) = dsh_announcer(&app.state::<DshBridgeState>())
+    {
+        announcer.announce(&text);
+    }
+    // 落盘到对话记录（与语音会话同库，前端「对话记录」页可见）
+    if cfg.record_to_history {
+        records::append_record(records::ConversationRecord {
+            role: records::RecordRole::Assistant,
+            text: text.clone(),
+            at: iso_timestamp_now(),
+        });
+    }
+}
+
+/// 取（或懒构建）播报器：TTS 未就绪返回 None（只出气泡），失败不缓存。
+fn dsh_announcer(
+    state: &DshBridgeState,
+) -> Option<std::sync::Arc<zapmomo::dsh::announce::Announcer>> {
+    let mut slot = state.announcer.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(a) = slot.as_ref() {
+        return Some(a.clone());
+    }
+    match zapmomo::dsh::announce::Announcer::try_new() {
+        Ok(a) => {
+            let a = std::sync::Arc::new(a);
+            *slot = Some(a.clone());
+            Some(a)
+        }
+        Err(e) => {
+            tracing::debug!("dsh 播报器不可用（本次只出气泡）: {e}");
+            None
+        }
+    }
 }
 
 /// 启动 dsh 桥：解析配置 → spawn 服务线程（绑 loopback、写发现文件、事件走管线）。
@@ -1860,6 +1909,8 @@ fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), S
         .last_error
         .lock()
         .expect("dsh last_error lock poisoned") = None;
+    // 每次启动重新探测播报器（清空懒构建缓存：TTS 模型下载后立即生效，无需等重启）
+    *state.announcer.lock().expect("dsh announcer lock poisoned") = None;
     let thread_app = app;
     let handle = std::thread::spawn(move || {
         tracing::info!("dsh bridge thread started");

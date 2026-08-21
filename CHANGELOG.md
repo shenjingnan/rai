@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.16](https://github.com/shenjingnan/zapmomo/compare/v0.1.15...v0.1.16) - 2026-08-21
+
+### Added
+
+- *(app)* 桌宠支持置顶/置底层级切换并加入右键与托盘菜单 ([#128](https://github.com/shenjingnan/zapmomo/pull/128))
+- 桌宠角色窗口支持点击穿透 ([#126](https://github.com/shenjingnan/zapmomo/pull/126))
+- *(kws)* 支持多模型下载与切换，文件名未配置时自动探测 ([#125](https://github.com/shenjingnan/zapmomo/pull/125))
+- *(app)* 设置页支持自定义全局快捷键 ([#122](https://github.com/shenjingnan/zapmomo/pull/122))
+
+### Fixed
+
+- *(app)* 统一应用显示名为 ZapMomo ([#124](https://github.com/shenjingnan/zapmomo/pull/124))
+
+### Other
+
+- *(readme)* 新增英文 README 并支持中英文切换 ([#119](https://github.com/shenjingnan/zapmomo/pull/119))
+
 ## [0.1.15](https://github.com/shenjingnan/zapmomo/compare/v0.1.14...v0.1.15) - 2026-08-20
 
 ### Added

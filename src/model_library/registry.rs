@@ -146,6 +146,7 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "tts-vocoder" => &[crate::tts::config::DEFAULT_VOCODER],
         "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
         "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
+        "tts-vocoder-22khz" => &[crate::tts::config::DEFAULT_MATCHA_VOCODER],
         // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }

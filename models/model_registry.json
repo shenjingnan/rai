@@ -369,12 +369,15 @@
       "size_bytes": 75463442,
       "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models",
       "required_assets": [
-        "tts-matcha"
+        "tts-matcha",
+        "tts-vocoder-22khz"
       ],
       "optional_assets": [],
       "download": {
         "manifest_role": "tts-matcha",
-        "extra_roles": [],
+        "extra_roles": [
+          "tts-vocoder-22khz"
+        ],
         "kind": "archive"
       }
     },

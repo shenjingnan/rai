@@ -119,12 +119,15 @@ impl TtsModelKind {
 /// VITS 模型安装完成所需文件（如 vits-melo-tts-zh_en：model + lexicon + tokens）。
 pub const VITS_REQUIRED_FILES: [&str; 3] = [DEFAULT_TOKENS, DEFAULT_LEXICON, "model.onnx"];
 
+/// Matcha 独立声码器（`vocoder-models` release 单独发布，同 zipvoice 的 `vocos_24khz.onnx`）。
+pub const DEFAULT_MATCHA_VOCODER: &str = "vocos-22khz-univ.onnx";
+
 /// Matcha 模型安装完成所需文件（如 matcha-icefall-zh-baker：声学模型 + 独立声码器）。
 pub const MATCHA_REQUIRED_FILES: [&str; 4] = [
     DEFAULT_TOKENS,
     DEFAULT_LEXICON,
     "model-steps-3.onnx",
-    "vocos-22khz-univ.onnx",
+    DEFAULT_MATCHA_VOCODER,
 ];
 
 /// 各模型类型安装完成所需文件（相对模型目录；`data_dir`/参考音频由引擎单独校验）。

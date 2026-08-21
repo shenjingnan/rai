@@ -136,6 +136,17 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "matcha-icefall-zh-baker",
+      "role": "tts-vocoder-22khz",
+      "version": "zh-baker",
+      "kind": "raw",
+      "archive": "vocos-22khz-univ.onnx",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+      "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+      "size_bytes": 53884024,
+      "license": "Apache-2.0"
+    },
+    {
       "name": "Qwen3-0.6B",
       "role": "llm-qwen3-0.6b-q4-k-m",
       "version": "instruct",

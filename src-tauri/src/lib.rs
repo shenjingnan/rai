@@ -5,7 +5,7 @@
 //! - 监听循环跑在独立 `std::thread`，检测到唤醒词经 `TauriReaction`
 //!   以 `kws-detected` 事件推给前端；结束（正常/出错/手动停止）发 `kws-stopped`。
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -1746,6 +1746,281 @@ fn stop_voice_session(state: State<'_, VoiceSessionState>) -> Result<(), String>
 #[tauri::command]
 fn is_voice_session_running(state: State<'_, VoiceSessionState>) -> bool {
     state.is_running()
+}
+
+// ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+
+/// dsh 桥状态：共享停止标志 + 线程句柄 + 实际监听端口（RuntimeActual）。
+struct DshBridgeState {
+    running: Arc<AtomicBool>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 实际监听端口（0 = 未运行/未就绪）
+    port: Arc<AtomicU16>,
+}
+
+impl DshBridgeState {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: Mutex::new(None),
+            port: Arc::new(AtomicU16::new(0)),
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
+/// `dsh-speak` 事件载荷（气泡台词 + 原始事件）。
+#[derive(Clone, Serialize)]
+struct DshSpeakPayload {
+    text: String,
+    event: zapmomo::dsh::event::DshEvent,
+}
+
+/// `dsh-bridge-status` 事件载荷。
+#[derive(Clone, Serialize)]
+struct DshBridgeStatusPayload {
+    running: bool,
+    port: Option<u16>,
+    error: Option<String>,
+}
+
+/// dsh 事件处理管线：节流 → 模板台词 → `dsh-speak` emit。
+/// （阶段 2 在 emit 后追加 TTS 播报与对话记录落盘。）
+fn handle_dsh_event(
+    app: &AppHandle,
+    throttle: &zapmomo::dsh::EventThrottle,
+    event: zapmomo::dsh::event::DshEvent,
+) {
+    if !throttle.allow(&event) {
+        tracing::debug!(
+            "dsh 事件被节流丢弃: kind={} session={}",
+            event.kind(),
+            event.session_id()
+        );
+        return;
+    }
+    let text = zapmomo::dsh::lines::pick_line(&event, zapmomo::dsh::lines::next_roll());
+    tracing::info!("dsh 事件播报: kind={} text={text}", event.kind());
+    let _ = app.emit("dsh-speak", DshSpeakPayload { text, event });
+}
+
+/// 启动 dsh 桥：解析配置 → spawn 服务线程（绑 loopback、写发现文件、事件走管线）。
+fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), String> {
+    if state.is_running() {
+        return Err("dsh 桥已在运行".to_string());
+    }
+    let settings = zapmomo::config::settings::load_settings()?;
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    if !cfg.enabled {
+        return Err("dsh 桥未启用".to_string());
+    }
+    // 清陈旧发现文件（上次退出未清理的残留）
+    zapmomo::dsh::remove_discovery();
+
+    let running = state.running.clone();
+    running.store(true, Ordering::Relaxed);
+    let port_flag = state.port.clone();
+    port_flag.store(0, Ordering::Relaxed);
+    let thread_app = app;
+    let handle = std::thread::spawn(move || {
+        tracing::info!("dsh bridge thread started");
+        let token = zapmomo::dsh::generate_token();
+        let token_for_file = token.clone();
+        let port_for_ready = port_flag.clone();
+        let app_for_ready = thread_app.clone();
+        let mut on_ready = move |port: u16| {
+            port_for_ready.store(port, Ordering::Relaxed);
+            if let Err(e) = zapmomo::dsh::write_discovery(&zapmomo::dsh::DiscoveryInfo {
+                port,
+                token: token_for_file.clone(),
+            }) {
+                tracing::warn!("dsh 桥发现文件写入失败: {e}");
+            }
+            let _ = app_for_ready.emit(
+                "dsh-bridge-status",
+                DshBridgeStatusPayload {
+                    running: true,
+                    port: Some(port),
+                    error: None,
+                },
+            );
+        };
+        let throttle = zapmomo::dsh::EventThrottle::new(std::time::Duration::from_secs(3));
+        let app_for_sink = thread_app.clone();
+        let mut sink = move |event: zapmomo::dsh::event::DshEvent| {
+            handle_dsh_event(&app_for_sink, &throttle, event);
+        };
+        let result = zapmomo::dsh::serve(cfg.port, &token, &mut sink, &running, &mut on_ready);
+        port_flag.store(0, Ordering::Relaxed);
+        zapmomo::dsh::remove_discovery();
+        running.store(false, Ordering::Relaxed);
+        match &result {
+            Ok(()) => tracing::info!("dsh bridge thread finished (clean)"),
+            Err(e) => tracing::error!("dsh bridge thread finished with error: {e}"),
+        }
+        let _ = thread_app.emit(
+            "dsh-bridge-status",
+            DshBridgeStatusPayload {
+                running: false,
+                port: None,
+                error: result.err(),
+            },
+        );
+    });
+    *state
+        .handle
+        .lock()
+        .expect("dsh bridge handle lock poisoned") = Some(handle);
+    Ok(())
+}
+
+/// 停止 dsh 桥：置停止标志后有界等待线程退出。
+///
+/// serve 的停止保证覆盖「请求间」检查；停滞客户端可能把线程卡在单次请求的
+/// body 读取/响应抽干里（tiny_http 无 socket 读超时），此时超时后**分离线程**
+/// （不 join，不阻塞调用方；线程随客户端断开或进程退出自然终结），running
+/// 状态位仍保持一致。发现文件若因此未清理，下次启动会清陈旧残留。
+fn stop_dsh_bridge_inner(state: &DshBridgeState) -> Result<(), String> {
+    if !state.is_running() {
+        return Err("dsh 桥未在运行".to_string());
+    }
+    state.running.store(false, Ordering::Relaxed);
+    let handle = state
+        .handle
+        .lock()
+        .expect("dsh bridge handle lock poisoned")
+        .take();
+    if let Some(handle) = handle {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            tracing::warn!("dsh 桥线程未在 2s 内退出（可能被停滞客户端阻塞），已分离");
+            // JoinHandle 无 Drop impl，forget 与 drop 同为分离语义；显式 forget 表达意图
+            std::mem::forget(handle);
+        }
+    }
+    Ok(())
+}
+
+/// GUI 展示用的 dsh 桥配置信息。
+#[derive(Serialize)]
+struct DshConfigInfo {
+    enabled: bool,
+    port: u16,
+    voice_enabled: bool,
+    record_to_history: bool,
+    running: bool,
+    /// 实际监听端口（RuntimeActual；None = 未就绪）
+    actual_port: Option<u16>,
+    discovery_path: String,
+}
+
+#[tauri::command]
+fn get_dsh_config(state: State<'_, DshBridgeState>) -> Result<DshConfigInfo, String> {
+    let settings = zapmomo::config::settings::load_settings()?;
+    let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
+    let actual = state.port.load(Ordering::Relaxed);
+    Ok(DshConfigInfo {
+        enabled: cfg.enabled,
+        port: cfg.port,
+        voice_enabled: cfg.voice_enabled,
+        record_to_history: cfg.record_to_history,
+        running: state.is_running(),
+        actual_port: (actual != 0).then_some(actual),
+        discovery_path: zapmomo::dsh::discovery_file().display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_dsh_enabled(
+    app: AppHandle,
+    state: State<'_, DshBridgeState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = zapmomo::config::settings::load_settings()?.unwrap_or_default();
+    settings.dsh.get_or_insert_with(Default::default).enabled = Some(enabled);
+    zapmomo::config::settings::save_settings(&settings)?;
+    if enabled {
+        start_dsh_bridge_impl(app, state.inner())
+    } else if state.is_running() {
+        stop_dsh_bridge_inner(state.inner())
+    } else {
+        Ok(())
+    }
+}
+
+/// `set_dsh_params` 载荷：可调整项（缺省不修改）。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DshParamsPatch {
+    voice_enabled: Option<bool>,
+    record_to_history: Option<bool>,
+    port: Option<u16>,
+}
+
+#[tauri::command]
+fn set_dsh_params(
+    app: AppHandle,
+    state: State<'_, DshBridgeState>,
+    params: DshParamsPatch,
+) -> Result<(), String> {
+    if let Some(p) = params.port
+        && p != 0
+        && p < 1024
+    {
+        return Err(format!("端口需在 1024~65535 或 0（随机），当前 {p}"));
+    }
+    let mut settings = zapmomo::config::settings::load_settings()?.unwrap_or_default();
+    let dsh = settings.dsh.get_or_insert_with(Default::default);
+    if let Some(v) = params.voice_enabled {
+        dsh.voice_enabled = Some(v);
+    }
+    if let Some(v) = params.record_to_history {
+        dsh.record_to_history = Some(v);
+    }
+    if let Some(v) = params.port {
+        dsh.port = Some(v);
+    }
+    zapmomo::config::settings::save_settings(&settings)?;
+    // 端口变化需重启桥生效；voice/record 项在事件时实时读取
+    if params.port.is_some() && state.is_running() {
+        stop_dsh_bridge_inner(state.inner())?;
+        start_dsh_bridge_impl(app, state.inner())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_dsh_bridge_status(state: State<'_, DshBridgeState>) -> DshBridgeStatusPayload {
+    let port = state.port.load(Ordering::Relaxed);
+    DshBridgeStatusPayload {
+        running: state.is_running(),
+        port: (port != 0).then_some(port),
+        error: None,
+    }
+}
+
+/// 测试播报：灌一条假事件进管线（设置页按钮全链路验收，不用 curl）。
+#[tauri::command]
+fn test_dsh_announce(app: AppHandle) -> Result<(), String> {
+    // 独立零窗口节流器：测试不受 3s 节流限制
+    let throttle = zapmomo::dsh::EventThrottle::new(std::time::Duration::ZERO);
+    handle_dsh_event(
+        &app,
+        &throttle,
+        zapmomo::dsh::event::DshEvent::TaskFinished {
+            session_id: "zapmomo-test".to_string(),
+            title: Some("桌宠测试播报".to_string()),
+            reason: Some("completed".to_string()),
+        },
+    );
+    Ok(())
 }
 
 /// 读取持久化的对话记录（`~/.zapmomo/conversations.json`），供前端「对话记录」页载入。
@@ -4142,6 +4417,7 @@ pub fn run() {
         .manage(TtsDownloadState::default())
         .manage(LlmState::new())
         .manage(VoiceSessionState::new())
+        .manage(DshBridgeState::new())
         .manage(ModelLibraryState::default())
         .manage(CatalogState::from_settings())
         .manage(Arc::new(DownloadManager::new(current_downloader())))
@@ -4195,6 +4471,11 @@ pub fn run() {
             start_voice_session,
             stop_voice_session,
             is_voice_session_running,
+            get_dsh_config,
+            set_dsh_enabled,
+            set_dsh_params,
+            get_dsh_bridge_status,
+            test_dsh_announce,
             get_conversation_records,
             clear_conversation_records,
             list_model_library,
@@ -4312,6 +4593,16 @@ pub fn run() {
                     .and_then(|k| k.custom_keywords.clone());
                 if let Err(e) = start_listen_impl(handle, state.inner(), mic, kw) {
                     tracing::warn!("自动监听 KWS 失败: {e}");
+                }
+            }
+
+            // 启动 dsh 桥（若启用）：loopback HTTP 接收 deepseek-harness 插件推送的
+            // 任务事件，桌宠以气泡+语音播报。失败静默降级（不影响主流程）。
+            if zapmomo::dsh::config::resolve(loaded.as_ref().and_then(|s| s.dsh.as_ref())).enabled {
+                let handle = app.handle().clone();
+                let state = app.state::<DshBridgeState>();
+                if let Err(e) = start_dsh_bridge_impl(handle, state.inner()) {
+                    tracing::warn!("自动启动 dsh 桥失败: {e}");
                 }
             }
 

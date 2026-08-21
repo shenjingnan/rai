@@ -3,6 +3,12 @@ name: Release
 # 每次 release-plz 创建 vX.Y.Z tag（推送）后，在原生 runner 上构建
 # Windows / macOS（双架构）/ Linux 的安装包，合并到一个 GitHub Release。
 # 构建成功后自动发布为正式 Release。
+#
+# 发布走 PAT_TOKEN Secret（与 publish.yml 的 release-plz 共用同一 PAT，具备
+# Contents 读写权限）而非默认 GITHUB_TOKEN：GITHUB_TOKEN 产生的事件不触发其他
+# workflow（GitHub 防递归机制），upload-baidu-pan.yml 依赖 release: published
+# 事件自动上传百度网盘，用 GITHUB_TOKEN 发布会让它永远静默不触发（无失败记录）。
+# PAT 过期/失效时下方 Check release token 步骤会提前报错。
 on:
   push:
     tags:
@@ -183,9 +189,25 @@ jobs:
           EOF
           cat release_body.md
 
+      - name: Check release token
+        # 发布前确认 PAT_TOKEN 可用，缺失/过期时在这里报清晰错误，避免发布 job
+        # 跑到最后一步才失败（见文件头注释，为何不能用 GITHUB_TOKEN）。该 Secret
+        # 与 publish.yml 的 release-plz 共用，正常不会缺失；报错多半意味着 PAT
+        # 已过期——需换新后同步更新 Secret，否则 release-plz 同样会失败。
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -z "$PAT_TOKEN" ]; then
+            echo "::error::缺少 PAT_TOKEN Secret（publish.yml 的 release-plz 也在使用，正常不应缺失，请检查是否被误删）。"
+            exit 1
+          fi
+
       - name: Attach installers to draft release
         uses: softprops/action-gh-release@v3
         with:
+          # 显式传 PAT：用 GITHUB_TOKEN 发布的 release 事件不会触发
+          # upload-baidu-pan.yml（GitHub 防递归机制，事件被静默丢弃）
+          token: ${{ secrets.PAT_TOKEN }}
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false

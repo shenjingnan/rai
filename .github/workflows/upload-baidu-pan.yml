@@ -2,7 +2,7 @@ name: Upload to Baidu Netdisk
 
 # Release 正式发布（release.yml 以 draft: false 发布）后触发，
 # 用 BaiduPCS-Go 将该版本全部安装包上传到百度网盘的版本目录：
-#   /apps/zapmomo/<tag>/*.dmg|.msi|.exe|.deb|.rpm|.AppImage ...
+#   /apps/zapmomo/releases/<tag>/*.dmg|.msi|.exe|.deb|.rpm|.AppImage ...
 # 也支持手动 dispatch 补传/重跑（upload --policy overwrite 幂等覆盖）。
 #
 # 前置配置（仓库 Settings → Secrets and variables → Actions）：
@@ -28,7 +28,8 @@ env:
   # release 事件取发布 tag；手动触发取输入。统一走 env，避免在 run: 内联
   # 表达式（GitHub Actions 注入防护），run 中只引用 $TAG。
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
-  NETDISK_DIR: /apps/zapmomo
+  # 版本目录收在 releases/ 层级下，与网盘中其他杂物隔离
+  NETDISK_DIR: /apps/zapmomo/releases
   PCS_VERSION: v4.0.1
 
 jobs:
@@ -38,6 +39,12 @@ jobs:
     # GitHub 托管 runner 在海外，跨境上传百度网盘可能较慢，封顶防悬挂
     timeout-minutes: 30
     steps:
+      - name: Normalize tag
+        # 手动 dispatch 容易漏写 v 前缀（tag 实为 vX.Y.Z），漏写时
+        # gh release download 报 release not found。归一化补齐前缀，同时保证
+        # 网盘目录名（/apps/zapmomo/<tag>）与 release 事件触发时的口径一致。
+        run: echo "TAG=v${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Check credentials
         env:
           BDUSS: ${{ secrets.BAIDU_BDUSS }}

@@ -43,6 +43,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **语音会话** — 一句话唤醒 → 语音识别 → 流式回复 → 实时播报，支持唤醒词打断与免唤醒续聊
 - **Live2D 虚拟角色** — 桌面常驻角色窗口（Cubism 2/3/4/5），位置记忆与百分比缩放，拖动不抢焦点
 - **跨平台桌面应用** — Windows / macOS / Linux 三平台安装包，多页面控制面板 + 常驻角色窗口
+- **deepseek-harness 集成** — 桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 任务状态，任务开始 / 完成 / 失败 / 中断时以气泡 + 语音播报（[使用说明](docs/content/docs/desktop-app/dsh-bridge.mdx)）
 - **本地优先** — 各模型默认全部本地运行，对话数据不出设备
 
 ## 下载桌面应用
@@ -109,6 +110,17 @@ xattr -cr "/Applications/ZapMomo.app"
 - **格式** — 支持 Cubism 2 / 3 / 4 / 5（`.model3.json` / `model.json`）
 - **模型来源** — 自备 Live2D 模型目录，在「伙伴」页导入；默认目录 `~/.zapmomo/models/live2d`
 
+### deepseek-harness 集成（dsh 桥）
+
+桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。底层是 loopback HTTP 直推（无轮询），dsh 侧安装 `@zapmomo-ai/dsh-plugin` 插件即可接入。
+
+- **一键接入** — 设置页「外部感知 · dsh 桥」默认启用，桥端口与 token 自动写入 `~/.zapmomo/runtime/dsh-bridge.json`
+- **安装插件** — `dsh plugin --profile web add @zapmomo-ai/dsh-plugin`，重启 `dsh web` 生效
+- **可调参数** — 设置页 / `[dsh]` 配置段可开关语音播报、是否写入对话记录
+- **安全隔离** — 仅绑定 `127.0.0.1` + Bearer token 鉴权；ZapMomo 未运行时插件静默跳过，不影响 dsh
+
+详细说明与事件映射见[文档站](docs/content/docs/desktop-app/dsh-bridge.mdx)及插件源码 `integrations/dsh-plugin/README.md`。
+
 ### 开机自启动
 
 设置页「通用」与托盘菜单均提供「开机自启动」：登录系统后自动启动 ZapMomo，桌宠静默出现（设置窗口不自动弹出）。注册的是系统级启动项（macOS 登录项 / Windows 启动应用 / Linux autostart），也可在系统设置中统一管理；重复启动时会激活已有实例，不会出现两个桌宠。
@@ -129,6 +141,7 @@ xattr -cr "/Applications/ZapMomo.app"
 | `[llm]` | 大语言模型：模型路径、采样参数、OpenAI 兼容远程 API 等 |
 | `[voice]` | 语音会话：唤醒词、回复音色、打断与免唤醒续聊开关等 |
 | `[live2d]` | Live2D 角色：模型目录、窗口位置记忆与缩放 |
+| `[dsh]` | deepseek-harness 集成：桥开关、监听端口、语音播报与对话记录开关 |
 
 完整配置项与 CLI 命令参考见[贡献指南](CONTRIBUTING.md)。
 

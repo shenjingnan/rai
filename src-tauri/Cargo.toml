@@ -28,6 +28,13 @@ tauri-plugin-dialog = "2"
 # 系统级全局快捷键（Rust 侧注册与分发；设置页经自定义 command 间接操作）
 tauri-plugin-global-shortcut = "2"
 
+# 开机自启动（LaunchAgent / Run 键 / XDG .desktop，Rust 侧经自定义 command 操作；
+# 系统注册即唯一真值，不在 settings.toml 落盘）
+tauri-plugin-autostart = "2"
+
+# 单实例防护：自启常驻后手动再点图标激活已有实例，而非拉起第二个桌宠
+tauri-plugin-single-instance = "2"
+
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

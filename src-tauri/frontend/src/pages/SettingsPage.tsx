@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
-import { api, onStorageMigrateProgress } from "@/lib/tauri";
+import { api, onAutostartChanged, onStorageMigrateProgress } from "@/lib/tauri";
 import { useRuntime } from "@/providers/RuntimeContext";
 import type { StorageInfo, StorageMigrateProgress } from "@/types/modelLibrary";
 
@@ -32,6 +32,7 @@ export function SettingsPage() {
   } = useRuntime();
   const toast = useToast();
   const [hideDockIcon, setHideDockIcon] = useState<boolean | null>(null);
+  const [autostart, setAutostart] = useState(false);
 
   // 模型下载源配置
   const [downloadSource, setDownloadSource] = useState("auto");
@@ -61,6 +62,22 @@ export function SettingsPage() {
       .getHideDockIcon()
       .then(setHideDockIcon)
       .catch(() => setHideDockIcon(false));
+  }, []);
+
+  // 开机自启动：系统注册状态直读（读失败或旧后端未返回时回退关闭）
+  useEffect(() => {
+    void api
+      .getAutostart()
+      .then((v) => setAutostart(Boolean(v)))
+      .catch(() => setAutostart(false));
+  }, []);
+
+  // 托盘菜单切换自启动后同步开关
+  useEffect(() => {
+    const unlistenPromise = onAutostartChanged(setAutostart);
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
   }, []);
 
   useEffect(() => {
@@ -109,6 +126,12 @@ export function SettingsPage() {
   const handleToggle = (hide: boolean) => {
     setHideDockIcon(hide);
     void api.setHideDockIcon({ hide }).catch(() => setHideDockIcon((prev) => !prev));
+  };
+
+  // 同款乐观更新；写入系统启动项失败（如组策略禁写）时回滚
+  const handleToggleAutostart = (enabled: boolean) => {
+    setAutostart(enabled);
+    void api.setAutostart({ enabled }).catch(() => setAutostart((prev) => !prev));
   };
 
   const saveEndpoint = async () => {
@@ -206,6 +229,20 @@ export function SettingsPage() {
               aria-label="隐藏应用图标"
               checked={hideDockIcon ?? false}
               onCheckedChange={handleToggle}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+            <div className="min-w-0">
+              <dt className="text-sm text-text-primary">开机自启动</dt>
+              <dd className="mt-0.5 text-xs text-text-muted">
+                登录系统后自动启动 ZapMomo，桌宠静默出现
+              </dd>
+            </div>
+            <Switch
+              aria-label="开机自启动"
+              checked={autostart}
+              onCheckedChange={handleToggleAutostart}
             />
           </div>
 

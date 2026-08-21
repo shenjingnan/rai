@@ -149,6 +149,30 @@
       "architecture": "llama-cpp-gguf",
       "recommended_variant": "Q4_K_M",
       "compatibility_notes": "Llama-3.2-1B Instruct，llama.cpp Q4_K_M 验证可用。"
+    },
+    {
+      "model_id": "asr-sensevoice-zh-en-ja-ko-yue",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-offline-sensevoice",
+      "compatibility_notes": "内置离线 ASR（SenseVoice int8），多语言+情绪标签，sherpa-onnx OfflineRecognizer 验证可用。"
+    },
+    {
+      "model_id": "asr-whisper-tiny",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-offline-whisper",
+      "compatibility_notes": "内置离线 ASR（Whisper tiny），多语言，sherpa-onnx OfflineRecognizer 验证可用。"
+    },
+    {
+      "model_id": "asr-whisper-base",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-offline-whisper",
+      "compatibility_notes": "内置离线 ASR（Whisper base），多语言，sherpa-onnx OfflineRecognizer 验证可用。"
     }
   ]
 }

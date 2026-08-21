@@ -1,5 +1,7 @@
 import { createContext, useContext } from "react";
 import type { AsrConfigState } from "@/hooks/useAsrConfig";
+import type { AsrDictateResultsState } from "@/hooks/useAsrDictateResults";
+import type { AsrDictateState } from "@/hooks/useAsrDictate";
 import type { AsrListeningState } from "@/hooks/useAsrListening";
 import type { AsrModelDownloadState } from "@/hooks/useAsrModelDownload";
 import type { AsrResultsState } from "@/hooks/useAsrResults";
@@ -28,6 +30,10 @@ export interface RuntimeState {
     config: AsrConfigState;
     download: AsrModelDownloadState;
     listening: AsrListeningState;
+    /** 离线听写（SenseVoice/Whisper + VAD 分段）运行状态 */
+    dictate: AsrDictateState;
+    /** 离线听写结果段（独立于流式 results） */
+    dictateResults: AsrDictateResultsState;
     results: AsrResultsState;
   };
   llm: LlmState & { download: LlmModelDownloadState };

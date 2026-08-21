@@ -24,6 +24,7 @@ import type {
   AsrConfigInfo,
   AsrParamsPatch,
   AsrResult,
+  TranscribeResult,
   CompanionDragMode,
   CompanionLibraryView,
   CompanionWindowLayer,
@@ -91,7 +92,12 @@ export const api = {
   startAsrListen: (args: { device: string | null }) => invoke<void>("start_asr_listen", args),
   stopAsrListen: () => invoke<void>("stop_asr_listen"),
   isAsrListening: () => invoke<boolean>("is_asr_listening"),
+  startAsrDictate: (args: { device: string | null }) => invoke<void>("start_asr_dictate", args),
+  stopAsrDictate: () => invoke<void>("stop_asr_dictate"),
+  isAsrDictating: () => invoke<boolean>("is_asr_dictating"),
   downloadAsrModel: () => invoke<void>("download_asr_model"),
+  transcribeAudio: (args: { wavPath: string | null }) =>
+    invoke<TranscribeResult>("transcribe_audio", args),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   listCompanions: () => invoke<CompanionLibraryView>("list_companions"),
   // Tauri v2 命令参数默认 camelCase（`sourceDir` 映射 Rust 的 `source_dir`）。
@@ -259,6 +265,28 @@ export function onAsrDownloadProgress(
   handler: (payload: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("asr-model-download-progress", (e) => handler(e.payload));
+}
+
+export function onAsrVadDownloadProgress(
+  handler: (payload: DownloadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<DownloadProgress>("asr-vad-download-progress", (e) => handler(e.payload));
+}
+
+export function onAsrDictateResult(handler: (result: AsrResult) => void): Promise<UnlistenFn> {
+  return listen<AsrResult>("asr-dictate-result", (e) => handler(e.payload));
+}
+
+export function onAsrDictateStarted(
+  handler: (payload: ListenStopped) => void,
+): Promise<UnlistenFn> {
+  return listen<ListenStopped>("asr-dictate-started", (e) => handler(e.payload));
+}
+
+export function onAsrDictateStopped(
+  handler: (payload: ListenStopped) => void,
+): Promise<UnlistenFn> {
+  return listen<ListenStopped>("asr-dictate-stopped", (e) => handler(e.payload));
 }
 
 export function onTtsResult(handler: (result: TtsResult) => void): Promise<UnlistenFn> {

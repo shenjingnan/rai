@@ -27,7 +27,7 @@
  *   2. 在 ~/.dsh/profiles/web/cordis.patch.yml 追加：
  *      - insert:
  *          - id: zapmomo-bridge
- *            name: 'zapmomo-bridge'
+ *            name: '@zapmomo-ai/dsh-plugin'
  * 注意：仅 `dsh plugin ... add` 而不在 patch 里插入，插件不会被加载；
  * 仅插 patch 而不安装依赖，loader 无法 import 到该包。
  *

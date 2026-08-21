@@ -3,4 +3,4 @@
 # 会将本包注册为 profile 的 bundle 层并在启动时自动应用此 patch。
 - insert:
     - id: zapmomo-bridge
-      name: 'zapmomo-bridge'
+      name: '@zapmomo-ai/dsh-plugin'

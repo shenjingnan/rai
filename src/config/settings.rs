@@ -380,6 +380,15 @@ pub struct AsrSettings {
     /// 是否启用 ASR（语音会话「能识别」的前提），缺省 false
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// 模型类型（sherpa-onnx 分支：zipformer/sensevoice/whisper；缺省按模型目录内容探测）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<crate::asr::config::AsrModelKind>,
+    /// 转写语言（SenseVoice/Whisper；缺省自动检测）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// SenseVoice 反向文本正则化（数字/标点，缺省 true）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_itn: Option<bool>,
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,

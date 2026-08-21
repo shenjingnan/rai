@@ -66,6 +66,8 @@ export interface DownloadProgress {
 /** `get_asr_config` 返回（含可经 `set_asr_params` 调整的引擎参数） */
 export interface AsrConfigInfo {
   enabled: boolean;
+  /** 模型类型（zipformer/sensevoice/whisper），决定是否展示流式专属参数 */
+  model_type: string;
   model_dir: string;
   provider: string;
   num_threads: number;
@@ -82,6 +84,8 @@ export interface AsrConfigInfo {
   debug: boolean;
   models_present: boolean;
   punctuation_present: boolean;
+  /** Silero VAD 模型是否已就绪（离线听写首次启动会自动下载） */
+  vad_present: boolean;
   model_downloading: boolean;
   settings_path: string;
 }
@@ -97,7 +101,16 @@ export interface AsrParamsPatch {
   blank_penalty?: number;
   hotwords?: string;
   enable_punctuation?: boolean;
+  language?: string;
+  use_itn?: boolean;
   debug?: boolean;
+}
+
+/** `transcribe_audio` 返回（snake_case 直传） */
+export interface TranscribeResult {
+  text: string;
+  model_type: string;
+  model_dir: string;
 }
 
 /** `asr-result` 事件载荷（对应后端 AsrResult） */

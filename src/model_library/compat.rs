@@ -72,6 +72,8 @@ struct CompatibilitySpec {
     display_name: &'static str,
     /// 全部满足才算 Compatible。
     required: &'static [&'static FileSpec],
+    /// 含这些标记文件即整个规格不参与（防其它族目录误判，如 VITS 的 lexicon 污染 SenseVoice）。
+    absent: &'static [&'static str],
 }
 
 // 参考 src/kws/config.rs KWS_REQUIRED_FILES（encoder/decoder/joiner/tokens + keywords.txt）
@@ -126,6 +128,7 @@ static KWS_SPEC: CompatibilitySpec = CompatibilitySpec {
         &SHERPA_TOKENS,
         &SHERPA_KEYWORDS,
     ],
+    absent: &[],
 };
 static ASR_SPEC: CompatibilitySpec = CompatibilitySpec {
     architecture: "sherpa-asr-streaming-zipformer",
@@ -139,6 +142,7 @@ static ASR_SPEC: CompatibilitySpec = CompatibilitySpec {
         &SHERPA_JOINER,
         &SHERPA_TOKENS,
     ],
+    absent: &[],
 };
 static TTS_SPEC: CompatibilitySpec = CompatibilitySpec {
     architecture: "sherpa-tts-zipvoice",
@@ -153,9 +157,60 @@ static TTS_SPEC: CompatibilitySpec = CompatibilitySpec {
         &SHERPA_TOKENS,
         &SHERPA_LEXICON,
     ],
+    absent: &[],
+};
+// 离线 ASR：SenseVoice（model.onnx/int8 + tokens，lexicon 排除 VITS 目录）与
+// Whisper（<size>-encoder/decoder.onnx + <size>-tokens.txt，无 joiner）
+static SHERPA_SENSEVOICE_MODEL: FileSpec = FileSpec {
+    contains: &[],
+    equals: &["model.onnx", "model.int8.onnx"],
+    ends_with: &[],
+};
+static SHERPA_WHISPER_ENCODER: FileSpec = FileSpec {
+    contains: &[],
+    equals: &[],
+    ends_with: &["-encoder.onnx"],
+};
+static SHERPA_WHISPER_DECODER: FileSpec = FileSpec {
+    contains: &[],
+    equals: &[],
+    ends_with: &["-decoder.onnx"],
+};
+static SHERPA_WHISPER_TOKENS: FileSpec = FileSpec {
+    contains: &[],
+    equals: &[],
+    ends_with: &["-tokens.txt"],
+};
+static SENSEVOICE_SPEC: CompatibilitySpec = CompatibilitySpec {
+    architecture: "sherpa-asr-offline-sensevoice",
+    runtime: "sherpa-onnx",
+    format: "ONNX",
+    model_type: ModelCategory::Asr,
+    display_name: "离线识别（SenseVoice）",
+    required: &[&SHERPA_SENSEVOICE_MODEL, &SHERPA_TOKENS],
+    absent: &["lexicon"],
+};
+static WHISPER_SPEC: CompatibilitySpec = CompatibilitySpec {
+    architecture: "sherpa-asr-offline-whisper",
+    runtime: "sherpa-onnx",
+    format: "ONNX",
+    model_type: ModelCategory::Asr,
+    display_name: "离线识别（Whisper）",
+    required: &[
+        &SHERPA_WHISPER_ENCODER,
+        &SHERPA_WHISPER_DECODER,
+        &SHERPA_WHISPER_TOKENS,
+    ],
+    absent: &[],
 };
 
-const SHERPA_SPECS: [&CompatibilitySpec; 3] = [&KWS_SPEC, &ASR_SPEC, &TTS_SPEC];
+const SHERPA_SPECS: [&CompatibilitySpec; 5] = [
+    &KWS_SPEC,
+    &ASR_SPEC,
+    &TTS_SPEC,
+    &SENSEVOICE_SPEC,
+    &WHISPER_SPEC,
+];
 
 // ---------------------------------------------------------------------------
 // Compatibility 结果
@@ -396,6 +451,14 @@ impl CompatibilityResolver {
         // 先找完整匹配（KWS 优先，避免 ASR 误判）；无完整匹配再取最多匹配的 spec → Possible
         let mut best_partial: Option<(usize, &CompatibilitySpec, Vec<&str>)> = None;
         for spec in SHERPA_SPECS {
+            // 含该规格禁止的标记文件（如 VITS 的 lexicon）→ 整个规格不参与，防误判
+            let absent_hit = spec
+                .absent
+                .iter()
+                .any(|a| files.iter().any(|f| f.path.to_lowercase().contains(a)));
+            if absent_hit {
+                continue;
+            }
             let matched_count = spec
                 .required
                 .iter()
@@ -659,6 +722,50 @@ mod tests {
         let c = r.from_files("x/tts", &files);
         assert_eq!(c.level, CompatibilityLevel::Compatible);
         assert_eq!(c.model_type, Some(ModelCategory::Tts));
+    }
+
+    #[test]
+    fn test_sensevoice_compatible_file_group() {
+        let r = CompatibilityResolver::new();
+        let files = files_of(&["model.int8.onnx", "tokens.txt"]);
+        let c = r.from_files("x/sensevoice", &files);
+        assert_eq!(c.level, CompatibilityLevel::Compatible);
+        assert_eq!(c.model_type, Some(ModelCategory::Asr));
+        assert_eq!(
+            c.architecture.as_deref(),
+            Some("sherpa-asr-offline-sensevoice")
+        );
+    }
+
+    #[test]
+    fn test_whisper_compatible_file_group() {
+        let r = CompatibilityResolver::new();
+        let files = files_of(&["tiny-encoder.onnx", "tiny-decoder.onnx", "tiny-tokens.txt"]);
+        let c = r.from_files("x/whisper", &files);
+        assert_eq!(c.level, CompatibilityLevel::Compatible);
+        assert_eq!(c.model_type, Some(ModelCategory::Asr));
+        assert_eq!(
+            c.architecture.as_deref(),
+            Some("sherpa-asr-offline-whisper")
+        );
+    }
+
+    #[test]
+    fn test_vits_not_misclassified_as_sensevoice() {
+        // VITS 目录（model.onnx + lexicon + tokens）不得被 SENSEVOICE_SPEC 判为 ASR
+        let r = CompatibilityResolver::new();
+        let files = files_of(&["model.onnx", "lexicon.txt", "tokens.txt"]);
+        let c = r.from_files("x/vits", &files);
+        assert_ne!(
+            c.architecture.as_deref(),
+            Some("sherpa-asr-offline-sensevoice"),
+            "含 lexicon 的目录不应被 SenseVoice 规格捕获"
+        );
+        assert_ne!(
+            c.level,
+            CompatibilityLevel::Compatible,
+            "VITS 目录不应因 model.onnx 被判 Compatible ASR"
+        );
     }
 
     #[test]

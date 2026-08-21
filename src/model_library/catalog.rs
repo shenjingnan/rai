@@ -554,7 +554,7 @@ pub fn curated_unified(
         {
             continue;
         }
-        // search 过滤（搜索 Qwen 只注入匹配的 Verified；搜 Whisper 不带出无关 17 个）
+        // search 过滤（搜索 Qwen 只注入匹配的 Verified；搜 Whisper 只注入匹配的 Whisper 模型）
         if let Some(q) = query.search.as_deref().filter(|s| !s.trim().is_empty()) {
             let hay = format!(
                 "{} {} {} {}",
@@ -821,13 +821,21 @@ mod tests {
                 .all(|i| i.model_type.as_deref() == Some("llm"))
         );
         assert!(curated.iter().all(|i| i.model_id.contains("unsloth")));
-        // 搜 Whisper：不应带出无关 Verified
+        // 搜 Whisper：只注入匹配的 Whisper 离线模型，不带出无关 KWS/LLM/TTS
         let q2 = CatalogQuery {
             search: Some("whisper".into()),
             ..Default::default()
         };
         let curated2 = curated_unified(&q2, &local);
-        assert!(curated2.is_empty(), "搜索 Whisper 不注入无关 17 个");
+        assert!(
+            curated2.iter().all(|i| i.model_id.contains("whisper")),
+            "搜 Whisper 应只注入 whisper 模型，实际: {:?}",
+            curated2
+                .iter()
+                .map(|i| i.model_id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(curated2.len(), 2, "应为 2 个 whisper 模型");
         // 搜 Qwen：注入匹配的 Verified（Qwen 系列 + 描述提及 Qwen 的 llama 条目），不注入无关 KWS
         let q3 = CatalogQuery {
             search: Some("qwen".into()),

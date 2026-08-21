@@ -124,7 +124,7 @@ pub enum AsrCmd {
         #[arg(long)]
         hotwords: Option<String>,
     },
-    /// 离线转写 wav 文件（不需要麦克风）
+    /// 离线转写 wav 文件（不需要麦克风；流式 zipformer / 离线 SenseVoice / Whisper 均可用）
     Test {
         /// wav 路径；默认 <model_dir>/test_wavs/0.wav
         #[arg(long)]
@@ -134,6 +134,12 @@ pub enum AsrCmd {
         /// 热词（空格分隔，中文直接写），提升专有名词识别
         #[arg(long)]
         hotwords: Option<String>,
+        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        #[arg(long)]
+        language: Option<String>,
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        #[arg(long)]
+        use_itn: Option<bool>,
     },
     /// 列出可用的麦克风输入设备
     Devices,
@@ -145,6 +151,28 @@ pub enum AsrCmd {
         /// 已安装也强制重新下载
         #[arg(long)]
         force: bool,
+        /// 指定 registry 模型 id（如 asr-sensevoice-zh-en-ja-ko-yue / asr-whisper-tiny）；
+        /// 缺省安装默认双语 + 标点（legacy 一键下载）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 免提连续听写（离线 SenseVoice/Whisper + Silero VAD 分段，每段整句转写）
+    Dictate {
+        /// 模型目录（覆盖 settings.toml 的 asr.model_dir）
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+        /// 指定输入设备名（包含匹配），默认系统默认麦克风
+        #[arg(long)]
+        device: Option<String>,
+        /// 听写时长（秒），默认无限
+        #[arg(long)]
+        duration: Option<u64>,
+        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        #[arg(long)]
+        language: Option<String>,
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        #[arg(long)]
+        use_itn: Option<bool>,
     },
 }
 
@@ -387,12 +415,27 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             wav,
             model_dir,
             hotwords,
+            language,
+            use_itn,
         } => {
             let mut cfg = asr_config(model_dir.as_ref())?;
             if hotwords.is_some() {
                 cfg.hotwords = hotwords;
             }
-            let wav_path = wav.unwrap_or_else(|| cfg.model_dir.join("test_wavs/0.wav"));
+            if language.is_some() {
+                cfg.language = language;
+            }
+            if use_itn.is_some() {
+                cfg.use_itn = use_itn;
+            }
+            let wav_path = wav
+                .or_else(|| crate::asr::default_test_wav(&cfg.model_dir))
+                .ok_or_else(|| {
+                    format!(
+                        "未指定 --wav 且 {} 下没有 test_wavs/*.wav 示例音频",
+                        cfg.model_dir.display()
+                    )
+                })?;
             crate::asr::run_offline(&cfg, &wav_path)
         }
         AsrCmd::Devices => {
@@ -407,12 +450,15 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             }
             Ok(())
         }
-        AsrCmd::InstallModel { model_dir, force } => {
+        AsrCmd::InstallModel {
+            model_dir,
+            force,
+            model,
+        } => {
             use crate::asr::{
                 DownloadProgress, DownloadStage, install_model_to, install_punctuation_model_to,
                 punctuation_user_model_dir, user_model_dir,
             };
-            let dest = model_dir.unwrap_or_else(user_model_dir);
             let mut progress = |p: DownloadProgress| {
                 let stage = match p.stage {
                     DownloadStage::Downloading => "下载",
@@ -422,6 +468,24 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
                 };
                 println!("[{stage}] {}", p.message);
             };
+
+            // `--model <registry-id>`：registry 托管安装（staging 原子提交），
+            // 装到 managed 目录并设为当前，使后续 `asr test` 直接使用。
+            if let Some(id) = &model {
+                let m = crate::model_library::registry::model_by_id(id)
+                    .ok_or_else(|| format!("未知模型 id: {id}（可用 --model 值见模型库）"))?;
+                let dest = crate::model_library::install_managed_model(m, &mut progress, None)
+                    .map_err(|e| e.to_string())?;
+                crate::model_library::set_selected_model(
+                    crate::model_library::registry::ModelType::Asr,
+                    &dest,
+                )?;
+                println!("ASR 模型已就绪: {}", dest.display());
+                return Ok(());
+            }
+
+            // legacy 默认：双语 + 标点
+            let dest = model_dir.unwrap_or_else(user_model_dir);
             install_model_to(&dest, force, &mut progress).map_err(|e| e.to_string())?;
             println!("ASR 模型已就绪: {}", dest.display());
 
@@ -432,6 +496,48 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
                 Err(e) => eprintln!("警告：标点模型安装失败（ASR 仍可用，仅无标点）: {e}"),
             }
             Ok(())
+        }
+        AsrCmd::Dictate {
+            model_dir,
+            device,
+            duration,
+            language,
+            use_itn,
+        } => {
+            use crate::asr::reaction::ConsoleAsrReaction;
+            let mut cfg = asr_config(model_dir.as_ref())?;
+            if cfg.model_type.is_streaming() {
+                return Err(format!(
+                    "当前模型类型 {} 不支持免提听写（离线模型专用）。请先安装并设为当前 SenseVoice/Whisper 模型。",
+                    cfg.model_type.as_str()
+                ));
+            }
+            if language.is_some() {
+                cfg.language = language;
+            }
+            if use_itn.is_some() {
+                cfg.use_itn = use_itn;
+            }
+            let mut progress = |p: crate::asr::DownloadProgress| {
+                let stage = match p.stage {
+                    crate::asr::DownloadStage::Downloading => "下载",
+                    crate::asr::DownloadStage::Verifying => "校验",
+                    crate::asr::DownloadStage::Extracting => "解压",
+                    crate::asr::DownloadStage::Done => "完成",
+                };
+                println!("[{stage}] {}", p.message);
+            };
+            let vad_path = crate::asr::dictate::ensure_vad_model(&mut progress)?;
+            let vad_cfg = crate::asr::dictate::DictateConfig::new(vad_path).with_runtime(&cfg);
+            let mut reaction = ConsoleAsrReaction;
+            crate::asr::dictate::run_dictate(
+                &cfg,
+                &vad_cfg,
+                device.as_deref(),
+                duration,
+                &mut reaction,
+                None,
+            )
         }
     }
 }
@@ -866,6 +972,63 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_asr_dictate() {
+        let cli = Cli::try_parse_from(&[
+            "test",
+            "asr",
+            "dictate",
+            "--device",
+            "内置麦克风",
+            "--duration",
+            "10",
+            "--language",
+            "zh",
+            "--use-itn",
+            "true",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(
+                cmd,
+                AsrCmd::Dictate {
+                    device: Some(d),
+                    duration: Some(10),
+                    language: Some(l),
+                    use_itn: Some(true),
+                    ..
+                } if d == "内置麦克风" && l == "zh"
+            )),
+            _ => panic!("Expected Dictate command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_test_flags() {
+        // 离线模型（SenseVoice/Whisper）转写语言与 ITN 开关
+        let cli = Cli::try_parse_from(&[
+            "test",
+            "asr",
+            "test",
+            "--language",
+            "zh",
+            "--use-itn",
+            "true",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(
+                cmd,
+                AsrCmd::Test {
+                    language: Some(l),
+                    use_itn: Some(true),
+                    ..
+                } if l == "zh"
+            )),
+            _ => panic!("Expected Asr command"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_asr_run() {
         let cli = Cli::try_parse_from(&["test", "asr", "run", "--duration", "10"]).unwrap();
         match cli.command.unwrap() {
@@ -897,8 +1060,31 @@ mod tests {
                 cmd,
                 AsrCmd::InstallModel {
                     force: true,
-                    model_dir: None
+                    model_dir: None,
+                    model: None
                 }
+            )),
+            _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_asr_install_model_with_model_id() {
+        let cli = Cli::try_parse_from(&[
+            "test",
+            "asr",
+            "install-model",
+            "--model",
+            "asr-sensevoice-zh-en-ja-ko-yue",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Asr { cmd } => assert!(matches!(
+                cmd,
+                AsrCmd::InstallModel {
+                    model: Some(id),
+                    ..
+                } if id == "asr-sensevoice-zh-en-ja-ko-yue"
             )),
             _ => panic!("Expected InstallModel command"),
         }

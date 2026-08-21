@@ -6,6 +6,7 @@
 /// sherpa-onnx 的 TTS 只有整句一次性合成（无流式 TTS API），因此「流式输出」由
 /// 句级流水线近似：LLM 流式 token → `splitter` 切句 → 独立合成线程逐句合成 →
 /// rodio `Sink` 边合成边播放。
+pub mod asr_backend;
 pub mod config;
 pub mod events;
 pub mod listen;

@@ -6,6 +6,8 @@
 /// 设计上独立于 KWS，`run_realtime_with` 暴露 `should_stop` 供将来「KWS 唤醒后
 /// 复用同一麦克风流」的联动场景使用。
 pub mod config;
+pub mod dictate;
+pub mod offline;
 pub mod reaction;
 
 use crate::audio::Resampler;
@@ -34,6 +36,13 @@ pub struct AsrEngine {
 impl AsrEngine {
     /// 构造引擎，先校验所有模型文件存在。
     pub fn new(cfg: ResolvedAsrConfig) -> Result<Self, String> {
+        // 离线族（SenseVoice/Whisper）走 `offline::OfflineAsrEngine`，实时链路不接受
+        if !cfg.model_type.is_streaming() {
+            return Err(format!(
+                "当前模型类型 {} 不支持实时流式识别。请切换回流式（zipformer）模型，或使用 `zapmomo asr test` 离线转写文件。",
+                cfg.model_type.as_str()
+            ));
+        }
         let required = [
             ("encoder", &cfg.encoder),
             ("decoder", &cfg.decoder),
@@ -248,6 +257,15 @@ pub fn install_punctuation_model_to(
 /// 整段转写（不做端点断句，避免静音触发多次 reset 丢失开头文本）。
 /// 供 CLI 离线验证与「参考音频自动转写」复用。
 pub fn transcribe_wav(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<String, String> {
+    // 族感知分发：流式 zipformer 走在线引擎；SenseVoice/Whisper 走离线引擎
+    match cfg.model_type {
+        config::AsrModelKind::Zipformer => transcribe_wav_streaming(cfg, wav),
+        _ => offline::transcribe_wav_offline(cfg, wav),
+    }
+}
+
+/// 流式路径：整段喂进 `OnlineRecognizer` + 尾部静音 flush（zipformer 离线转写的近似）。
+fn transcribe_wav_streaming(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<String, String> {
     let engine = AsrEngine::new(cfg.clone())?;
     let stream = engine.create_stream(cfg.hotwords.as_deref());
     let wave = Wave::read(&wav.to_string_lossy())
@@ -286,6 +304,30 @@ pub fn run_offline(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<(), String> {
     let text = transcribe_wav(cfg, wav)?;
     println!("[识别] {text}");
     Ok(())
+}
+
+/// 模型目录内默认测试音频：`test_wavs/0.wav` → `1.wav` → `zh.wav` → 字母序第一个 wav。
+///
+/// zipformer/whisper 包为 `0.wav`，SenseVoice 包为 `zh/en/ja/ko/yue.wav`；
+/// 供 CLI `asr test` 与 GUI「测试识别」（离线模型）自动挑一条示例音频。
+pub fn default_test_wav(model_dir: &Path) -> Option<PathBuf> {
+    let test_dir = model_dir.join("test_wavs");
+    let Ok(entries) = std::fs::read_dir(&test_dir) else {
+        return None;
+    };
+    let mut wavs: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n.ends_with(".wav"))
+        .collect();
+    wavs.sort();
+    for preferred in ["0.wav", "1.wav", "zh.wav"] {
+        if wavs.iter().any(|n| n == preferred) {
+            return Some(test_dir.join(preferred));
+        }
+    }
+    wavs.into_iter().next().map(|n| test_dir.join(n))
 }
 
 /// 实时监听麦克风并转写（默认反应 + 不可取消，供 CLI 使用）。
@@ -459,5 +501,47 @@ mod tests {
         } else {
             eprintln!("标点模型未就绪，跳过标点断言");
         }
+    }
+
+    #[test]
+    fn test_engine_new_rejects_offline_kind() {
+        let mut cfg = ResolvedAsrConfig::default();
+        cfg.model_type = crate::asr::config::AsrModelKind::SenseVoice;
+        let err = AsrEngine::new(cfg).err().unwrap();
+        assert!(err.contains("流式"), "离线族应被流式引擎拒绝，实际: {err}");
+    }
+
+    #[test]
+    fn test_transcribe_wav_dispatches_offline_kind_to_offline() {
+        // 离线族应走 offline::transcribe_wav_offline（报「缺少模型文件」），
+        // 而非在线引擎（会报「不支持实时流式」）——据此验证分发正确。
+        let mut cfg = ResolvedAsrConfig::default();
+        cfg.model_type = crate::asr::config::AsrModelKind::SenseVoice;
+        cfg.model = Some(PathBuf::from("/nonexistent/sense/model.onnx"));
+        cfg.tokens = PathBuf::from("/nonexistent/sense/tokens.txt");
+        let err = transcribe_wav(&cfg, Path::new("/nonexistent/input.wav")).unwrap_err();
+        assert!(
+            err.contains("缺少模型文件"),
+            "离线路径应报模型缺失，实际: {err}"
+        );
+    }
+
+    #[test]
+    fn test_default_test_wav_prefers_preferred() {
+        let dir = tempfile::tempdir().unwrap();
+        let test_dir = dir.path().join("test_wavs");
+        std::fs::create_dir_all(&test_dir).unwrap();
+        // 无示例音频 → None
+        assert_eq!(default_test_wav(dir.path()), None);
+        // 只有 en/ja → 字母序第一个
+        std::fs::write(test_dir.join("ja.wav"), b"x").unwrap();
+        std::fs::write(test_dir.join("en.wav"), b"x").unwrap();
+        assert_eq!(default_test_wav(dir.path()), Some(test_dir.join("en.wav")));
+        // 有 zh → 优先 zh（SenseVoice 中文示例）
+        std::fs::write(test_dir.join("zh.wav"), b"x").unwrap();
+        assert_eq!(default_test_wav(dir.path()), Some(test_dir.join("zh.wav")));
+        // 有 0.wav → 优先 0.wav（zipformer/whisper 包）
+        std::fs::write(test_dir.join("0.wav"), b"x").unwrap();
+        assert_eq!(default_test_wav(dir.path()), Some(test_dir.join("0.wav")));
     }
 }

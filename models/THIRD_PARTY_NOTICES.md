@@ -42,3 +42,35 @@
 - **发布方**: k2-fsa（sherpa-onnx 项目）
 - **许可证**: Apache-2.0（依据 sherpa-onnx 项目整体许可；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `bcb3b970e384161c4d634f0bb9e999ff1c471b34c9bc0b1049a5014065ed3cc0`
+
+## sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+
+- **用途**: 离线多语言语音识别（ASR，zh/en/ja/ko/yue，含情绪/事件标签；int8 轻量版）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自阿里 ModelScope iic/SenseVoiceSmall）
+- **许可证**: FunASR Model License v1.1（阿里）；如需商用请以官方模型发布页的许可说明为准
+- **sha256**: `7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e`
+
+## sherpa-onnx-whisper-tiny
+
+- **用途**: 离线多语言语音识别（ASR，OpenAI Whisper tiny）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 OpenAI Whisper）
+- **许可证**: MIT（OpenAI Whisper；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `c46116994e539aa165266d96b325252728429c12535eb9d8b6a2b10f129e66b1`
+
+## sherpa-onnx-whisper-base
+
+- **用途**: 离线多语言语音识别（ASR，OpenAI Whisper base）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 OpenAI Whisper）
+- **许可证**: MIT（OpenAI Whisper；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de`
+
+## silero_vad.onnx（离线听写 VAD）
+
+- **用途**: 离线免提听写的语音活动检测（VAD，说/静音分段）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 Silero Team）
+- **许可证**: MIT（Silero VAD；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6`

@@ -4,9 +4,12 @@ import { Link } from "react-router-dom";
 import { AsrAdvancedParams } from "@/components/asr/AsrAdvancedParams";
 import { AsrBasicConfig } from "@/components/asr/AsrBasicConfig";
 import { AsrModelDialog } from "@/components/asr/AsrModelDialog";
+import { AsrDictatePanel } from "@/components/asr/AsrDictatePanel";
 import { AsrRunControl } from "@/components/asr/AsrRunControl";
 import { AsrTechnicalInfo } from "@/components/asr/AsrTechnicalInfo";
 import { AsrTestDialog } from "@/components/asr/AsrTestDialog";
+import { AsrTranscribeDialog } from "@/components/asr/AsrTranscribeDialog";
+import { isStreamingAsr } from "@/components/asr/asrMeta";
 import { Switch } from "@/components/ui/switch";
 import { useRuntime } from "@/providers/RuntimeContext";
 
@@ -16,8 +19,20 @@ import { useRuntime } from "@/providers/RuntimeContext";
 export function AsrPage() {
   const [testOpen, setTestOpen] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
+  const [transcribeOpen, setTranscribeOpen] = useState(false);
+  const [transcribeAuto, setTranscribeAuto] = useState(false);
   const { asr } = useRuntime();
   const asrEnabled = asr.config.config?.enabled ?? false;
+
+  // 测试识别：流式走实时麦克风弹窗；离线（SenseVoice/Whisper）走转写弹窗自动测试自带示例音频
+  const handleTestOpen = () => {
+    if (isStreamingAsr(asr.config.config?.model_type)) {
+      setTestOpen(true);
+    } else {
+      setTranscribeAuto(true);
+      setTranscribeOpen(true);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -52,9 +67,15 @@ export function AsrPage() {
       </section>
 
       <AsrBasicConfig
-        onTestOpen={() => setTestOpen(true)}
+        onTestOpen={handleTestOpen}
         onSwitchOpen={() => setSwitchOpen(true)}
+        onTranscribeOpen={() => {
+          setTranscribeAuto(false);
+          setTranscribeOpen(true);
+        }}
       />
+
+      {!isStreamingAsr(asr.config.config?.model_type) && <AsrDictatePanel />}
 
       <AsrTechnicalInfo />
 
@@ -63,6 +84,12 @@ export function AsrPage() {
       <AsrModelDialog open={switchOpen} onClose={() => setSwitchOpen(false)} />
 
       <AsrTestDialog open={testOpen} onClose={() => setTestOpen(false)} />
+
+      <AsrTranscribeDialog
+        open={transcribeOpen}
+        onClose={() => setTranscribeOpen(false)}
+        autoRun={transcribeAuto}
+      />
     </div>
   );
 }

@@ -109,10 +109,18 @@ impl EventThrottle {
     }
 }
 
+/// 「停止中放弃请求」状态码：serve 循环对其做分离响应（见 [`serve`] 内注释）。
+const STOPPED_MIDWAY_STATUS: u16 = 500;
+
 /// 桥服务主循环：绑定 loopback -> `on_ready(实际端口)` -> 循环收事件交给 sink。
 ///
 /// - `port == 0` 绑随机端口（推荐，避免冲突）
-/// - `running == false` 后最多一个 [`RECV_TIMEOUT`] 周期内退出
+/// - 停止保证覆盖「请求间」检查：空闲/请求间隙时 `running == false` 后最多一个
+///   [`RECV_TIMEOUT`] 周期内退出；请求处理中（body 读取/响应收尾）若被停滞
+///   客户端阻塞，serve 本层无法有界退出（tiny_http 无 socket 读超时），停止
+///   延迟由调用方的有界等待兜底（Task 6 `stop_dsh_bridge_inner`）
+/// - body 读取中途发现 `running == false` 会放弃该请求并移交分离线程收尾，
+///   对滴流式客户端可尽快让出循环（best-effort，非停止保证的一部分）
 /// - 事件处理（节流/台词/分发）在 sink 闭包内，本层只管 HTTP 语义
 pub fn serve(
     port: u16,
@@ -138,11 +146,23 @@ pub fn serve(
         }
         match server.recv_timeout(RECV_TIMEOUT) {
             Ok(Some(mut request)) => {
-                let status = handle_request(&mut request, token, sink);
-                let _ = request.respond(tiny_http::Response::empty(status));
+                let status = handle_request(&mut request, token, sink, running);
+                if status == STOPPED_MIDWAY_STATUS {
+                    // 停止中放弃的请求（body 可能未读完）：respond 内部 drop 请求体
+                    // reader 时会同步 drain 剩余字节（EqualReader::drop），停滞客户端
+                    // 会让它永久阻塞。移交分离线程收尾，serve 循环立即回循环头退出；
+                    // 分离线程在客户端断开或进程退出时自然终结（不参与停止等待）
+                    std::thread::spawn(move || {
+                        let _ = request.respond(tiny_http::Response::empty(status));
+                    });
+                } else {
+                    let _ = request.respond(tiny_http::Response::empty(status));
+                }
             }
             Ok(None) => {} // 超时：回循环头检查 running
-            Err(e) => tracing::warn!("dsh 桥接收请求异常: {e}"),
+            // tiny_http 推 Error 后内部 listener 已死，继续轮询只是僵尸；
+            // 返回 Err 让调用方（Task 6）走错误状态 emit
+            Err(e) => return Err(format!("dsh 桥 accept 异常: {e}")),
         }
     }
 }
@@ -152,6 +172,7 @@ fn handle_request(
     request: &mut tiny_http::Request,
     token: &str,
     sink: &mut dyn FnMut(event::DshEvent),
+    running: &std::sync::atomic::AtomicBool,
 ) -> u16 {
     // 仅接受 POST 方法
     if request.method() != &tiny_http::Method::Post {
@@ -177,26 +198,31 @@ fn handle_request(
     {
         return 413;
     }
-    // 读取请求体（上限 MAX_BODY_BYTES，手动限制因 take 不可用于 trait object）
-    let mut body = String::new();
+    // 读取请求体：累积字节后一次性转 String（按块转换会在 4096 边界损毁多字节
+    // 字符）；`take` 不可用于 trait object，手动限制读满 MAX_BODY_BYTES
+    let mut body_bytes: Vec<u8> = Vec::new();
     {
         let mut buf = [0u8; 4096];
-        let mut total: u64 = 0;
         let reader = request.as_reader();
         loop {
             match std::io::Read::read(reader, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    total += n as u64;
-                    if total > MAX_BODY_BYTES {
+                    body_bytes.extend_from_slice(&buf[..n]);
+                    if body_bytes.len() as u64 > MAX_BODY_BYTES {
                         return 413;
                     }
-                    body.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    // 停止中放弃剩余 body（best-effort）：serve 循环对该状态码
+                    // 做分离响应后立即退出，滴流式客户端不再占用循环
+                    if !running.load(std::sync::atomic::Ordering::Relaxed) {
+                        return STOPPED_MIDWAY_STATUS;
+                    }
                 }
                 Err(_) => return 400,
             }
         }
     }
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
     // 解析事件并分发到 sink
     match event::parse_event(&body) {
         Ok(Some(ev)) => {
@@ -313,27 +339,47 @@ mod tests {
         assert!(!t.allow(&a), "空 session 同类型窗口内应拦截");
     }
 
+    /// 起 serve 线程（随机端口 + "test-token"），返回 (线程句柄, 停止标志, 事件接收器, 实际端口)。
+    fn spawn_serve() -> (
+        std::thread::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::mpsc::Receiver<DshEvent>,
+        u16,
+    ) {
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<DshEvent>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<u16>();
+        let r = running.clone();
+        let handle = std::thread::spawn(move || {
+            let mut sink = move |ev: DshEvent| {
+                let _ = event_tx.send(ev);
+            };
+            let mut on_ready = |port: u16| {
+                let _ = ready_tx.send(port);
+            };
+            serve(0, "test-token", &mut sink, &r, &mut on_ready).unwrap();
+        });
+        let port = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("on_ready 应回报端口");
+        (handle, running, event_rx, port)
+    }
+
+    /// 轮询断言 serve 线程在 timeout 内退出后再 join（先 is_finished 再 join，防测试自身挂死）。
+    fn join_with_deadline(handle: std::thread::JoinHandle<()>, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(handle.is_finished(), "serve 线程应在 {timeout:?} 内退出");
+        handle.join().expect("serve 线程不应 panic");
+    }
+
     /// 集成测试：serve 桥服务主循环的 HTTP 语义（401/400/404/405/204）与停止行为。
     #[test]
     fn test_serve_roundtrip() {
         run_with_temp_home(|_| {
-            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let (event_tx, event_rx) = std::sync::mpsc::channel::<DshEvent>();
-            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<u16>();
-            let r = running.clone();
-            let handle = std::thread::spawn(move || {
-                let mut sink = move |ev: DshEvent| {
-                    let _ = event_tx.send(ev);
-                };
-                let mut on_ready = |port: u16| {
-                    let _ = ready_tx.send(port);
-                };
-                serve(0, "test-token", &mut sink, &r, &mut on_ready).unwrap();
-            });
-
-            let port = ready_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("on_ready 应回报端口");
+            let (handle, running, event_rx, port) = spawn_serve();
 
             // 创建不把非 2xx 当错误的 agent，方便断言所有状态码
             let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -403,7 +449,81 @@ mod tests {
 
             // 停止：running=false 后线程应在 ~1 个 RECV_TIMEOUT 内退出
             running.store(false, std::sync::atomic::Ordering::Relaxed);
-            handle.join().unwrap();
+            join_with_deadline(handle, Duration::from_secs(1));
+        });
+    }
+
+    /// 回归测试：停滞客户端（过鉴权、声明大 Content-Length 但 body 只发一部分）
+    /// 不应无限阻塞 serve 停止——客户端断开连接后，阻塞在 body 读取上的 serve
+    /// 应在有界时间内退出。
+    ///
+    /// 注：完全停滞且不断开的客户端在 tiny_http API 下无解（socket 无读超时，
+    /// read 永不返回），「停止不被无限阻塞」的完整保证由 Task 6 调用方的
+    /// 有界等待兜底（见 `stop_dsh_bridge_inner`）。
+    #[test]
+    fn test_serve_stalled_client_unblocks_on_stop() {
+        run_with_temp_home(|_| {
+            let (handle, running, _event_rx, port) = spawn_serve();
+
+            // 裸 TCP 手写 HTTP 头：有效 Bearer + Content-Length: 2000，发 50 字节 body 后停住
+            use std::io::Write as _;
+            let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "POST /dsh/events HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                 Authorization: Bearer test-token\r\nContent-Length: 2000\r\n\r\n"
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(&vec![b'x'; 50]).unwrap();
+            // 等 serve 消费掉已发的 50 字节并阻塞在下一次 read（socket 无读超时）
+            std::thread::sleep(Duration::from_millis(100));
+
+            // 停止标志置 false 后客户端断开连接：阻塞的 read 以 EOF/错误返回，
+            // serve 放弃该请求（body 非完整 JSON -> 400）并回循环头退出
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            drop(sock);
+            join_with_deadline(handle, Duration::from_secs(1));
+        });
+    }
+
+    /// 413 护栏：超过 MAX_BODY_BYTES 拒 413；恰好 MAX_BODY_BYTES 的合法载荷不拒。
+    #[test]
+    fn test_serve_body_size_limit() {
+        run_with_temp_home(|_| {
+            let (handle, running, _event_rx, port) = spawn_serve();
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into();
+
+            // 构造合法事件 JSON，title 填充至 body 恰好 MAX_BODY_BYTES 字节
+            let prefix = r#"{"type":"task-started","session_id":"s1","title":""#;
+            let suffix = r#""}"#;
+            let pad = MAX_BODY_BYTES as usize - prefix.len() - suffix.len();
+            let exact = format!("{prefix}{}{suffix}", "x".repeat(pad));
+            assert_eq!(exact.len(), MAX_BODY_BYTES as usize, "构造恰好 64KB 载荷");
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer test-token")
+                .send(exact.as_str())
+                .unwrap();
+            assert_ne!(resp.status(), 413, "恰好 64KB 不应被拒 413");
+            assert_eq!(resp.status(), 204, "合法 JSON 应正常受理");
+
+            // 65KB 超限载荷 -> 413（Content-Length 预检直接拒）
+            let oversized = format!(
+                "{prefix}{}{suffix}",
+                "x".repeat(65 * 1024 - prefix.len() - suffix.len())
+            );
+            assert_eq!(oversized.len(), 65 * 1024, "构造 65KB 载荷");
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer test-token")
+                .send(oversized.as_str())
+                .unwrap();
+            assert_eq!(resp.status(), 413);
+
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            join_with_deadline(handle, Duration::from_secs(1));
         });
     }
 }

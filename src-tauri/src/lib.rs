@@ -1751,24 +1751,54 @@ fn is_voice_session_running(state: State<'_, VoiceSessionState>) -> bool {
 // ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
 
 /// dsh 桥状态：共享停止标志 + 线程句柄 + 实际监听端口（RuntimeActual）。
+///
+/// running/port 指向「当前一代」桥的标志：每次 start 整体替换为全新 Arc（fresh），
+/// 服务线程持有克隆。stop 超时分离的旧线程迟到退出时只作用于自己那一代——
+/// 不会读到新桥的 true 而复活，也不会把新桥的 running/port 清掉。
 struct DshBridgeState {
-    running: Arc<AtomicBool>,
+    /// 当前代停止标志（false = 应退出）；start 时整体替换
+    running: Mutex<Arc<AtomicBool>>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
-    /// 实际监听端口（0 = 未运行/未就绪）
-    port: Arc<AtomicU16>,
+    /// 当前代实际监听端口（0 = 未运行/未就绪）；start 时整体替换
+    port: Mutex<Arc<AtomicU16>>,
+    /// 最近一次运行的错误（线程 epilogue 写入、start 清空；供前端轮询）
+    last_error: Mutex<Option<String>>,
 }
 
 impl DshBridgeState {
     fn new() -> Self {
         Self {
-            running: Arc::new(AtomicBool::new(false)),
+            running: Mutex::new(Arc::new(AtomicBool::new(false))),
             handle: Mutex::new(None),
-            port: Arc::new(AtomicU16::new(0)),
+            port: Mutex::new(Arc::new(AtomicU16::new(0))),
+            last_error: Mutex::new(None),
         }
     }
 
     fn is_running(&self) -> bool {
-        self.running.load(Ordering::Relaxed)
+        self.current_running().load(Ordering::Relaxed)
+    }
+
+    /// 当前代停止标志（克隆后读取，锁即刻释放）。
+    fn current_running(&self) -> Arc<AtomicBool> {
+        self.running
+            .lock()
+            .expect("dsh running lock poisoned")
+            .clone()
+    }
+
+    /// 给定标志是否仍是「当前代」（线程 epilogue 写共享状态前的守卫：
+    /// 分离的旧线程迟到退出时 start 已换新 Arc，此时不写 last_error、不发终态事件）。
+    fn is_current_generation(&self, running: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.current_running(), running)
+    }
+
+    /// 当前实际监听端口（0 = 未运行/未就绪）。
+    fn current_port(&self) -> u16 {
+        self.port
+            .lock()
+            .expect("dsh port lock poisoned")
+            .load(Ordering::Relaxed)
     }
 }
 
@@ -1820,10 +1850,16 @@ fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), S
     // 清陈旧发现文件（上次退出未清理的残留）
     zapmomo::dsh::remove_discovery();
 
-    let running = state.running.clone();
-    running.store(true, Ordering::Relaxed);
-    let port_flag = state.port.clone();
-    port_flag.store(0, Ordering::Relaxed);
+    // fresh Arc：每次启动换全新一代标志（线程持有克隆）——stop 超时分离的旧线程
+    // 迟到退出只作用于自己那一代，不会复活（旧 running 恒 false）也不会污染新桥
+    let running = Arc::new(AtomicBool::new(true));
+    *state.running.lock().expect("dsh running lock poisoned") = running.clone();
+    let port_flag = Arc::new(AtomicU16::new(0));
+    *state.port.lock().expect("dsh port lock poisoned") = port_flag.clone();
+    *state
+        .last_error
+        .lock()
+        .expect("dsh last_error lock poisoned") = None;
     let thread_app = app;
     let handle = std::thread::spawn(move || {
         tracing::info!("dsh bridge thread started");
@@ -1855,20 +1891,32 @@ fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), S
         };
         let result = zapmomo::dsh::serve(cfg.port, &token, &mut sink, &running, &mut on_ready);
         port_flag.store(0, Ordering::Relaxed);
-        zapmomo::dsh::remove_discovery();
+        // token 条件清理：本线程若是迟到的分离线程，发现文件可能已属于重启后的
+        // 新桥——只有 token 一致（仍是自己的文件）才删
+        zapmomo::dsh::remove_discovery_if_token(&token);
         running.store(false, Ordering::Relaxed);
         match &result {
             Ok(()) => tracing::info!("dsh bridge thread finished (clean)"),
             Err(e) => tracing::error!("dsh bridge thread finished with error: {e}"),
         }
-        let _ = thread_app.emit(
-            "dsh-bridge-status",
-            DshBridgeStatusPayload {
-                running: false,
-                port: None,
-                error: result.err(),
-            },
-        );
+        // 本线程仍是当前代才写 last_error / 发终态事件（分离旧线程迟到退出
+        // 不污染新桥的轮询状态与前端事件）
+        let bridge_state = thread_app.state::<DshBridgeState>();
+        if bridge_state.is_current_generation(&running) {
+            let err = result.err();
+            *bridge_state
+                .last_error
+                .lock()
+                .expect("dsh last_error lock poisoned") = err.clone();
+            let _ = thread_app.emit(
+                "dsh-bridge-status",
+                DshBridgeStatusPayload {
+                    running: false,
+                    port: None,
+                    error: err,
+                },
+            );
+        }
     });
     *state
         .handle
@@ -1882,12 +1930,13 @@ fn start_dsh_bridge_impl(app: AppHandle, state: &DshBridgeState) -> Result<(), S
 /// serve 的停止保证覆盖「请求间」检查；停滞客户端可能把线程卡在单次请求的
 /// body 读取/响应抽干里（tiny_http 无 socket 读超时），此时超时后**分离线程**
 /// （不 join，不阻塞调用方；线程随客户端断开或进程退出自然终结），running
-/// 状态位仍保持一致。发现文件若因此未清理，下次启动会清陈旧残留。
+/// 状态位仍保持一致。分离线程迟到退出只作用于自己那一代标志（fresh Arc）；
+/// 发现文件若因此未由 epilogue 清理，下次启动会清陈旧残留。
 fn stop_dsh_bridge_inner(state: &DshBridgeState) -> Result<(), String> {
     if !state.is_running() {
         return Err("dsh 桥未在运行".to_string());
     }
-    state.running.store(false, Ordering::Relaxed);
+    state.current_running().store(false, Ordering::Relaxed);
     let handle = state
         .handle
         .lock()
@@ -1926,7 +1975,7 @@ struct DshConfigInfo {
 fn get_dsh_config(state: State<'_, DshBridgeState>) -> Result<DshConfigInfo, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let cfg = zapmomo::dsh::config::resolve(settings.as_ref().and_then(|s| s.dsh.as_ref()));
-    let actual = state.port.load(Ordering::Relaxed);
+    let actual = state.current_port();
     Ok(DshConfigInfo {
         enabled: cfg.enabled,
         port: cfg.port,
@@ -1948,7 +1997,12 @@ fn set_dsh_enabled(
     settings.dsh.get_or_insert_with(Default::default).enabled = Some(enabled);
     zapmomo::config::settings::save_settings(&settings)?;
     if enabled {
-        start_dsh_bridge_impl(app, state.inner())
+        if state.is_running() {
+            // 幂等：目标态已达成直接成功（避免重复开关弹错误提示）
+            Ok(())
+        } else {
+            start_dsh_bridge_impl(app, state.inner())
+        }
     } else if state.is_running() {
         stop_dsh_bridge_inner(state.inner())
     } else {
@@ -1977,6 +2031,10 @@ fn set_dsh_params(
         return Err(format!("端口需在 1024~65535 或 0（随机），当前 {p}"));
     }
     let mut settings = zapmomo::config::settings::load_settings()?.unwrap_or_default();
+    // 端口与当前配置相同（未配置 ≡ 0 随机）则无需重启桥
+    let port_changed = params
+        .port
+        .is_some_and(|p| settings.dsh.as_ref().and_then(|d| d.port).unwrap_or(0) != p);
     let dsh = settings.dsh.get_or_insert_with(Default::default);
     if let Some(v) = params.voice_enabled {
         dsh.voice_enabled = Some(v);
@@ -1989,7 +2047,7 @@ fn set_dsh_params(
     }
     zapmomo::config::settings::save_settings(&settings)?;
     // 端口变化需重启桥生效；voice/record 项在事件时实时读取
-    if params.port.is_some() && state.is_running() {
+    if port_changed && state.is_running() {
         stop_dsh_bridge_inner(state.inner())?;
         start_dsh_bridge_impl(app, state.inner())?;
     }
@@ -1998,11 +2056,15 @@ fn set_dsh_params(
 
 #[tauri::command]
 fn get_dsh_bridge_status(state: State<'_, DshBridgeState>) -> DshBridgeStatusPayload {
-    let port = state.port.load(Ordering::Relaxed);
+    let port = state.current_port();
     DshBridgeStatusPayload {
         running: state.is_running(),
         port: (port != 0).then_some(port),
-        error: None,
+        error: state
+            .last_error
+            .lock()
+            .expect("dsh last_error lock poisoned")
+            .clone(),
     }
 }
 
@@ -2855,8 +2917,16 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "show_settings" | "open_settings" => show_settings_window(app),
         "toggle_companion" => toggle_companion_window(app),
         "hide_companion" => hide_companion_window(app),
-        "restart" => app.request_restart(),
-        "quit" => app.exit(0),
+        // 退出/重启前清理 dsh 桥发现文件：桥线程随进程终止无 epilogue，
+        // 不清理会残留指向死端口的文件（崩溃残留仍由下次启动兜底清理）
+        "restart" => {
+            zapmomo::dsh::remove_discovery();
+            app.request_restart();
+        }
+        "quit" => {
+            zapmomo::dsh::remove_discovery();
+            app.exit(0);
+        }
         // 点击穿透：菜单按当前状态显示「启用/禁用」项，点击后应用固定值（幂等，
         // 不受菜单事件重复派发影响）。
         "enable_click_through" => {
@@ -3306,15 +3376,17 @@ fn hide_companion(app: AppHandle) {
     hide_companion_window(&app);
 }
 
-/// 退出应用（供角色窗口右键菜单调用）。
+/// 退出应用（供角色窗口右键菜单调用）。退出前清理 dsh 桥发现文件（防死端口残留）。
 #[tauri::command]
 fn quit_app(app: AppHandle) {
+    zapmomo::dsh::remove_discovery();
     app.exit(0);
 }
 
-/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。
+/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。退出前清理 dsh 桥发现文件。
 #[tauri::command]
 fn restart_app(app: AppHandle) {
+    zapmomo::dsh::remove_discovery();
     app.request_restart();
 }
 

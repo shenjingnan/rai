@@ -58,6 +58,22 @@ pub fn remove_discovery() {
     }
 }
 
+/// 条件删除发现文件：文件内容 token 与给定一致才删（Task 6 桥线程 epilogue 用）。
+///
+/// stop 超时被分离的旧线程迟到退出时，发现文件可能已属于重启后的新桥——
+/// 无条件删除会误删新桥的文件；文件不存在 / 解析失败 / token 不匹配时均不动。
+pub fn remove_discovery_if_token(token: &str) {
+    let Ok(body) = std::fs::read_to_string(discovery_file()) else {
+        return; // 不存在：无事可做（正常退出路径已清理）
+    };
+    match serde_json::from_str::<DiscoveryInfo>(&body) {
+        Ok(info) if info.token == token => remove_discovery(),
+        // token 不匹配：文件属于新桥，不动
+        Ok(_) => {}
+        Err(e) => tracing::warn!("dsh 发现文件解析失败，跳过条件清理: {e}"),
+    }
+}
+
 /// 生成一次性 token：sha256(纳秒时钟 ‖ pid ‖ 计数器) 十六进制前 32 位。
 pub fn generate_token() -> String {
     use sha2::{Digest, Sha256};
@@ -282,6 +298,35 @@ mod tests {
         assert_eq!(a.len(), 32, "token 应为 32 位 hex");
         assert_ne!(a, b, "连续生成的 token 应不同");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_remove_discovery_if_token() {
+        run_with_temp_home(|_| {
+            // 文件不存在：no-op 不报错
+            remove_discovery_if_token("t1");
+            assert!(!discovery_file().exists());
+            // token 匹配：删除
+            write_discovery(&DiscoveryInfo {
+                port: 47800,
+                token: "t1".to_string(),
+            })
+            .unwrap();
+            remove_discovery_if_token("t1");
+            assert!(!discovery_file().exists(), "token 匹配应删除");
+            // token 不匹配（文件已属于新桥）：保留
+            write_discovery(&DiscoveryInfo {
+                port: 47801,
+                token: "t2".to_string(),
+            })
+            .unwrap();
+            remove_discovery_if_token("t1");
+            assert!(discovery_file().exists(), "token 不匹配不应删除新桥文件");
+            // 坏 JSON：保留（宁可残留也不误删，残留由下次启动清理兜底）
+            std::fs::write(discovery_file(), "not-json").unwrap();
+            remove_discovery_if_token("t1");
+            assert!(discovery_file().exists(), "坏 JSON 不应删除");
+        });
     }
 
     #[test]

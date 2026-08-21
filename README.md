@@ -26,12 +26,8 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 
 开源的实时桌面 AI 伴侣：语音交互、记忆能力、可定制的虚拟角色。
 
-> 📚 中文文档：[文档站](docs/)，含快速开始、KWS / ASR / TTS / LLM、配置、桌面应用与贡献指南。
-> 🛠 参与开发 / CLI 与完整配置参考：[贡献指南](CONTRIBUTING.md)。
-
 <div align="center">
   <img src="docs/public/screenshots/home.png" alt="ZapMomo 桌面应用概览页" width="760" />
-  <p><em>桌面应用「概览」页：展示当前伙伴与 AI 能力状态</em></p>
 </div>
 
 <details>

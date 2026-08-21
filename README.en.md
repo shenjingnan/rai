@@ -24,11 +24,8 @@
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
 
-> 📚 Documentation is currently Chinese-only: [docs site](docs/) — quick start, KWS / ASR / TTS / LLM, configuration, desktop app, and the contributing guide.
-
 <div align="center">
   <img src="docs/public/screenshots/home.png" alt="ZapMomo desktop app Overview page" width="760" />
-  <p><em>Desktop app "Overview" page: current companion and AI capability status</em></p>
 </div>
 
 <details>

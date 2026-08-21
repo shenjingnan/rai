@@ -122,6 +122,38 @@ let ttsVoices: {
   custom: boolean;
 }[];
 
+/** 模型库列表桩的最小形状（list_model_library 返回条目的测试子集）。 */
+type LibraryStub = {
+  id: string;
+  displayName: string;
+  modelType: string;
+  installState: string;
+  current: boolean;
+  localPath: string | null;
+  installId: string | null;
+  repoId: string | null;
+  ownership: string;
+};
+
+/** 默认模型库桩：zipvoice 已装为当前（弹窗展示「当前模型」徽标依赖此条目）。 */
+function defaultTtsModelLibrary(): LibraryStub[] {
+  return [
+    {
+      id: "tts-zipvoice-distill-int8",
+      displayName: "ZipVoice TTS zh-en",
+      modelType: "tts",
+      installState: "installed",
+      current: true,
+      localPath: "/home/user/.zapmomo/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia",
+      installId: "tts-zipvoice-distill-int8",
+      repoId: null,
+      ownership: "managed",
+    },
+  ];
+}
+
+const ttsModelLibrary: LibraryStub[] = defaultTtsModelLibrary();
+
 /** 默认 command 桩：非 TTS 测试用例直接复用。 */
 function defaultInvoke(
   cmd: string,
@@ -176,8 +208,8 @@ function defaultInvoke(
       return Promise.resolve(undefined);
     case "stop_tts":
       return Promise.resolve(undefined);
-    case "download_tts_model":
-      return Promise.resolve(undefined);
+    case "list_model_library":
+      return Promise.resolve(ttsModelLibrary);
     case "transcribe_reference_audio":
       return Promise.resolve("参考音频的逐字转写文本");
     case "get_microphone":
@@ -251,47 +283,39 @@ describe("TtsPage（语音合成 TTS）", () => {
     expect(screen.getByRole("link", { name: /模型与能力/ })).toHaveAttribute("href", "/models");
   });
 
-  it("未下载模型：显示模型名与「未下载」Badge、顶部状态「未下载模型」、下载可用、测试禁用", async () => {
+  it("未下载模型：显示模型名与「未下载」Badge、顶部状态「未下载模型」、「选择模型」可用、测试禁用", async () => {
     renderTtsPage();
     expect(
       await screen.findByText("sherpa-onnx-zipvoice-distill-int8-zh-en-emilia"),
     ).toBeInTheDocument();
     expect(await screen.findByText("未下载模型")).toBeInTheDocument();
     expect(screen.getByText("未下载")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "下载模型" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "选择模型" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "测试语音" })).toBeDisabled();
   });
 
-  it("模型已就绪：显示「已就绪」、顶部状态「已就绪」、无下载按钮、测试可用、开关可用", async () => {
+  it("模型已就绪：显示「已就绪」、顶部状态「已就绪」、选择模型可用、测试可用、开关可用", async () => {
     ttsConfig = { ...ttsConfig, models_present: true };
     renderTtsPage();
     await screen.findByText("语音合成（TTS）配置");
     expect((await screen.findAllByText("已就绪")).length).toBeGreaterThanOrEqual(2);
-    expect(screen.queryByRole("button", { name: "下载模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择模型" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "测试语音" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "语音合成开关" })).toBeEnabled();
   });
 
-  it("点击下载模型调用 download_tts_model", async () => {
+  it("点击「选择模型」打开选择合成模型弹窗，展示内置预设", async () => {
+    ttsConfig = { ...ttsConfig, models_present: true };
     const user = userEvent.setup();
     renderTtsPage();
-    await user.click(await screen.findByRole("button", { name: "下载模型" }));
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("download_tts_model");
-    });
-  });
+    await screen.findByText("语音合成（TTS）配置");
 
-  it("模型下载进度事件显示进度消息", async () => {
-    renderTtsPage();
-    await screen.findByRole("button", { name: "下载模型" });
-
-    act(() => {
-      listeners.get("tts-model-download-progress")?.({
-        payload: { stage: "downloading", percent: 42, message: "下载中 42%" },
-      });
-    });
-
-    expect(await screen.findByText("下载中 42%")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
+    expect(await screen.findByText("选择合成模型")).toBeInTheDocument();
+    // 弹窗内展示内置预设：zipvoice 已装为当前 → 「当前模型」徽标
+    expect(screen.getByText("ZipVoice TTS zh-en")).toBeInTheDocument();
+    const currentBadges = await screen.findAllByText("当前模型");
+    expect(currentBadges.length).toBeGreaterThanOrEqual(1);
   });
 
   it("顶部开关切换持久化 enabled（set_tts_enabled）", async () => {

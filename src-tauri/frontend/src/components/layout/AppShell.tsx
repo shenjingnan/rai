@@ -2,6 +2,7 @@ import { isMacOs, isWindows } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { MainPanel } from "./MainPanel";
 import { Sidebar } from "./Sidebar";
+import { SystemStatusBar } from "./SystemStatusBar";
 import { WindowControls } from "./WindowControls";
 
 /** 统一 App Shell：无标题栏。
@@ -23,12 +24,19 @@ export function AppShell() {
         windows && "border border-window-border",
       )}
     >
-      {/* 三平台：透明悬浮顶部条拉通全宽（整条可拖拽窗口），三键靠右（仅非 macOS），
-          不占布局、无标题栏背景。 */}
+      {/* 三平台：透明悬浮顶部条拉通全宽（整条可拖拽窗口）。
+          状态栏（CPU/内存/磁盘）与白色内容卡片对齐；
+          右侧：窗口三键（仅非 macOS）。
+          macOS 红绿灯（78px）由系统原生绘制，左侧留白避让。 */}
       <div
         data-tauri-drag-region
-        className="absolute left-0 right-0 top-0 z-10 flex h-9 items-center justify-end"
+        className="absolute left-0 right-0 top-0 z-10 flex h-9 items-center justify-between"
       >
+        {/* 状态栏与 MainPanel 白色卡片左缘对齐：侧栏 248px + 面板左距 pl-1 = 252px。
+            macOS 红绿灯（78px）位于侧栏上方，状态栏已在 252px 之外无需避让。 */}
+        <div className="ml-[252px]">
+          <SystemStatusBar />
+        </div>
         {!mac && <WindowControls />}
       </div>
       <Sidebar />

@@ -545,7 +545,7 @@ export function CompanionPage() {
               {selected && (
                 <>
                   <div className="flex w-full items-center gap-2">
-                    <span className="w-16 shrink-0">尺寸</span>
+                    <span className="w-20 shrink-0">尺寸</span>
                     <Slider
                       aria-label="尺寸"
                       value={[percent]}
@@ -558,7 +558,7 @@ export function CompanionPage() {
                     <span className="w-10 shrink-0 text-right tabular-nums">{percent}%</span>
                   </div>
                   <div className="flex w-full items-center gap-2">
-                    <span className="w-16 shrink-0">透明度</span>
+                    <span className="w-20 shrink-0">透明度</span>
                     <Slider
                       aria-label="透明度"
                       value={[opacityPercent]}
@@ -574,7 +574,7 @@ export function CompanionPage() {
               )}
               {/* 显示层级：置顶 = 悬浮浮层（默认，现状）；置底 = 沉到窗口之下并点穿（窗口级） */}
               <div className="flex w-full items-center gap-2">
-                <span className="w-16 shrink-0">层级</span>
+                <span className="w-20 shrink-0">层级</span>
                 <Switch
                   aria-label="置顶"
                   checked={layer === "front"}
@@ -588,7 +588,7 @@ export function CompanionPage() {
               </div>
               {/* 点击穿透（窗口级）：说明收进 Info icon 的 tooltip，对齐「锁定位置」的展示方式 */}
               <div className="flex w-full items-center gap-2">
-                <span className="w-16 shrink-0">点击穿透</span>
+                <span className="w-20 shrink-0">点击穿透</span>
                 <Switch
                   aria-label="点击穿透"
                   checked={clickThrough}
@@ -608,7 +608,7 @@ export function CompanionPage() {
               </div>
               {/* 位置锁定（窗口级）：说明收进 Info icon 的 tooltip，避免占满整行 */}
               <div className="flex w-full items-center gap-2">
-                <span className="w-16 shrink-0">锁定位置</span>
+                <span className="w-20 shrink-0">锁定位置</span>
                 <Switch
                   aria-label="锁定位置"
                   checked={locked}
@@ -628,7 +628,7 @@ export function CompanionPage() {
               </div>
               {/* 拖拽模式（窗口级）：modifier = 需按住 cmd/Ctrl 才能拖动，与锁定正交（锁定优先），说明收进 Info icon 的 tooltip */}
               <div className="flex w-full items-center gap-2">
-                <span className="w-16 shrink-0">修饰键拖动</span>
+                <span className="w-20 shrink-0">修饰键拖动</span>
                 <Switch
                   aria-label="修饰键拖动"
                   checked={dragMode === "modifier"}

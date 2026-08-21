@@ -5,3 +5,4 @@
 /// 到达、无轮询。端口与 token 写入发现文件 `~/.zapmomo/runtime/dsh-bridge.json`
 /// （权限 0600），插件每次发送前现读；ZapMomo 未运行时插件静默跳过。
 pub mod config;
+pub mod event;

@@ -1855,8 +1855,9 @@ fn handle_dsh_event(
     {
         announcer.announce(&text);
     }
-    // 落盘到对话记录（与语音会话同库，前端「对话记录」页可见）
-    if cfg.record_to_history {
+    // 落盘到对话记录（与语音会话同库，前端「对话记录」页可见）；
+    // 空文本不落盘（与 voice ReplyFinished 的守卫一致，防御性）
+    if cfg.record_to_history && !text.is_empty() {
         records::append_record(records::ConversationRecord {
             role: records::RecordRole::Assistant,
             text: text.clone(),
@@ -1880,7 +1881,9 @@ fn dsh_announcer(
             Some(a)
         }
         Err(e) => {
-            tracing::debug!("dsh 播报器不可用（本次只出气泡）: {e}");
+            // warn 而非 debug：默认 info 日志下让运维能看到「为什么只有气泡没声音」
+            // （合成失败路径在 worker 内已是 warn，两处对齐）
+            tracing::warn!("dsh 播报器不可用（本次只出气泡，TTS 就绪后自动恢复）: {e}");
             None
         }
     }

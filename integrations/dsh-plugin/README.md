@@ -37,8 +37,45 @@ dsh plugin --profile web add link:<zapmomo>/integrations/dsh-plugin
 ## 开发
 
 ```bash
-# 发布新版本：改 version 后
-npm publish
+# 本地调试用 link 模式安装（改动即时生效）
+dsh plugin --profile web add link:<zapmomo>/integrations/dsh-plugin
 ```
 
 字段路径按 dsh 源码核对（`session.id` / `agent.status` / `reason.error`），如有 dsh 版本升级导致漂移，以 `src/index.ts` 顶部「待实测核对」注释为准回读对齐。
+
+## 发布
+
+发布走 **npm Trusted Publishing（OIDC）**，由 `.github/workflows/npm-publish.yml` 自动完成，**不需要 NPM_TOKEN / OTP**。
+
+### npm 侧前置（一次性）
+
+在 npmjs.com 为 `@zapmomo-ai/dsh-plugin` 配置 Trusted Publisher，必须匹配：
+
+| 字段 | 值 |
+| --- | --- |
+| Repository | `shenjingnan/zapmomo` |
+| **Workflow filename** | `npm-publish.yml` |
+| **Environment** | **留空** |
+
+### 发新版本（tag 触发自动发布）
+
+```bash
+# 1. 递增版本
+cd integrations/dsh-plugin && vim package.json    # version: 0.1.0 → 0.2.0
+
+# 2. 提交 + 打 tag + 推送（workflow 收到 dsh-plugin-v* tag 即自动发布）
+git add integrations/dsh-plugin/package.json
+git commit -m "chore(dsh): bump version to 0.2.0"
+git tag dsh-plugin-v0.2.0
+git push origin dsh-plugin-v0.2.0
+```
+
+> 注意：tag 名必须 `dsh-plugin-v<版本>`（workflow 只匹配该前缀）。若 package.json 版本未变，`npm publish` 会被 npm 以 `E403 already published` 拒绝——正常保护，改对版本再推。
+
+### 手动发布（临时/紧急）
+
+GitHub → Actions → **npm Publish (dsh-plugin)** → **Run workflow**（不 push 任何东西）。
+
+### 安全建议
+
+Trusted Publisher 生效后，可在 npm 包设置里把发布方式设为 **「Require 2FA and disallow tokens」**——彻底禁掉 token 发布，只走 OIDC。

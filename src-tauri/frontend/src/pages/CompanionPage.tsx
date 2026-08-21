@@ -22,7 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { useCompanionLibrary } from "@/hooks/useCompanionLibrary";
 import { api, toAssetUrl } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import type { CompanionModelInfo } from "@/types/tauri";
+import type { CompanionModelInfo, CompanionWindowLayer } from "@/types/tauri";
 
 /**
  * 把 Live2D 渲染画布截取为缩小的 PNG 字节数组（供保存为封面）。
@@ -384,9 +384,11 @@ export function CompanionPage() {
 
   // 桌宠尺寸（缩放百分比，25%~200%）与透明度（20%~100%）：写入 settings 并通知桌宠窗口即时生效。
   // 点击穿透（窗口级行为，与选中哪个伙伴无关）：开启后桌宠窗口对所有鼠标事件透明。
+  // 显示层级（置顶/置底，窗口级）：写入 settings 并通知桌宠窗口即时生效。
   const [percent, setPercent] = useState(100);
   const [opacityPercent, setOpacityPercent] = useState(100);
   const [clickThrough, setClickThrough] = useState(false);
+  const [layer, setLayer] = useState<CompanionWindowLayer>("front");
   useEffect(() => {
     void api
       .getLive2dConfig()
@@ -395,6 +397,7 @@ export function CompanionPage() {
         if (cfg.window_opacity != null) setOpacityPercent(Math.round(cfg.window_opacity * 100));
         // 旧后端 / 测试桩可能不返回该字段，兜底为关闭。
         setClickThrough(cfg.click_through ?? false);
+        if (cfg.window_layer) setLayer(cfg.window_layer);
       })
       .catch(() => {});
   }, []);
@@ -411,6 +414,11 @@ export function CompanionPage() {
   const handleToggleClickThrough = useCallback((enabled: boolean) => {
     setClickThrough(enabled);
     void api.setCompanionClickThrough({ enabled });
+  }, []);
+  const handleLayerChange = useCallback((checked: boolean) => {
+    const next: CompanionWindowLayer = checked ? "front" : "back";
+    setLayer(next);
+    void api.setCompanionLayer({ layer: next });
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -517,7 +525,7 @@ export function CompanionPage() {
               {selected ? selected.name : "暂无伙伴"}
             </CardTitle>
             {/* 桌宠尺寸/透明度：调整窗口缩放与模型透明度，同步到桌宠窗口（尺寸在上，透明度在下）。
-                点击穿透是窗口级行为，未选中伙伴也可切换（窗口仍在，遮挡桌面）。 */}
+                点击穿透/显示层级是窗口级行为，未选中伙伴也可切换（窗口仍在，遮挡桌面）。 */}
             <div className="flex w-full flex-col gap-2 text-sm text-muted-foreground">
               {selected && (
                 <>
@@ -549,6 +557,21 @@ export function CompanionPage() {
                   </div>
                 </>
               )}
+              {/* 显示层级：置顶 = 悬浮浮层（默认，现状）；置底 = 沉到窗口之下并点穿（窗口级） */}
+              <div className="flex w-full items-center gap-2">
+                <span className="w-12 shrink-0">层级</span>
+                <Switch
+                  aria-label="置顶"
+                  checked={layer === "front"}
+                  onCheckedChange={handleLayerChange}
+                />
+                <span className="flex-1 text-xs text-muted-foreground">
+                  {layer === "front"
+                    ? "置顶：悬浮在所有窗口之上"
+                    : "置底：沉到所有窗口之下（点穿，无法拖拽/右键）"}
+                </span>
+              </div>
+              {/* 点击穿透（窗口级） */}
               <div className="flex w-full items-center justify-between gap-2">
                 <span className="shrink-0">点击穿透</span>
                 <Switch
@@ -557,10 +580,10 @@ export function CompanionPage() {
                   onCheckedChange={handleToggleClickThrough}
                 />
               </div>
+            </div>
               <p className="text-xs leading-relaxed text-muted-foreground/80">
                 开启后鼠标点击穿过模型直达背后内容；拖动、滚轮缩放与右键菜单将失效，可随时在此或托盘菜单关闭
               </p>
-            </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col">
             {/* 已是当前使用时不显示 CTA（左侧「使用中」徽标已标识） */}

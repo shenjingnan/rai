@@ -25,6 +25,7 @@ import type {
   AsrParamsPatch,
   AsrResult,
   CompanionLibraryView,
+  CompanionWindowLayer,
   ConversationRecord,
   DownloadProgress,
   ImportCompanionResult,
@@ -185,6 +186,8 @@ export const api = {
   setCompanionOpacity: (args: { opacity: number }) => invoke<void>("set_companion_opacity", args),
   setCompanionClickThrough: (args: { enabled: boolean }) =>
     invoke<void>("set_companion_click_through", args),
+  setCompanionLayer: (args: { layer: CompanionWindowLayer }) =>
+    invoke<void>("set_companion_layer", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
@@ -271,6 +274,12 @@ export function onCompanionScaleChanged(handler: (scale: number) => void): Promi
 
 export function onCompanionOpacityChanged(handler: (opacity: number) => void): Promise<UnlistenFn> {
   return listen<number>("companion-opacity-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionLayerChanged(
+  handler: (layer: CompanionWindowLayer) => void,
+): Promise<UnlistenFn> {
+  return listen<CompanionWindowLayer>("companion-layer-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

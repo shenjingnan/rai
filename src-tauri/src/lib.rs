@@ -23,8 +23,8 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
-    self, AsrSettings, CompanionWindowPosition, KwsSettings, Live2dSettings, LlmSettings,
-    TtsSettings,
+    self, AsrSettings, CompanionWindowLayer, CompanionWindowPosition, KwsSettings, Live2dSettings,
+    LlmSettings, TtsSettings,
 };
 use zapmomo::datetime::iso_timestamp_now;
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
@@ -1984,6 +1984,7 @@ struct Live2dConfigInfo {
     window_scale: Option<f64>,
     window_opacity: Option<f64>,
     click_through: Option<bool>,
+    window_layer: Option<CompanionWindowLayer>,
     settings_path: String,
 }
 
@@ -2007,6 +2008,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
     let window_opacity = live2d_settings.as_ref().and_then(|l| l.window_opacity);
     let click_through = live2d_settings.as_ref().and_then(|l| l.click_through);
+    let window_layer = live2d_settings.as_ref().and_then(|l| l.window_layer);
 
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
@@ -2016,6 +2018,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         window_scale,
         window_opacity,
         click_through,
+        window_layer,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2335,6 +2338,99 @@ fn apply_companion_click_through(app: &AppHandle, enabled: bool) -> Result<(), S
     Ok(())
 }
 
+/// 保存角色窗口显示层级并即时应用（内部实现，供 command 与原生菜单事件共用）。
+fn apply_companion_layer(app: &AppHandle, layer: CompanionWindowLayer) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.window_layer = Some(layer);
+    settings::save_settings(&settings)?;
+    apply_companion_layer_platform(app, layer);
+    let _ = app.emit("companion-layer-changed", layer);
+    rebuild_tray_menu(app);
+    Ok(())
+}
+
+/// 读取持久化的角色窗口显示层级（缺省置顶）。
+fn current_companion_layer() -> CompanionWindowLayer {
+    settings::load_settings()
+        .ok()
+        .flatten()
+        .and_then(|s| s.live2d)
+        .and_then(|l| l.window_layer)
+        .unwrap_or_default()
+}
+
+/// macOS 置底层级：-1 = 普通应用窗口(0)之下、桌面图标(-2147483623)与壁纸(-2147483624)之上。
+/// 模型作为背景装饰浮在桌面上：绝不被壁纸图片盖住（壁纸级同层不可靠），桌面图标仍可点击。
+#[cfg(target_os = "macos")]
+const MACOS_COMPANION_BACK_LEVEL: i64 = -1;
+
+/// 按层级即时调整角色窗口的 z-order 与鼠标穿透（平台相关；启动与运行时共用）。
+///
+/// macOS 走 NSPanel（set_level + set_ignores_mouse_events），不混用 tauri 的
+/// set_always_on_top（它会先把 level 置回 0，与壁纸级冲突）。注意：不要在这里切换
+/// NSPanel 的 floating 属性——运行时切换会破坏存活 WKWebView 的渲染（模型消失）。
+#[cfg(target_os = "macos")]
+fn apply_companion_layer_platform(app: &AppHandle, layer: CompanionWindowLayer) {
+    use tauri_nspanel::{ManagerExt, PanelLevel};
+
+    let Ok(panel) = app.get_webview_panel("companion") else {
+        return;
+    };
+    match layer {
+        CompanionWindowLayer::Front => {
+            // 浮层（4），与建窗时的 always_on_top 行为一致。
+            panel.set_level(i64::from(PanelLevel::Floating));
+            panel.set_ignores_mouse_events(false);
+        }
+        CompanionWindowLayer::Back => {
+            // 图标之上：-1 在普通窗口之下、桌面图标与壁纸之上。不切换 NSPanel floating 属性——
+            // z-order 完全由 set_level 控制（浮层属性不参与层级），运行时切换 floating 会破坏存活 WebView 渲染。
+            panel.set_level(MACOS_COMPANION_BACK_LEVEL);
+            panel.set_ignores_mouse_events(true); // 完全点穿
+        }
+    }
+}
+
+/// 按层级即时调整角色窗口的 z-order 与鼠标穿透（平台相关；启动与运行时共用）。
+#[cfg(windows)]
+fn apply_companion_layer_platform(app: &AppHandle, layer: CompanionWindowLayer) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+    };
+
+    let Some(window) = app.get_webview_window("companion") else {
+        return;
+    };
+    let front = matches!(layer, CompanionWindowLayer::Front);
+    let _ = window.set_always_on_top(front); // 置顶 = WS_EX_TOPMOST；置底 = 清除
+    let _ = window.set_ignore_cursor_events(!front); // 置底 = WS_EX_TRANSPARENT 点穿
+    if !front {
+        let Ok(hwnd) = window.hwnd() else { return };
+        unsafe {
+            // 一次性把窗口沉到 Z 序底部；hide/show 后由 toggle_companion_window 按 layer 重放。
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+/// 按层级即时调整角色窗口的 z-order 与鼠标穿透（平台相关；启动与运行时共用）。
+///
+/// Linux：置底能力暂未实现（X11 `_NET_WM_STATE_BELOW` 与 Wayland 支持为 future work），
+/// 仅保证可编译与持久化，运行时不做窗口层级调整。
+#[cfg(target_os = "linux")]
+fn apply_companion_layer_platform(_app: &AppHandle, layer: CompanionWindowLayer) {
+    tracing::debug!("角色窗口层级切换在 Linux 上暂不支持置底（{layer:?}）");
+}
+
 /// 把原生菜单项 id 解析为缩放比例。
 fn scale_from_id(id: &str) -> Option<f64> {
     match id {
@@ -2369,6 +2465,15 @@ fn opacity_from_id(id: &str) -> Option<f64> {
     }
 }
 
+/// 把原生菜单项 id 解析为显示层级。
+fn layer_from_id(id: &str) -> Option<CompanionWindowLayer> {
+    match id {
+        "layer_front" => Some(CompanionWindowLayer::Front),
+        "layer_back" => Some(CompanionWindowLayer::Back),
+        _ => None,
+    }
+}
+
 /// 设置并持久化角色窗口缩放比例（1.0 = 100%）。
 ///
 /// 由设置面板（或角色窗口自身）调用：写入 `~/.zapmomo/settings.toml` 的
@@ -2396,6 +2501,16 @@ fn set_companion_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
 #[tauri::command]
 fn set_companion_click_through(app: AppHandle, enabled: bool) -> Result<(), String> {
     apply_companion_click_through(&app, enabled)
+}
+
+/// 设置并持久化角色窗口显示层级（置顶/置底），并即时应用到角色窗口。
+///
+/// 由设置面板调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].window_layer`，
+/// 并通过 `companion-layer-changed` 事件通知角色窗口；z-order 与点穿由
+/// `apply_companion_layer_platform` 平台实现即时调整。
+#[tauri::command]
+fn set_companion_layer(app: AppHandle, layer: CompanionWindowLayer) -> Result<(), String> {
+    apply_companion_layer(&app, layer)
 }
 
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
@@ -2452,14 +2567,17 @@ fn handle_menu(app: &AppHandle, id: &str) {
                 let _ = apply_companion_scale(app, scale);
             } else if let Some(opacity) = opacity_from_id(id) {
                 let _ = apply_companion_opacity(app, opacity);
+            } else if let Some(layer) = layer_from_id(id) {
+                let _ = apply_companion_layer(app, layer);
             }
         }
     }
 }
 
-/// 构建角色窗口的右键菜单（窗口尺寸/透明度子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
+/// 构建角色窗口的右键菜单（窗口尺寸/透明度/显示层级子菜单 + 打开设置 / 隐藏角色 / 重启 / 退出）。
 fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (scale_submenu, opacity_submenu) = build_metric_submenus(app)?;
+    let layer_submenu = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "打开设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide_companion", "隐藏角色", true, None::<&str>)?;
@@ -2470,6 +2588,7 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &scale_submenu,
             &opacity_submenu,
+            &layer_submenu,
             &click_through,
             &open_settings,
             &hide,
@@ -2482,9 +2601,10 @@ fn build_companion_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 /// 托盘 id（档位变化后 `tray_by_id` 定位托盘并重建菜单）。
 const TRAY_ID: &str = "zapmomo-tray";
 
-/// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度、打开设置、重启、退出。
+/// 构建托盘菜单：显示/隐藏角色、窗口尺寸/透明度/显示层级、打开设置、重启、退出。
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (tray_scale, tray_opacity) = build_metric_submenus(app)?;
+    let tray_layer = build_layer_submenu(app)?;
     let click_through = build_click_through_item(app)?;
     let toggle_companion =
         MenuItem::with_id(app, "toggle_companion", "显示/隐藏角色", true, None::<&str>)?;
@@ -2497,6 +2617,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &toggle_companion,
             &tray_scale,
             &tray_opacity,
+            &tray_layer,
             &click_through,
             &open_settings,
             &restart,
@@ -2569,6 +2690,32 @@ fn build_click_through_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wr
     )
 }
 
+/// 构建「显示层级」子菜单（角色右键菜单与托盘菜单共用）。
+///
+/// 用 `CheckMenuItem`：构建时读当前 settings 的层级，命中的项打勾。
+/// 切换后 `apply_companion_layer` 会 `rebuild_tray_menu` 刷新勾选态；
+/// 角色右键菜单每次弹出都重建，天然最新。
+fn build_layer_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let cur = current_companion_layer();
+    let front = CheckMenuItem::with_id(
+        app,
+        "layer_front",
+        "置顶",
+        true,
+        cur == CompanionWindowLayer::Front,
+        None::<&str>,
+    )?;
+    let back = CheckMenuItem::with_id(
+        app,
+        "layer_back",
+        "置底",
+        true,
+        cur == CompanionWindowLayer::Back,
+        None::<&str>,
+    )?;
+    Submenu::with_items(app, "显示层级", true, &[&front, &back])
+}
+
 /// 构建「窗口尺寸」「透明度」两个档位子菜单（角色右键菜单与托盘菜单共用）。
 ///
 /// 档位用 `CheckMenuItem`：构建时读当前 settings，命中的档位打勾。
@@ -2630,6 +2777,10 @@ fn toggle_companion_window(app: &AppHandle) {
         let _ = window.hide();
     } else {
         let _ = window.show();
+        // 置底时 show 会把窗口顶到 Z 序顶部：Windows 需压回底部（macOS show 不改 level/点穿）。
+        if cfg!(windows) && current_companion_layer() == CompanionWindowLayer::Back {
+            apply_companion_layer_platform(app, CompanionWindowLayer::Back);
+        }
         let _ = window.set_focus();
     }
 }
@@ -4008,6 +4159,7 @@ pub fn run() {
             set_companion_scale,
             set_companion_opacity,
             set_companion_click_through,
+            set_companion_layer,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,
@@ -4164,6 +4316,11 @@ pub fn run() {
                 && let Some(window) = app.get_webview_window("companion")
             {
                 let _ = window.set_ignore_cursor_events(true);
+            }
+            // 恢复持久化的显示层级（置顶/置底）并即时应用。
+            // 必须在 macOS 面板转换之后调用（此时 panel handle 已注册，get_webview_panel 才命中）。
+            if let Some(layer) = live2d.as_ref().and_then(|l| l.window_layer) {
+                apply_companion_layer_platform(app.handle(), layer);
             }
 
             // 后台旧版迁移：库为空且旧 [live2d].model_dir 存在时，把模型复制进托管目录并
@@ -4354,5 +4511,47 @@ mod companion_opacity_tests {
         assert_eq!(clamp_opacity(0.2), 0.2);
         assert_eq!(clamp_opacity(1.0), 1.0);
         assert_eq!(clamp_opacity(0.65), 0.65);
+    }
+}
+
+#[cfg(test)]
+mod companion_layer_tests {
+    use super::{CompanionWindowLayer, layer_from_id};
+
+    #[test]
+    fn test_layer_front_is_default() {
+        assert_eq!(CompanionWindowLayer::default(), CompanionWindowLayer::Front);
+    }
+
+    #[test]
+    fn test_layer_from_id() {
+        assert_eq!(
+            layer_from_id("layer_front"),
+            Some(CompanionWindowLayer::Front)
+        );
+        assert_eq!(
+            layer_from_id("layer_back"),
+            Some(CompanionWindowLayer::Back)
+        );
+        assert_eq!(layer_from_id("opacity_100"), None);
+        assert_eq!(layer_from_id("unknown"), None);
+    }
+
+    #[test]
+    fn test_layer_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&CompanionWindowLayer::Front).unwrap(),
+            "\"front\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CompanionWindowLayer::Back).unwrap(),
+            "\"back\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CompanionWindowLayer>("\"back\"").unwrap(),
+            CompanionWindowLayer::Back
+        );
+        // 未知值应解析失败（避免前端传错静默落到 Front）
+        assert!(serde_json::from_str::<CompanionWindowLayer>("\"bogus\"").is_err());
     }
 }

@@ -7,7 +7,7 @@
 use crate::tts;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct Announcer {
     tx: SyncSender<String>,
@@ -26,7 +26,11 @@ impl Announcer {
         sample_rate: u32,
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
-        let handle = std::thread::spawn(move || run_worker(rx, synth, play, sample_rate));
+        // 命名线程便于日志定位（同 voice 合成线程的 voice-tts 命名惯例）
+        let handle = std::thread::Builder::new()
+            .name("dsh-announce".to_string())
+            .spawn(move || run_worker(rx, synth, play, sample_rate))
+            .expect("spawn dsh-announce 线程失败");
         Self {
             tx,
             _handle: Mutex::new(Some(handle)),
@@ -67,9 +71,15 @@ impl Announcer {
                 if let Ok(mut speaker) = crate::voice::player::Speaker::try_new() {
                     use crate::voice::player::AudioPlayer;
                     speaker.play(samples, rate);
-                    // 阻塞到播完（worker 串行语义）
-                    while !speaker.drained() {
+                    // 阻塞到播完（worker 串行语义）；有界等待：设备中途失效
+                    // （拔线/驱动错误）时 `drained()` 可能永不为 true，60s 后放弃
+                    // 本条并告警，避免 worker 永久卡死导致语音播报静默失效。
+                    let deadline = Instant::now() + Duration::from_secs(60);
+                    while !speaker.drained() && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(50));
+                    }
+                    if !speaker.drained() {
+                        tracing::warn!("dsh 播报等待播放结束超时，放弃本条");
                     }
                 } else {
                     tracing::warn!("dsh 播报无法打开音频输出设备，跳过语音");

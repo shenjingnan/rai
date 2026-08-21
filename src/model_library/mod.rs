@@ -181,6 +181,10 @@ pub struct Selections {
 pub struct RuntimeActuals<'a> {
     pub kws: Option<&'a Path>,
     pub asr: Option<&'a Path>,
+    /// TTS 无常驻引擎：actual = 当前 selection（与 current 判定同源）
+    pub tts: Option<&'a Path>,
+    /// 是否有合成线程在跑（在飞合成用旧配置完成，下次合成读新配置）
+    pub tts_active: bool,
     pub llm: Option<&'a Path>,
     pub llm_switching: bool,
     pub llm_switch_target: Option<&'a Path>,
@@ -358,7 +362,7 @@ pub fn is_path_current(mt: ModelType, path: &Path) -> bool {
     selection_path(mt).is_some_and(|p| paths_equal(&p, path))
 }
 
-/// 设置当前模型（只写 `model_dir` / `model_path`，绝不写 enabled）。
+/// 设置当前模型（写 `model_dir` / `model_path` 并重置文件级覆盖，绝不写 enabled）。
 pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
     let path_str = path.to_string_lossy().to_string();
     update_settings(|cfg| match mt {
@@ -466,7 +470,7 @@ pub fn enrich_runtime_status(models: &mut [LibraryModel], a: &RuntimeActuals) {
             ModelType::Kws => (a.kws, a.kws.is_some()),
             ModelType::Asr => (a.asr, a.asr.is_some()),
             ModelType::Llm => (a.llm, a.llm.is_some()),
-            ModelType::Tts => (None, false),
+            ModelType::Tts => (a.tts, a.tts_active),
         };
         let switching = m.model_type == ModelType::Llm
             && a.llm_switching
@@ -1328,6 +1332,66 @@ mod tests {
             runtime_status(Some(b), None, false, true, false),
             RuntimeStatus::Switching
         );
+    }
+
+    /// 测试用最小 TTS LibraryModel（enrich 只读 current / model_type / local_path）。
+    fn tts_library_model(current: bool) -> LibraryModel {
+        LibraryModel {
+            id: "tts-zipvoice-distill-int8".to_string(),
+            name: "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia".to_string(),
+            display_name: "ZipVoice TTS zh-en".to_string(),
+            model_type: ModelType::Tts,
+            runtime: "sherpa-onnx".to_string(),
+            format: "ONNX".to_string(),
+            description: String::new(),
+            languages: vec![],
+            tags: vec![],
+            parameter_count: None,
+            quantization: None,
+            version: "distill-int8".to_string(),
+            size_bytes: None,
+            homepage: None,
+            downloadable: true,
+            source: ModelSource::Registry,
+            ownership: StorageOwnership::Managed,
+            install_state: InstallState::Installed,
+            current,
+            runtime_status: RuntimeStatus::Inactive,
+            local_path: Some("/models/zipvoice".to_string()),
+            installed_at: None,
+            install_id: None,
+            repo_id: None,
+            compatibility: None,
+        }
+    }
+
+    #[test]
+    fn test_enrich_runtime_status_tts() {
+        let dir = Path::new("/models/zipvoice");
+        // 合成中：当前模型 Active、非当前恒 Inactive
+        let mut models = vec![tts_library_model(true), tts_library_model(false)];
+        let actuals = RuntimeActuals {
+            kws: None,
+            asr: None,
+            tts: Some(dir),
+            tts_active: true,
+            llm: None,
+            llm_switching: false,
+            llm_switch_target: None,
+            llm_load_error_path: None,
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Active);
+        assert_eq!(models[1].runtime_status, RuntimeStatus::Inactive);
+
+        // 空闲（无合成线程）：当前模型 Inactive
+        let mut models = vec![tts_library_model(true)];
+        let actuals = RuntimeActuals {
+            tts_active: false,
+            ..actuals
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Inactive);
     }
 
     #[test]

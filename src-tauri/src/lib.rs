@@ -3377,6 +3377,7 @@ fn list_model_library(
     kws: State<'_, ListenState>,
     asr: State<'_, AsrListenState>,
     llm: State<'_, LlmState>,
+    tts: State<'_, TtsSynthesizeState>,
 ) -> Result<Vec<LibraryModel>, String> {
     let mut models = model_library::list_models();
     let kws_actual = kws.active_model_dir();
@@ -3390,9 +3391,14 @@ fn list_model_library(
         .ok()
         .and_then(|e| e.as_ref().and_then(|e| e.last_load_error()))
         .map(|e| e.model_path);
+    // TTS 无常驻引擎：actual = 当前 selection（与 current 判定同源，写配置即切换），
+    // active = 是否有合成线程在跑。
+    let tts_actual = model_library::selection_path(LibModelType::Tts);
     let actuals = model_library::RuntimeActuals {
         kws: kws_actual.as_deref(),
         asr: asr_actual.as_deref(),
+        tts: tts_actual.as_deref(),
+        tts_active: tts.is_synthesizing(),
         llm: llm_actual.as_deref(),
         llm_switching: llm.is_switching(),
         llm_switch_target: llm_target.as_deref(),

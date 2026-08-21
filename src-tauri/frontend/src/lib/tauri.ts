@@ -188,6 +188,7 @@ export const api = {
     invoke<void>("set_companion_click_through", args),
   setCompanionLayer: (args: { layer: CompanionWindowLayer }) =>
     invoke<void>("set_companion_layer", args),
+  setCompanionLocked: (args: { enabled: boolean }) => invoke<void>("set_companion_locked", args),
   showCompanionMenu: (args: { x: number; y: number }) => invoke<void>("show_companion_menu", args),
   getHideDockIcon: () => invoke<boolean>("get_hide_dock_icon"),
   setHideDockIcon: (args: { hide: boolean }) => invoke<void>("set_hide_dock_icon", args),
@@ -280,6 +281,10 @@ export function onCompanionLayerChanged(
   handler: (layer: CompanionWindowLayer) => void,
 ): Promise<UnlistenFn> {
   return listen<CompanionWindowLayer>("companion-layer-changed", (e) => handler(e.payload));
+}
+
+export function onCompanionLockedChanged(handler: (locked: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("companion-locked-changed", (e) => handler(e.payload));
 }
 
 export function onModelLibraryDownloadProgress(

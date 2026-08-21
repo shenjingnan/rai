@@ -389,6 +389,7 @@ export function CompanionPage() {
   const [opacityPercent, setOpacityPercent] = useState(100);
   const [clickThrough, setClickThrough] = useState(false);
   const [layer, setLayer] = useState<CompanionWindowLayer>("front");
+  const [locked, setLocked] = useState(false);
   useEffect(() => {
     void api
       .getLive2dConfig()
@@ -398,6 +399,7 @@ export function CompanionPage() {
         // 旧后端 / 测试桩可能不返回该字段，兜底为关闭。
         setClickThrough(cfg.click_through ?? false);
         if (cfg.window_layer) setLayer(cfg.window_layer);
+        setLocked(cfg.locked ?? false);
       })
       .catch(() => {});
   }, []);
@@ -419,6 +421,10 @@ export function CompanionPage() {
     const next: CompanionWindowLayer = checked ? "front" : "back";
     setLayer(next);
     void api.setCompanionLayer({ layer: next });
+  }, []);
+  const handleToggleLocked = useCallback((enabled: boolean) => {
+    setLocked(enabled);
+    void api.setCompanionLocked({ enabled });
   }, []);
 
   const handleImport = useCallback(async () => {
@@ -580,10 +586,22 @@ export function CompanionPage() {
                   onCheckedChange={handleToggleClickThrough}
                 />
               </div>
+              {/* 位置锁定（窗口级） */}
+              <div className="flex w-full items-center gap-2">
+                <span className="shrink-0">锁定位置</span>
+                <Switch
+                  aria-label="锁定位置"
+                  checked={locked}
+                  onCheckedChange={handleToggleLocked}
+                />
+                <span className="flex-1 text-xs text-muted-foreground">
+                  开启后禁止拖动窗口，滚轮缩放与右键菜单不受影响
+                </span>
+              </div>
             </div>
-              <p className="text-xs leading-relaxed text-muted-foreground/80">
-                开启后鼠标点击穿过模型直达背后内容；拖动、滚轮缩放与右键菜单将失效，可随时在此或托盘菜单关闭
-              </p>
+            <p className="text-xs leading-relaxed text-muted-foreground/80">
+              开启后鼠标点击穿过模型直达背后内容；拖动、滚轮缩放与右键菜单将失效，可随时在此或托盘菜单关闭
+            </p>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col">
             {/* 已是当前使用时不显示 CTA（左侧「使用中」徽标已标识） */}

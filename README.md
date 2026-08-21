@@ -16,9 +16,9 @@
     <br />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License: GPL-3.0" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust" alt="Rust 1.97+" /></a>
-    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows 支持" /></a>
-    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS 支持" /></a>
-    <a href="#下载桌面应用"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux 支持" /></a>
+    <a href="#应用下载"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows 支持" /></a>
+    <a href="#应用下载"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS 支持" /></a>
+    <a href="#应用下载"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux 支持" /></a>
   </p>
 </div>
 
@@ -34,7 +34,9 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
   <p><em>桌面应用「概览」页：展示当前伙伴与 AI 能力状态</em></p>
 </div>
 
-## 特性
+<details>
+
+<summary>✨ 特性一览</summary>
 
 - **语音唤醒（KWS）** — 说唤醒词即可唤醒伙伴；自定义唤醒词直接输中文，自动转拼音，无需任何外部工具
 - **语音识别（ASR）** — 中英双语实时转文字幕，自动加标点、支持热词
@@ -46,7 +48,9 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **deepseek-harness 集成** — 桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 任务状态，任务开始 / 完成 / 失败 / 中断时以气泡 + 语音播报（[使用说明](docs/content/docs/desktop-app/dsh-bridge.mdx)）
 - **本地优先** — 各模型默认全部本地运行，对话数据不出设备
 
-## 下载桌面应用
+</details>
+
+## 应用下载
 
 点击下方按钮直接下载对应系统的最新版安装包（无需登录 GitHub，自动指向最新 Release）：
 
@@ -61,6 +65,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - Windows 企业批量部署可选 [MSI 版](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Windows_x64.msi)；Linux 可选 [AppImage](https://github.com/shenjingnan/zapmomo/releases/latest/download/ZapMomo_Linux_amd64.AppImage) 免安装直接运行。
 - 完整版本与更新日志见 [Releases](https://github.com/shenjingnan/zapmomo/releases)。
 - 🍎 Mac 不确定芯片？左上角  →「关于本机」：显示「芯片：Apple M…」选 arm64，显示「处理器：Intel…」选 x64。
+- 📦 模型不随安装包分发：首次使用在应用「模型」页一键下载（LLM 在「AI 大脑（LLM）配置」页）。
 
 ### macOS 首次打开（未签名）
 
@@ -72,20 +77,9 @@ xattr -cr "/Applications/ZapMomo.app"
 
 随后启动即可正常打开。若 App 不在「应用程序」，把命令里的路径换成实际位置；或右键 App →「打开」→ 再次点击「打开」。
 
-## 快速上手
-
-1. **安装** — 按上表下载并安装；macOS 首次打开需先执行上文命令解除拦截。
-2. **下载模型** — KWS / ASR / TTS / LLM 模型不随安装包分发，首次使用在应用「模型」页一键下载（LLM 预设在「AI 大脑（LLM）配置」页），全程无需命令行。
-3. **开始使用** —
-   - **对话**：「对话」页与 AI 文字聊天，对话记录自动保存；
-   - **语音会话**：说出唤醒词唤醒伙伴，即可开始语音对话（可随时打断、免唤醒续聊）；
-   - **伙伴**：「伙伴」页导入与切换 Live2D 角色，角色窗口常驻桌面。
-
-其余能力（KWS 监听、ASR 转写、TTS 合成、LLM 配置）均可在控制面板的「模型」「设置」页中直接使用与调整。
-
 <details>
 
-<summary>📖 功能说明（语音会话 / AI 大脑 / Live2D 角色 / 桌宠播报 / 自启动 / 重启）</summary>
+<summary>📖 功能说明（语音会话 / AI 大脑 / Live2D 角色 / 自启动 / 重启）</summary>
 
 ### 语音会话
 
@@ -112,16 +106,6 @@ xattr -cr "/Applications/ZapMomo.app"
 - **格式** — 支持 Cubism 2 / 3 / 4 / 5（`.model3.json` / `model.json`）
 - **模型来源** — 自备 Live2D 模型目录，在「伙伴」页导入；默认目录 `~/.zapmomo/models/live2d`
 
-### deepseek-harness 集成（dsh 桥）
-
-桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。接入一条命令：
-
-```bash
-dsh plugin --profile web add @zapmomo-ai/dsh-plugin
-```
-
-装完重启 `dsh web` 即生效（设置页「外部感知 · dsh 桥」默认启用）。详见[文档站](docs/content/docs/desktop-app/dsh-bridge.mdx)。
-
 ### 开机自启动
 
 设置页「通用」与托盘菜单均提供「开机自启动」：登录系统后自动启动 ZapMomo，桌宠静默出现（设置窗口不自动弹出）。注册的是系统级启动项（macOS 登录项 / Windows 启动应用 / Linux autostart），也可在系统设置中统一管理；重复启动时会激活已有实例，不会出现两个桌宠。
@@ -132,7 +116,19 @@ dsh plugin --profile web add @zapmomo-ai/dsh-plugin
 
 </details>
 
-## 高级配置
+## deepseek-harness 集成（dsh 桥）
+
+桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。接入一条命令：
+
+```bash
+dsh plugin --profile web add @zapmomo-ai/dsh-plugin
+```
+
+装完重启 `dsh web` 即生效（设置页「外部感知 · dsh 桥」默认启用）。详见[文档站](docs/content/docs/desktop-app/dsh-bridge.mdx)。
+
+<details>
+
+<summary>⚙️ 高级配置（`~/.zapmomo/settings.toml` 配置段一览）</summary>
 
 桌面应用的配置存储在 `~/.zapmomo/settings.toml`（TOML 格式），常用设置（麦克风设备、TTS 音色、语音会话参数等）均可在应用「设置」页内调整；以下配置段也可直接编辑文件覆盖默认值（支持 `${env.VAR}` 环境变量引用）：
 
@@ -147,6 +143,8 @@ dsh plugin --profile web add @zapmomo-ai/dsh-plugin
 | `[dsh]` | deepseek-harness 集成：桥开关、监听端口、语音播报与对话记录开关 |
 
 完整配置项与 CLI 命令参考见[贡献指南](CONTRIBUTING.md)。
+
+</details>
 
 ## 参与开发
 

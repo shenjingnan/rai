@@ -16,22 +16,21 @@
     <br />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License: GPL-3.0" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust" alt="Rust 1.97+" /></a>
-    <a href="#download-the-desktop-app"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows support" /></a>
-    <a href="#download-the-desktop-app"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS support" /></a>
-    <a href="#download-the-desktop-app"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux support" /></a>
+    <a href="#app-download"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows support" /></a>
+    <a href="#app-download"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS support" /></a>
+    <a href="#app-download"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux support" /></a>
   </p>
 </div>
 
 An open-source, real-time desktop **AI companion** with voice, memory, and a customizable virtual character.
 
-> 📚 Documentation is currently Chinese-only: [docs site](docs/) — quick start, KWS / ASR / TTS / LLM, configuration, desktop app, and the contributing guide.
-
 <div align="center">
   <img src="docs/public/screenshots/home.png" alt="ZapMomo desktop app Overview page" width="760" />
-  <p><em>Desktop app "Overview" page: current companion and AI capability status</em></p>
 </div>
 
-## Features
+<details>
+
+<summary>✨ Features</summary>
 
 - **Voice Wake Word (KWS)** — sherpa-onnx based zipformer keyword spotting with live microphone listening and offline wav detection; custom keywords typed directly in Chinese, auto-converted to pinyin tokens
 - **Speech Recognition (ASR)** — sherpa-onnx streaming zipformer recognition (bilingual Chinese-English), real-time captions with automatic punctuation and hotword boosting
@@ -40,9 +39,12 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **Voice Session** — wake word → ASR → LLM sentence-level streaming reply → TTS playback, with wake-word barge-in and hands-free follow-up
 - **Live2D Virtual Character** — persistent character window (Cubism 2/3/4/5) with position memory and percentage scaling; drag without stealing focus
 - **Desktop App** — Tauri 2 GUI (multi-page control panel: Overview / Chat / Companion / Models / Settings, plus a persistent character window), with installers for Windows / macOS / Linux
+- **deepseek-harness Integration** — the desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time, announcing task started / finished / failed / interrupted with a speech bubble + voice ([usage guide](docs/content/docs/desktop-app/dsh-bridge.mdx))
 - **CLI** — `kws` / `asr` / `tts` / `llm` / `voice` subcommands covering every capability, with bash / zsh / fish / powershell / elvish autocompletion
 
-## Download the Desktop App
+</details>
+
+## App Download
 
 Click a button below to grab the latest installer for your system (no GitHub login required; always points to the latest release):
 
@@ -69,7 +71,9 @@ xattr -cr "/Applications/ZapMomo.app"
 
 After that the app launches normally. If the app is not in "Applications", replace the path with its actual location; or right-click the app → "Open" → click "Open" again.
 
-## Keyword Wake Word (KWS)
+<details>
+
+<summary>🎙️ Keyword Wake Word (KWS)</summary>
 
 Integrates a sherpa-onnx keyword-spotting model (bilingual Chinese-English zipformer): say the wake word → the app reacts.
 
@@ -143,7 +147,11 @@ L AY1 T AH1 P @LIGHT_UP                  # English: ARPAbet phonemes
 
 v1 ships with the model's bundled bilingual keyword set (see `test_wavs/keywords.txt`).
 
-## Speech Recognition (ASR)
+</details>
+
+<details>
+
+<summary>🗣️ Speech Recognition (ASR)</summary>
 
 Integrates a sherpa-onnx streaming ASR model (bilingual Chinese-English zipformer) that turns microphone audio into text in real time (code-switching supported).
 
@@ -203,7 +211,11 @@ tokens  = "tokens.txt"
 debug = false
 ```
 
-## Text-to-Speech (TTS)
+</details>
+
+<details>
+
+<summary>🔊 Text-to-Speech (TTS)</summary>
 
 Integrates sherpa-onnx's ZipVoice zero-shot voice-cloning model (bilingual Chinese-English) to synthesize text into wav (offline batch synthesis, no streaming feed).
 
@@ -255,7 +267,11 @@ num_threads = 2                           # Inference threads
 debug = false
 ```
 
-## Local Large Language Model (LLM)
+</details>
+
+<details>
+
+<summary>🧠 Local LLM</summary>
 
 A local LLM based on llama.cpp (Rust bindings `llama-cpp-2`) with streaming chat and agent tool calls; alternatively connect to a remote API or `llama-server` via the OpenAI-compatible `/v1/responses` interface.
 
@@ -314,7 +330,11 @@ auto_load = false                  # Auto-load the model on app startup
 # model = "qwen3-4b"                      # Model name
 ```
 
-## Voice Session
+</details>
+
+<details>
+
+<summary>💬 Voice Session</summary>
 
 Chains KWS / ASR / LLM / TTS into one complete conversation pipeline: **wake word → recognize → think → sentence-level streaming playback**.
 sherpa-onnx's TTS only synthesizes whole utterances at once, so "streaming output" is approximated by a sentence-level pipeline: LLM streams tokens → sentence splitting → a dedicated synthesis thread synthesizes sentence by sentence → plays while synthesizing.
@@ -352,6 +372,8 @@ follow_up = true               # Auto-listen after a reply finishes (hands-free 
 welcome_text = "你好，我在。"  # Welcome message after waking
 ```
 
+</details>
+
 ## Desktop App (Tauri 2)
 
 A desktop GUI reusing the same KWS / ASR / TTS / LLM / Voice / audio / configuration logic, composed of a "Control Panel" + a "Persistent Character Window":
@@ -373,7 +395,9 @@ Desktop code lives in `src-tauri/` (frontend is React + Vite + TypeScript). For 
 - **Packaged (production)** — works fine: frontend assets are embedded (`asset://`) and load directly after restart.
 - **Dev mode (`pnpm tauri dev`)** — the new process **white-screens** after restart (known Tauri issue [tauri#6163](https://github.com/tauri-apps/tauri/issues/6163)); rerun `pnpm tauri dev` manually when you need a restart. See the [contributing guide](docs/content/docs/contributing/index.mdx) (Chinese).
 
-### Live2D Virtual Character
+<details>
+
+<summary>🎭 Live2D Virtual Character</summary>
 
 A persistent character window: renders a Live2D character (breathing / blinking auto animations), separate from the settings panel and floating on its own.
 
@@ -391,6 +415,18 @@ model_dir = "/path/to/live2d-model"      # Model root directory (containing .mod
 window_position = { x = 100, y = 100 }   # Character window position memory
 window_scale = 1.0                       # Window scaling (0.25 ~ 2.0)
 ```
+
+</details>
+
+### deepseek-harness Integration (dsh Bridge)
+
+The desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time: when a task **starts / finishes / fails / is interrupted**, the Live2D character announces it with a speech bubble + voice. It takes one command to connect:
+
+```bash
+dsh plugin --profile web add @zapmomo-ai/dsh-plugin
+```
+
+Then restart `dsh web` (the "External sensing · dsh bridge" settings section is enabled by default). See the [docs site page](docs/content/docs/desktop-app/dsh-bridge.mdx) (Chinese) for details.
 
 ## Contributing
 

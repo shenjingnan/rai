@@ -1,92 +1,37 @@
 ---
 title: deepseek-harness 集成（dsh 桥）
-description: 让桌宠实时感知 deepseek-harness 任务状态，以气泡 + 语音播报
+description: 让桌宠实时感知 dsh 任务状态，以气泡 + 语音播报
 ---
 
 # deepseek-harness 集成（dsh 桥）
 
-dsh（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）是 DeepSeek 的开源任务执行框架。ZapMomo 通过 **dsh 桥** 接收其任务状态事件，让桌宠在你运行 dsh 任务时实时播报「任务开始 / 完成 / 失败 / 中断」。
+桌宠实时感知 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）任务状态：任务开始 / 完成 / 失败 / 中断时，Live2D 角色以文字气泡 + 语音播报。
 
-## 工作原理
+## 安装
 
-ZapMomo 在应用进程内启动一个**仅绑定 `127.0.0.1` 的极小 HTTP 服务**；dsh 侧安装一个 Cordis 插件，在任务状态翻转的瞬间把语义化事件 POST 到 `POST /dsh/events`（带 Bearer token 鉴权）。事件毫秒级到达、无需轮询，桌宠据此以文字气泡 + 语音播报反馈。
-
-```
-deepseek-harness (dsh)
-   │  dsh 插件（@zapmomo-ai/dsh-plugin）
-   │  POST /dsh/events + Bearer token
-   ▼
-ZapMomo ── dsh 桥（仅 127.0.0.1，发现文件记录端口与 token）
-   │  任务开始 / 完成 / 失败 / 中断
-   ▼
-桌宠：Live2D 气泡 + 语音播报
-```
-
-启动时端口与 token 写入发现文件 `~/.zapmomo/runtime/dsh-bridge.json`（权限 0600）。插件每次发送前现读该文件；ZapMomo 未运行时插件**静默跳过**（不报错、不影响 dsh 宿主）。
-
-## 快速接入
-
-### 前置条件
-
-- **ZapMomo** 已运行（Tauri 应用，`[dsh]` 段默认启用）
-- 已安装 **deepseek-harness**（`dsh` CLI）
-
-### 安装插件
+接入只需在 dsh 侧装一个插件：
 
 ```bash
-# 从 npm（推荐）
 dsh plugin --profile web add @zapmomo-ai/dsh-plugin
-
-# 从源码（开发/调试，link 模式改动即时生效；<zapmomo> 换成你的仓库路径）
-dsh plugin --profile web add link:<zapmomo>/integrations/dsh-plugin
 ```
 
-装完因声明了 `dsh.bundle.patch`，插件**自动**进入 profile bundles，无需手动改 patch。重启 `dsh web` 生效。
+装完重启 `dsh web` 即生效。ZapMomo 设置页「外部感知 · dsh 桥」默认已启用，无需额外配置。
 
-### 验证
+## 验证
 
-1. 确认 ZapMomo 设置页「外部感知 · dsh 桥」区块显示「桥运行中 · 端口 xxx」
-2. 点击「测试播报」，桌宠应弹出气泡并播报
-3. 在 dsh 中运行一个任务，观察任务开始 / 结束时桌宠是否播报
+设置页点「测试播报」，桌宠弹气泡并播报即链路通；之后 dsh 任务开始 / 结束时桌宠会自动播报。
 
-## 设置
+## 配置（可选）
 
-设置页「外部感知 · dsh 桥」区块提供：
-
-| 设置项 | 说明 |
-| --- | --- |
-| 启用 dsh 桥 | 开关桥服务（loopback HTTP 监听） |
-| 事件语音播报 | 是否语音播报事件（语音会话进行中自动静音，只出气泡） |
-| 写入对话记录 | 事件是否写入对话记录 |
-| 测试播报 | 立即发送一条测试播报验证链路 |
-
-也可直接编辑 `~/.zapmomo/settings.toml` 的 `[dsh]` 段覆盖默认值：
+设置页可开关语音播报、是否写入对话记录；也可编辑 `~/.zapmomo/settings.toml` 的 `[dsh]` 段：
 
 | 配置项 | 缺省 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 是否启用桥服务（loopback HTTP 监听） |
-| `port` | `0` | 监听端口，`0` = 随机端口（推荐，避免冲突）；固定端口被占时自动回退随机端口 |
-| `voice_enabled` | `true` | 事件是否语音播报（voice 会话运行中只出气泡） |
+| `enabled` | `true` | 是否启用桥服务 |
+| `port` | `0` | 监听端口，`0` = 随机 |
+| `voice_enabled` | `true` | 事件是否语音播报（语音会话中只出气泡） |
 | `record_to_history` | `true` | 事件是否写入对话记录 |
 
-## 事件映射
+## 更多
 
-| dsh 事件 | 推送类型 | 桌宠播报 |
-| --- | --- | --- |
-| `agent/status` → `running` | `task-started` | 任务开始（title 取自会话最近一条 user/message，前 40 字符） |
-| `turn/end` → `reason.kind = completed` | `task-finished` | 任务完成 |
-| `turn/end` → `reason.kind = error` | `task-failed` | 任务失败（detail = `reason.error.message — code`，截 200） |
-| `turn/end` → 其它（aborted/interrupted/max-tokens/blocked） | `task-interrupted` | 任务中断 |
-
-> 推送纪律：插件每次发送前现读发现文件；POST 超时 1s、异常吞掉只打 debug——**绝不阻塞/影响 dsh 宿主**。桥侧对同 `(session_id, 类型)` 事件做窗口节流，防事件风暴 / dsh 重启重放。
-
-## 安全与隔离
-
-- 桥**仅绑定 loopback**（`127.0.0.1`），不对外暴露
-- 事件带 **Bearer token** 鉴权，token 由 ZapMomo 每次启动生成（sha256 一次性），存于 0600 权限的发现文件
-- 请求体上限 64KB，超限拒 `413`
-- 插件对发送失败静默处理，不会拖慢或中断 dsh 宿主
-
-## 开发与发布
-
-插件源码在 `integrations/dsh-plugin/`，完整的事件路径核对、开发与 npm 发布（OIDC Trusted Publishing）流程见 [dsh-plugin README](../../../../integrations/dsh-plugin/README.md)。
+事件映射、安全与隔离、插件开发与发布见 [dsh-plugin README](../../../../integrations/dsh-plugin/README.md)。

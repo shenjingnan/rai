@@ -113,7 +113,6 @@ export const api = {
   }) => invoke<void>("synthesize_tts", args),
   stopTts: () => invoke<void>("stop_tts"),
   isTtsSynthesizing: () => invoke<boolean>("is_tts_synthesizing"),
-  downloadTtsModel: () => invoke<void>("download_tts_model"),
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
   setTtsVoice: (voice: string | null) => invoke<void>("set_tts_voice", { voice }),
@@ -254,12 +253,6 @@ export function onTtsProgress(handler: (p: TtsProgress) => void): Promise<Unlist
 
 export function onTtsStopped(handler: (payload: ListenStopped) => void): Promise<UnlistenFn> {
   return listen<ListenStopped>("tts-stopped", (e) => handler(e.payload));
-}
-
-export function onTtsDownloadProgress(
-  handler: (payload: DownloadProgress) => void,
-): Promise<UnlistenFn> {
-  return listen<DownloadProgress>("tts-model-download-progress", (e) => handler(e.payload));
 }
 
 export function onLlmDownloadProgress(

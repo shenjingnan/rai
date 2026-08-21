@@ -3,7 +3,7 @@ use crate::config::settings::{TtsSettings, resolve_env_ref};
 ///
 /// 负责把 `settings.toml` 的 `[tts]` 表与 CLI flag 合并成一份已展开、已填默认值的
 /// `ResolvedTtsConfig`。优先级：CLI `--model-dir` > settings > 内置默认。
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// 模型包内默认文件名（sherpa-onnx 官方 zipvoice distill int8 打包版）。
@@ -35,12 +35,123 @@ pub const REQUIRED_FILES: [&str; 5] = [
     DEFAULT_LEXICON,
 ];
 
+/// TTS 模型类型（sherpa-onnx `OfflineTtsModelConfig` 的分支）。
+///
+/// 全链路显式传递：`[tts].model_type`（持久化）→ `ResolvedTtsConfig.model_type` →
+/// `TtsEngine` 构造分支 + 合成参数分支。默认 Zipvoice（零样本声音克隆）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsModelKind {
+    /// ZipVoice：参考音频零样本声音克隆（当前默认，本期 3 模型之一）
+    #[default]
+    Zipvoice,
+    Vits,
+    Matcha,
+    Kokoro,
+    Kitten,
+    Pocket,
+    Supertonic,
+}
+
+impl TtsModelKind {
+    /// snake_case 字符串（配置/JSON 直传）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Zipvoice => "zipvoice",
+            Self::Vits => "vits",
+            Self::Matcha => "matcha",
+            Self::Kokoro => "kokoro",
+            Self::Kitten => "kitten",
+            Self::Pocket => "pocket",
+            Self::Supertonic => "supertonic",
+        }
+    }
+
+    /// 解析 snake_case 字符串（与 `ModelType::from_str_value` 同款命名，避免与
+    /// `std::str::FromStr` 混淆）。
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "zipvoice" => Some(Self::Zipvoice),
+            "vits" => Some(Self::Vits),
+            "matcha" => Some(Self::Matcha),
+            "kokoro" => Some(Self::Kokoro),
+            "kitten" => Some(Self::Kitten),
+            "pocket" => Some(Self::Pocket),
+            "supertonic" => Some(Self::Supertonic),
+            _ => None,
+        }
+    }
+
+    /// 是否使用参考音频（声音克隆）语义：仅 ZipVoice 支持克隆，其余按 speaker id（sid）说话。
+    pub fn uses_reference_audio(&self) -> bool {
+        matches!(self, Self::Zipvoice)
+    }
+
+    /// 是否需要 espeak-ng 数据目录：本期 3 个模型仅 ZipVoice 需要。
+    pub fn requires_data_dir(&self) -> bool {
+        matches!(self, Self::Zipvoice)
+    }
+
+    /// 是否需要中文词库 `dict/` 目录。
+    pub fn has_dict_dir(&self) -> bool {
+        matches!(self, Self::Vits | Self::Matcha)
+    }
+
+    /// 主模型默认文件名（zipvoice 无单一主模型文件，返回 None）。
+    pub fn default_model_file(&self) -> Option<&'static str> {
+        match self {
+            Self::Vits => Some("model.onnx"),
+            Self::Matcha => Some("model-steps-3.onnx"),
+            Self::Kokoro | Self::Kitten => Some("model.onnx"),
+            _ => None,
+        }
+    }
+
+    /// 声码器默认文件名（独立于主模型；非该类型的模型返回 None）。
+    pub fn default_vocoder(&self) -> Option<&'static str> {
+        match self {
+            Self::Matcha => Some("vocos-22khz-univ.onnx"),
+            _ => None,
+        }
+    }
+}
+
+/// VITS 模型安装完成所需文件（如 vits-melo-tts-zh_en：model + lexicon + tokens）。
+pub const VITS_REQUIRED_FILES: [&str; 3] = [DEFAULT_TOKENS, DEFAULT_LEXICON, "model.onnx"];
+
+/// Matcha 模型安装完成所需文件（如 matcha-icefall-zh-baker：声学模型 + 独立声码器）。
+pub const MATCHA_REQUIRED_FILES: [&str; 4] = [
+    DEFAULT_TOKENS,
+    DEFAULT_LEXICON,
+    "model-steps-3.onnx",
+    "vocos-22khz-univ.onnx",
+];
+
+/// 各模型类型安装完成所需文件（相对模型目录；`data_dir`/参考音频由引擎单独校验）。
+pub fn required_files(kind: TtsModelKind) -> &'static [&'static str] {
+    match kind {
+        TtsModelKind::Zipvoice => &REQUIRED_FILES,
+        TtsModelKind::Vits => &VITS_REQUIRED_FILES,
+        TtsModelKind::Matcha => &MATCHA_REQUIRED_FILES,
+        // 二期模型：registry 尚未收录，暂无下载路径
+        _ => &[],
+    }
+}
+
 /// 解析后的完整 TTS 配置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedTtsConfig {
     /// 是否启用语音合成
     pub enabled: bool,
+    /// 模型类型（决定引擎构造分支与合成参数语义；默认 Zipvoice）
+    pub model_type: TtsModelKind,
     pub model_dir: PathBuf,
+    /// VITS/Kokoro/Kitten 主模型文件（zipvoice/matcha 无单一主模型，为 None）
+    pub model: Option<PathBuf>,
+    /// Matcha 声学模型文件
+    pub acoustic_model: Option<PathBuf>,
+    /// 中文词库 `dict/` 目录（VITS/Matcha）
+    pub dict_dir: Option<PathBuf>,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
     pub vocoder: PathBuf,
@@ -66,6 +177,10 @@ impl Default for ResolvedTtsConfig {
         let join = |name: &str| model_dir.join(name);
         Self {
             enabled: true,
+            model_type: TtsModelKind::Zipvoice,
+            model: None,
+            acoustic_model: None,
+            dict_dir: None,
             encoder: join(DEFAULT_ENCODER),
             decoder: join(DEFAULT_DECODER),
             vocoder: join(DEFAULT_VOCODER),
@@ -165,6 +280,21 @@ fn resolve_model_dir(
     Ok(default_model_dir())
 }
 
+/// 按模型目录内容探测模型类型（settings 未配置 `model_type` 时的兜底）。
+///
+/// 文件探针：`model-steps-3.onnx`→Matcha、`model.onnx`+lexicon→Vits、
+/// `encoder.int8.onnx`→Zipvoice，否则默认 Zipvoice。managed 安装目录名 == registry
+/// name 的权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
+fn detect_kind_from_dir(model_dir: &Path) -> TtsModelKind {
+    if model_dir.join("model-steps-3.onnx").is_file() {
+        TtsModelKind::Matcha
+    } else if model_dir.join("model.onnx").is_file() && model_dir.join(DEFAULT_LEXICON).is_file() {
+        TtsModelKind::Vits
+    } else {
+        TtsModelKind::Zipvoice
+    }
+}
+
 /// 合并配置并填充默认值。
 pub fn resolve(
     settings: Option<&TtsSettings>,
@@ -177,6 +307,12 @@ pub fn resolve(
 
     let s = settings;
     cfg.enabled = s.and_then(|s| s.enabled).unwrap_or(true);
+    // 模型类型：settings 显式 > 目录探测兜底（老用户无字段 → Zipvoice，行为不变）
+    let kind = s
+        .and_then(|s| s.model_type)
+        .unwrap_or_else(|| detect_kind_from_dir(&cfg.model_dir));
+    cfg.model_type = kind;
+
     let file = |field: &str, default_name: &str| {
         let value = match field {
             "encoder" => s.and_then(|s| s.encoder.as_deref()),
@@ -199,11 +335,32 @@ pub fn resolve(
     cfg.data_dir = file("data_dir", DEFAULT_DATA_DIR)?;
     cfg.reference_wav = file("reference_wav", DEFAULT_REFERENCE_WAV)?;
 
+    // 按模型类型填主模型/声码器/词库（zipvoice 无主模型；非 zipvoice 的旧 zipvoice
+    // 字段保持默认但由预检/引擎按 `required_files(kind)` 分支跳过，不参与消费）。
+    match kind {
+        TtsModelKind::Vits => {
+            cfg.model = Some(cfg.model_dir.join("model.onnx"));
+            cfg.dict_dir = Some(cfg.model_dir.join("dict"));
+        }
+        TtsModelKind::Matcha => {
+            cfg.acoustic_model = Some(cfg.model_dir.join("model-steps-3.onnx"));
+            cfg.vocoder = cfg.model_dir.join("vocos-22khz-univ.onnx");
+            cfg.dict_dir = Some(cfg.model_dir.join("dict"));
+        }
+        TtsModelKind::Kokoro | TtsModelKind::Kitten => {
+            cfg.model = Some(cfg.model_dir.join("model.onnx"));
+        }
+        _ => {}
+    }
+
     cfg.reference_text = s
         .and_then(|s| s.reference_text.clone())
         .unwrap_or_else(|| DEFAULT_REFERENCE_TEXT.to_string());
     cfg.voice = s.and_then(|s| s.voice.clone());
-    cfg.num_steps = s.and_then(|s| s.num_steps).unwrap_or(4);
+    // Matcha 官方推荐更多扩散步数（现共享默认 4 偏低，zipvoice 语义），未显式设置时用 10
+    cfg.num_steps = s
+        .and_then(|s| s.num_steps)
+        .unwrap_or(if kind == TtsModelKind::Matcha { 10 } else { 4 });
     cfg.speed = s.and_then(|s| s.speed).unwrap_or(1.0);
     cfg.provider = s
         .and_then(|s| s.provider.clone())
@@ -442,6 +599,132 @@ mod tests {
         assert_eq!(REQUIRED_FILES.len(), 5);
         assert!(REQUIRED_FILES.contains(&DEFAULT_VOCODER));
         assert!(REQUIRED_FILES.contains(&DEFAULT_LEXICON));
+    }
+
+    #[test]
+    fn test_required_files_by_kind() {
+        assert_eq!(required_files(TtsModelKind::Zipvoice).len(), 5);
+        assert_eq!(required_files(TtsModelKind::Vits).len(), 3);
+        assert!(required_files(TtsModelKind::Vits).contains(&"model.onnx"));
+        assert_eq!(required_files(TtsModelKind::Matcha).len(), 4);
+        assert!(required_files(TtsModelKind::Matcha).contains(&"vocos-22khz-univ.onnx"));
+        assert!(required_files(TtsModelKind::Matcha).contains(&"model-steps-3.onnx"));
+        // 二期模型尚无下载路径
+        assert!(required_files(TtsModelKind::Kokoro).is_empty());
+        assert!(required_files(TtsModelKind::Kitten).is_empty());
+    }
+
+    #[test]
+    fn test_model_kind_str_and_semantics() {
+        for (s, kind) in [
+            ("zipvoice", TtsModelKind::Zipvoice),
+            ("vits", TtsModelKind::Vits),
+            ("matcha", TtsModelKind::Matcha),
+            ("kokoro", TtsModelKind::Kokoro),
+            ("kitten", TtsModelKind::Kitten),
+        ] {
+            assert_eq!(TtsModelKind::parse_str(s), Some(kind), "{s}");
+            assert_eq!(kind.as_str(), s);
+        }
+        assert_eq!(TtsModelKind::parse_str("unknown"), None);
+        // 参考音频克隆语义仅 zipvoice
+        assert!(TtsModelKind::Zipvoice.uses_reference_audio());
+        assert!(!TtsModelKind::Vits.uses_reference_audio());
+        assert!(!TtsModelKind::Matcha.uses_reference_audio());
+        // espeak-ng-data 需求仅 zipvoice（本期 3 模型）
+        assert!(TtsModelKind::Zipvoice.requires_data_dir());
+        assert!(!TtsModelKind::Vits.requires_data_dir());
+        assert!(!TtsModelKind::Matcha.requires_data_dir());
+        // 中文词库 dict/ 需求
+        assert!(TtsModelKind::Vits.has_dict_dir());
+        assert!(TtsModelKind::Matcha.has_dict_dir());
+        assert!(!TtsModelKind::Zipvoice.has_dict_dir());
+    }
+
+    #[test]
+    fn test_detect_kind_from_dir_probes() {
+        let base = tempfile::tempdir().unwrap();
+        // matcha：model-steps-3.onnx
+        let m = base.path().join("m");
+        std::fs::create_dir_all(&m).unwrap();
+        std::fs::write(m.join("model-steps-3.onnx"), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(&m), TtsModelKind::Matcha);
+        // vits：model.onnx + lexicon
+        let v = base.path().join("v");
+        std::fs::create_dir_all(&v).unwrap();
+        std::fs::write(v.join("model.onnx"), b"x").unwrap();
+        std::fs::write(v.join(DEFAULT_LEXICON), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(&v), TtsModelKind::Vits);
+        // zipvoice：encoder.int8.onnx
+        let z = base.path().join("z");
+        std::fs::create_dir_all(&z).unwrap();
+        std::fs::write(z.join(DEFAULT_ENCODER), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(&z), TtsModelKind::Zipvoice);
+        // 空目录 → zipvoice 兜底
+        let e = base.path().join("e");
+        std::fs::create_dir_all(&e).unwrap();
+        assert_eq!(detect_kind_from_dir(&e), TtsModelKind::Zipvoice);
+    }
+
+    #[test]
+    fn test_resolve_matcha_sets_model_files_and_steps() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models/matcha-icefall-zh-baker");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("model-steps-3.onnx"), b"x").unwrap();
+            let settings = TtsSettings {
+                model_type: Some(TtsModelKind::Matcha),
+                model_dir: Some(dir.to_string_lossy().to_string()),
+                ..TtsSettings::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(cfg.model_type, TtsModelKind::Matcha);
+            assert_eq!(
+                cfg.acoustic_model
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().to_string()),
+                Some("model-steps-3.onnx".to_string())
+            );
+            assert_eq!(
+                cfg.vocoder
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string()),
+                Some("vocos-22khz-univ.onnx".to_string())
+            );
+            assert_eq!(
+                cfg.dict_dir
+                    .as_deref()
+                    .and_then(|d| d.file_name())
+                    .map(|s| s.to_string_lossy().to_string()),
+                Some("dict".to_string())
+            );
+            // matcha 未显式设扩散步数 → 默认 10（zipvoice 是 4）
+            assert_eq!(cfg.num_steps, 10);
+        });
+    }
+
+    #[test]
+    fn test_resolve_vits_sets_model_file() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models/vits-melo-tts-zh_en");
+            std::fs::create_dir_all(&dir).unwrap();
+            let settings = TtsSettings {
+                model_type: Some(TtsModelKind::Vits),
+                model_dir: Some(dir.to_string_lossy().to_string()),
+                ..TtsSettings::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(cfg.model_type, TtsModelKind::Vits);
+            assert_eq!(
+                cfg.model
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().to_string()),
+                Some("model.onnx".to_string())
+            );
+            assert_eq!(cfg.dict_dir.is_some(), true);
+        });
     }
 
     #[test]

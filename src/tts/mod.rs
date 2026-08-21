@@ -10,15 +10,118 @@ pub mod reaction;
 pub mod voice;
 pub mod voice_store;
 
-use config::ResolvedTtsConfig;
+use config::{ResolvedTtsConfig, TtsModelKind};
 use sherpa_onnx::{
-    GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig,
+    GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKittenModelConfig,
+    OfflineTtsKokoroModelConfig, OfflineTtsMatchaModelConfig, OfflineTtsModelConfig,
+    OfflineTtsPocketModelConfig, OfflineTtsSupertonicModelConfig, OfflineTtsVitsModelConfig,
     OfflineTtsZipvoiceModelConfig, Wave,
 };
 use std::path::{Path, PathBuf};
 
 pub use crate::kws::model::{DownloadProgress, DownloadStage, ModelError, ProgressFn};
 pub use voice::TtsVoice;
+
+/// 合成时的「说话人/音色」参数：`Sid`（vits/matcha/kokoro 等固定说话人）或
+/// `Reference`（ZipVoice 参考音频克隆）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum TtsVoiceParams {
+    /// speaker id（本期单说话人模型恒 0；多说话人二期扩展）
+    Sid(i32),
+    /// 参考音频 + 逐字转写（ZipVoice 零样本克隆）
+    Reference {
+        wav_path: PathBuf,
+        reference_text: String,
+    },
+}
+
+/// 按模型类型构造 sherpa-onnx 的 `OfflineTtsModelConfig` 对应分支。
+///
+/// 纯函数（不访问文件系统），便于单测各分支字段。registry 未收录的分支
+/// （kokoro/kitten/pocket/supertonic）字段照填，但缺文件时在预检阶段报错。
+pub(crate) fn build_offline_model_config(cfg: &ResolvedTtsConfig) -> OfflineTtsModelConfig {
+    let path = |p: Option<&PathBuf>| p.map(|p| p.to_string_lossy().to_string());
+    let dict_dir = cfg
+        .dict_dir
+        .as_ref()
+        .map(|d| d.to_string_lossy().to_string());
+    let mut config = OfflineTtsModelConfig {
+        num_threads: cfg.num_threads,
+        debug: cfg.debug,
+        provider: Some(cfg.provider.clone()),
+        ..Default::default()
+    };
+    match cfg.model_type {
+        TtsModelKind::Zipvoice => {
+            config.zipvoice = OfflineTtsZipvoiceModelConfig {
+                tokens: path(Some(&cfg.tokens)),
+                encoder: path(Some(&cfg.encoder)),
+                decoder: path(Some(&cfg.decoder)),
+                vocoder: path(Some(&cfg.vocoder)),
+                data_dir: path(Some(&cfg.data_dir)),
+                lexicon: path(Some(&cfg.lexicon)),
+                feat_scale: config::DEFAULT_FEAT_SCALE,
+                t_shift: config::DEFAULT_T_SHIFT,
+                target_rms: config::DEFAULT_TARGET_RMS,
+                guidance_scale: config::DEFAULT_GUIDANCE_SCALE,
+            };
+        }
+        TtsModelKind::Vits => {
+            config.vits = OfflineTtsVitsModelConfig {
+                model: path(cfg.model.as_ref()),
+                lexicon: path(Some(&cfg.lexicon)),
+                tokens: path(Some(&cfg.tokens)),
+                data_dir: None,
+                noise_scale: 0.667,
+                noise_scale_w: 0.8,
+                length_scale: 1.0,
+                dict_dir,
+            };
+        }
+        TtsModelKind::Matcha => {
+            config.matcha = OfflineTtsMatchaModelConfig {
+                acoustic_model: path(cfg.acoustic_model.as_ref()),
+                vocoder: path(Some(&cfg.vocoder)),
+                lexicon: path(Some(&cfg.lexicon)),
+                tokens: path(Some(&cfg.tokens)),
+                data_dir: None,
+                noise_scale: 0.667,
+                length_scale: 1.0,
+                dict_dir,
+            };
+        }
+        TtsModelKind::Kokoro => {
+            config.kokoro = OfflineTtsKokoroModelConfig {
+                model: path(cfg.model.as_ref()),
+                // voices.bin 需二期接入（含 speaker 名字映射）
+                voices: None,
+                tokens: path(Some(&cfg.tokens)),
+                data_dir: path(Some(&cfg.data_dir)),
+                length_scale: 1.0,
+                dict_dir,
+                lexicon: path(Some(&cfg.lexicon)),
+                lang: None,
+            };
+        }
+        TtsModelKind::Kitten => {
+            config.kitten = OfflineTtsKittenModelConfig {
+                model: path(cfg.model.as_ref()),
+                voices: None,
+                tokens: path(Some(&cfg.tokens)),
+                data_dir: path(Some(&cfg.data_dir)),
+                length_scale: 1.0,
+            };
+        }
+        // registry 未收录：字段留空（sherpa 侧报缺文件），预检阶段已拦截
+        TtsModelKind::Pocket => {
+            config.pocket = OfflineTtsPocketModelConfig::default();
+        }
+        TtsModelKind::Supertonic => {
+            config.supertonic = OfflineTtsSupertonicModelConfig::default();
+        }
+    }
+    config
+}
 
 /// 文本转语音引擎。
 ///
@@ -30,49 +133,41 @@ pub struct TtsEngine {
 }
 
 impl TtsEngine {
-    /// 构造引擎，先校验所有模型文件存在。
+    /// 构造引擎，先按模型类型校验所需文件存在。
     pub fn new(cfg: ResolvedTtsConfig) -> Result<Self, String> {
-        let required_files = [
-            ("encoder", &cfg.encoder),
-            ("decoder", &cfg.decoder),
-            ("vocoder", &cfg.vocoder),
-            ("tokens", &cfg.tokens),
-            ("lexicon", &cfg.lexicon),
-        ];
-        for (name, path) in required_files {
-            if !path.is_file() {
+        // 按模型类型所需文件清单逐文件校验（非 zipvoice 不校验 espeak-ng-data）
+        for name in config::required_files(cfg.model_type) {
+            let p = cfg.model_dir.join(name);
+            if !p.is_file() {
                 return Err(format!(
                     "缺少模型文件 {name}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
-                    path.display()
+                    p.display()
                 ));
             }
         }
-        if !cfg.data_dir.is_dir() {
+        if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
             return Err(format!(
                 "缺少数据目录 data_dir: {}\n请运行 `zapmomo tts install-model` 下载模型。",
                 cfg.data_dir.display()
             ));
         }
 
+        let model_config = build_offline_model_config(&cfg);
+        // VITS 根级 rule fsts 存在时启用（日期/数字规范化；缺省不影响合成）
+        let rule_fsts = if cfg.model_type == TtsModelKind::Vits {
+            let fsts = ["date.fst", "number.fst"]
+                .iter()
+                .filter(|f| cfg.model_dir.join(f).is_file())
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            (!fsts.is_empty()).then_some(fsts)
+        } else {
+            None
+        };
         let config = OfflineTtsConfig {
-            model: OfflineTtsModelConfig {
-                zipvoice: OfflineTtsZipvoiceModelConfig {
-                    tokens: Some(cfg.tokens.to_string_lossy().to_string()),
-                    encoder: Some(cfg.encoder.to_string_lossy().to_string()),
-                    decoder: Some(cfg.decoder.to_string_lossy().to_string()),
-                    vocoder: Some(cfg.vocoder.to_string_lossy().to_string()),
-                    data_dir: Some(cfg.data_dir.to_string_lossy().to_string()),
-                    lexicon: Some(cfg.lexicon.to_string_lossy().to_string()),
-                    feat_scale: config::DEFAULT_FEAT_SCALE,
-                    t_shift: config::DEFAULT_T_SHIFT,
-                    target_rms: config::DEFAULT_TARGET_RMS,
-                    guidance_scale: config::DEFAULT_GUIDANCE_SCALE,
-                },
-                num_threads: cfg.num_threads,
-                debug: cfg.debug,
-                provider: Some(cfg.provider.clone()),
-                ..Default::default()
-            },
+            model: model_config,
+            rule_fsts,
             ..Default::default()
         };
 
@@ -91,28 +186,19 @@ impl TtsEngine {
         self.tts.sample_rate()
     }
 
-    /// 加载参考音频并构建生成配置（参考音色 + 参考文本 + 扩散步数 + 语速）。
+    /// 按说话人/音色参数构建生成配置：`Sid` → speaker id；`Reference` → 参考音频克隆。
     fn generation_config(
         &self,
         speed: f32,
-        reference_wav: &Path,
-        reference_text: &str,
+        voice: &TtsVoiceParams,
     ) -> Result<GenerationConfig, String> {
-        let wave = Wave::read(&reference_wav.to_string_lossy())
-            .ok_or_else(|| format!("无法读取参考音频: {}", reference_wav.display()))?;
-        // 把参考音频归一化到模型目标采样率：ZipVoice 的 Mel 频谱在跨采样率
-        // （如 48k→24k）时，sherpa C++ 重采样器可能抛异常，Rust 无法捕获
-        // C++ 异常会直接 abort。统一到目标采样率后 Mel 重采样变为恒等变换。
-        let (reference_audio, reference_sample_rate) =
-            normalize_reference(wave.samples(), wave.sample_rate(), self.sample_rate())?;
-        Ok(GenerationConfig {
+        build_generation_config(
+            self.cfg.model_type,
+            self.cfg.num_steps,
             speed,
-            reference_audio: Some(reference_audio),
-            reference_sample_rate,
-            reference_text: Some(reference_text.to_string()),
-            num_steps: self.cfg.num_steps,
-            ..Default::default()
-        })
+            voice,
+            self.sample_rate(),
+        )
     }
 
     /// 把文本合成为 PCM 波形（f32，采样率见 [`Self::sample_rate`]）。
@@ -123,10 +209,9 @@ impl TtsEngine {
         &self,
         text: &str,
         speed: f32,
-        reference_wav: &Path,
-        reference_text: &str,
+        voice: &TtsVoiceParams,
     ) -> Result<Vec<f32>, String> {
-        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, voice)?;
         let audio = self
             .tts
             .generate_with_config(text, &gen_config, None::<fn(&[f32], f32) -> bool>)
@@ -142,14 +227,13 @@ impl TtsEngine {
         &self,
         text: &str,
         speed: f32,
-        reference_wav: &Path,
-        reference_text: &str,
+        voice: &TtsVoiceParams,
         mut progress: F,
     ) -> Result<Vec<f32>, String>
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, voice)?;
         let callback = move |_samples: &[f32], p: f32| progress(p);
         let audio = self
             .tts
@@ -163,19 +247,11 @@ impl TtsEngine {
         &self,
         text: &str,
         speed: f32,
-        reference_wav: &Path,
-        reference_text: &str,
+        voice: &TtsVoiceParams,
         out_path: &Path,
     ) -> Result<(), String> {
-        self.synthesize_to_wav_with_progress(
-            text,
-            speed,
-            reference_wav,
-            reference_text,
-            out_path,
-            |_p| true,
-        )
-        .map(|_| ())
+        self.synthesize_to_wav_with_progress(text, speed, voice, out_path, |_p| true)
+            .map(|_| ())
     }
 
     /// 把文本合成为 wav 文件，并在合成过程中回调进度（0..1）。
@@ -185,15 +261,14 @@ impl TtsEngine {
         &self,
         text: &str,
         speed: f32,
-        reference_wav: &Path,
-        reference_text: &str,
+        voice: &TtsVoiceParams,
         out_path: &Path,
         mut progress: F,
     ) -> Result<usize, String>
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(1.0, reference_wav, reference_text)?;
+        let gen_config = self.generation_config(1.0, voice)?;
         let callback = move |_samples: &[f32], p: f32| progress(p);
         let audio = self
             .tts
@@ -204,6 +279,47 @@ impl TtsEngine {
         crate::audio::write_wav_f32(out_path, sample_rate as u32, &samples)?;
         Ok(samples.len())
     }
+}
+
+/// 构建生成配置的纯函数（可单测，不依赖真实 `OfflineTts`）。
+///
+/// `Sid` 走 speaker id；`Reference` 走参考音频克隆（仅 ZipVoice 支持，其余报错）。
+fn build_generation_config(
+    model_type: TtsModelKind,
+    num_steps: i32,
+    speed: f32,
+    voice: &TtsVoiceParams,
+    model_sample_rate: i32,
+) -> Result<GenerationConfig, String> {
+    let mut gc = GenerationConfig {
+        speed,
+        num_steps,
+        ..Default::default()
+    };
+    match voice {
+        TtsVoiceParams::Sid(sid) => {
+            gc.sid = *sid;
+        }
+        TtsVoiceParams::Reference {
+            wav_path,
+            reference_text,
+        } => {
+            if !model_type.uses_reference_audio() {
+                return Err("该模型不支持参考音频（声音克隆）语义".to_string());
+            }
+            let wave = Wave::read(&wav_path.to_string_lossy())
+                .ok_or_else(|| format!("无法读取参考音频: {}", wav_path.display()))?;
+            // 把参考音频归一化到模型目标采样率：ZipVoice 的 Mel 频谱在跨采样率
+            // （如 48k→24k）时，sherpa C++ 重采样器可能抛异常，Rust 无法捕获
+            // C++ 异常会直接 abort。统一到目标采样率后 Mel 重采样变为恒等变换。
+            let (reference_audio, reference_sample_rate) =
+                normalize_reference(wave.samples(), wave.sample_rate(), model_sample_rate)?;
+            gc.reference_audio = Some(reference_audio);
+            gc.reference_sample_rate = reference_sample_rate;
+            gc.reference_text = Some(reference_text.clone());
+        }
+    }
+    Ok(gc)
 }
 
 /// 把参考音频归一化到目标采样率。
@@ -321,13 +437,12 @@ mod tests {
             return;
         }
         let engine = TtsEngine::new(cfg.clone()).unwrap();
+        let voice = TtsVoiceParams::Reference {
+            wav_path: cfg.reference_wav.clone(),
+            reference_text: cfg.reference_text.clone(),
+        };
         let samples = engine
-            .synthesize(
-                "你好，我是 ZapMomo。",
-                1.0,
-                &cfg.reference_wav,
-                &cfg.reference_text,
-            )
+            .synthesize("你好，我是 ZapMomo。", 1.0, &voice)
             .unwrap();
         assert!(!samples.is_empty(), "合成音频不应为空");
     }
@@ -401,5 +516,95 @@ mod tests {
     fn test_apply_speed_rejects_non_positive() {
         assert!(apply_speed_to_samples(&[0.0f32], 24000, 0.0).is_err());
         assert!(apply_speed_to_samples(&[0.0f32], 24000, -1.0).is_err());
+    }
+
+    #[test]
+    fn test_build_offline_model_config_vits_branch() {
+        let mut cfg = config::ResolvedTtsConfig::default();
+        cfg.model_type = TtsModelKind::Vits;
+        cfg.model = Some(PathBuf::from("/m/vits/model.onnx"));
+        cfg.dict_dir = Some(PathBuf::from("/m/vits/dict"));
+        let c = build_offline_model_config(&cfg);
+        let v = c.vits;
+        assert_eq!(v.model.as_deref(), Some("/m/vits/model.onnx"));
+        let expected_tokens = cfg.tokens.to_string_lossy().to_string();
+        assert_eq!(v.tokens.as_deref(), Some(expected_tokens.as_str()));
+        assert_eq!(v.dict_dir.as_deref(), Some("/m/vits/dict"));
+        // vits 分支不应污染 zipvoice 字段
+        assert!(c.zipvoice.tokens.is_none());
+    }
+
+    #[test]
+    fn test_build_offline_model_config_matcha_branch() {
+        let mut cfg = config::ResolvedTtsConfig::default();
+        cfg.model_type = TtsModelKind::Matcha;
+        cfg.acoustic_model = Some(PathBuf::from("/m/matcha/model-steps-3.onnx"));
+        cfg.vocoder = PathBuf::from("/m/matcha/vocos-22khz-univ.onnx");
+        let c = build_offline_model_config(&cfg);
+        assert_eq!(
+            c.matcha.acoustic_model.as_deref(),
+            Some("/m/matcha/model-steps-3.onnx")
+        );
+        assert_eq!(
+            c.matcha.vocoder.as_deref(),
+            Some("/m/matcha/vocos-22khz-univ.onnx")
+        );
+        assert!(c.vits.model.is_none());
+    }
+
+    #[test]
+    fn test_build_offline_model_config_zipvoice_keeps_defaults() {
+        let cfg = config::ResolvedTtsConfig::default();
+        assert_eq!(cfg.model_type, TtsModelKind::Zipvoice);
+        let c = build_offline_model_config(&cfg);
+        assert!(c.zipvoice.encoder.is_some());
+        assert!(c.zipvoice.decoder.is_some());
+        assert!(c.vits.model.is_none());
+        assert!(c.matcha.acoustic_model.is_none());
+    }
+
+    #[test]
+    fn test_build_generation_config_sid() {
+        let gc =
+            build_generation_config(TtsModelKind::Vits, 4, 1.2, &TtsVoiceParams::Sid(0), 22050)
+                .unwrap();
+        assert_eq!(gc.sid, 0);
+        assert_eq!(gc.speed, 1.2);
+        assert_eq!(gc.num_steps, 4);
+        assert!(gc.reference_audio.is_none(), "sid 不应携带参考音频");
+    }
+
+    #[test]
+    fn test_build_generation_config_reference_requires_zipvoice() {
+        // 非 zipvoice 模型传 Reference → 报错
+        let err = build_generation_config(
+            TtsModelKind::Vits,
+            4,
+            1.0,
+            &TtsVoiceParams::Reference {
+                wav_path: PathBuf::from("/nonexistent.wav"),
+                reference_text: "x".to_string(),
+            },
+            24000,
+        )
+        .unwrap_err();
+        assert!(err.contains("参考音频"), "err: {err}");
+    }
+
+    #[test]
+    fn test_build_generation_config_reference_missing_wav_errors() {
+        // zipvoice + Reference + 参考音频不存在 → 读取失败
+        let err = build_generation_config(
+            TtsModelKind::Zipvoice,
+            4,
+            1.0,
+            &TtsVoiceParams::Reference {
+                wav_path: PathBuf::from("/nonexistent.wav"),
+                reference_text: "x".to_string(),
+            },
+            24000,
+        )
+        .unwrap_err();
+        assert!(err.contains("无法读取参考音频"), "err: {err}");
     }
 }

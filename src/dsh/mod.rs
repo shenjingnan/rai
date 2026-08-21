@@ -33,25 +33,29 @@ pub struct DiscoveryInfo {
     pub token: String,
 }
 
-/// 写发现文件（unix 下权限 0600；Windows 无 chmod 概念跳过）。
+/// 写发现文件（tmp + rename 原子写，unix 下权限 0600；Windows 无 chmod 概念跳过）。
 pub fn write_discovery(info: &DiscoveryInfo) -> Result<(), String> {
     let path = discovery_file();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 runtime 目录失败: {e}"))?;
     }
     let body = serde_json::to_string(info).map_err(|e| format!("序列化发现文件失败: {e}"))?;
-    std::fs::write(&path, body).map_err(|e| format!("写入发现文件失败: {e}"))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &body).map_err(|e| format!("写入发现文件失败: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("替换发现文件失败: {e}"))?;
     Ok(())
 }
 
 /// 删除发现文件（退出清理 / 启动清陈旧残留；不存在视为成功）。
 pub fn remove_discovery() {
-    let _ = std::fs::remove_file(discovery_file());
+    if let Err(e) = std::fs::remove_file(discovery_file()) {
+        tracing::debug!("删除发现文件失败: {e}");
+    }
 }
 
 /// 生成一次性 token：sha256(纳秒时钟 ‖ pid ‖ 计数器) 十六进制前 32 位。
@@ -62,13 +66,13 @@ pub fn generate_token() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or(0); // 时钟异常（1970 年前）退化为 0；pid + 计数器仍保证唯一性
     let mut hasher = Sha256::new();
     hasher.update(nanos.to_le_bytes());
     hasher.update(std::process::id().to_le_bytes());
     hasher.update(n.to_le_bytes());
     let full = hex::encode(hasher.finalize());
-    full.chars().take(32).collect()
+    full[..32].to_string()
 }
 
 /// (session_id, 事件类型) 级别节流：窗口内重复事件直接丢弃。
@@ -92,7 +96,9 @@ impl EventThrottle {
         let key = (event.session_id().to_string(), event.kind());
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
+        // 清理过期条目，防 map 无界增长
         last.retain(|_, t| now.duration_since(*t) < self.window);
+        // 判断当前 key 是否在窗口内重复
         match last.get(&key) {
             Some(t) if now.duration_since(*t) < self.window => false,
             _ => {
@@ -186,5 +192,16 @@ mod tests {
         assert!(t.allow(&ev));
         std::thread::sleep(std::time::Duration::from_millis(30));
         assert!(t.allow(&ev), "窗口过后应放行");
+    }
+
+    #[test]
+    fn test_throttle_empty_session_id_shared_key() {
+        let t = EventThrottle::new(std::time::Duration::from_secs(3));
+        let a = DshEvent::TaskStarted {
+            session_id: String::new(),
+            title: None,
+        };
+        assert!(t.allow(&a), "空 session 首次应放行");
+        assert!(!t.allow(&a), "空 session 同类型窗口内应拦截");
     }
 }

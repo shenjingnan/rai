@@ -123,6 +123,8 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
   if (!mounted) return null;
 
   const modelName = modelNameFromDir(tts.config?.model_dir);
+  // sid 模型（vits/matcha/...）无参考音频克隆语义：音色固定，不提供选择与「管理音色」
+  const sidModel = !!tts.config?.model_type && tts.config.model_type !== "zipvoice";
   const synthPercent = Math.max(0, Math.min(100, (tts.progress ?? 0) * 100));
 
   return (
@@ -178,7 +180,7 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
               <label className="text-sm text-text-primary" htmlFor="tts-test-voice">
                 音色
               </label>
-              {onManageVoices && (
+              {onManageVoices && !sidModel && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -190,23 +192,34 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
                 </Button>
               )}
             </div>
-            <Select
-              value={tts.selectedVoice}
-              onValueChange={tts.setSelectedVoice}
-              disabled={tts.voices.length === 0}
-            >
-              <SelectTrigger id="tts-test-voice" aria-label="音色" className="w-full">
-                <SelectValue placeholder="默认音色" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">默认音色</SelectItem>
-                {tts.voices.map((v) => (
-                  <SelectItem key={v.id} value={v.id}>
-                    {v.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {sidModel ? (
+              <Select value="fixed" disabled>
+                <SelectTrigger id="tts-test-voice" aria-label="音色" className="w-full">
+                  <SelectValue placeholder="默认音色（模型固定）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fixed">默认音色（模型固定）</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select
+                value={tts.selectedVoice}
+                onValueChange={tts.setSelectedVoice}
+                disabled={tts.voices.length === 0}
+              >
+                <SelectTrigger id="tts-test-voice" aria-label="音色" className="w-full">
+                  <SelectValue placeholder="默认音色" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">默认音色</SelectItem>
+                  {tts.voices.map((v) => (
+                    <SelectItem key={v.id} value={v.id}>
+                      {v.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           {/* 语速：真实 synthesize.speed 一次性参数 */}

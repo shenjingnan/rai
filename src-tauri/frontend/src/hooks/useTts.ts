@@ -131,22 +131,27 @@ export function useTts(): TtsState {
       setResult(null);
       setProgress(null);
       setSynthesizing(true);
-      // 选中已保存自定义音色 → 直接传其存储的 wav + 转写文本；否则走内置/默认音色。
-      const savedVoice = voices.find((v) => v.custom && v.id === selectedVoice);
+      // sid 模型（vits/matcha/...）无参考音频克隆概念：固定 speaker id（本期单说话人恒 0），
+      // 不传 voice/reference；zipvoice 走克隆（自定义音色 → 直接传其 wav+转写；否则内置/默认）。
+      const sidModel = !!config?.model_type && config.model_type !== "zipvoice";
+      const savedVoice = !sidModel
+        ? voices.find((v) => v.custom && v.id === selectedVoice)
+        : undefined;
       try {
         await api.synthesizeTts({
           text: trimmed,
           speed: opts?.speed ?? null,
-          voice: savedVoice ? null : selectedVoice || null,
-          referenceWav: savedVoice ? savedVoice.wav_path : null,
-          referenceText: savedVoice ? savedVoice.reference_text : null,
+          sid: sidModel ? 0 : null,
+          voice: sidModel ? null : savedVoice ? null : selectedVoice || null,
+          referenceWav: sidModel ? null : savedVoice ? savedVoice.wav_path : null,
+          referenceText: sidModel ? null : savedVoice ? savedVoice.reference_text : null,
         });
       } catch (e) {
         setError(String(e));
         setSynthesizing(false);
       }
     },
-    [voices, selectedVoice],
+    [config, voices, selectedVoice],
   );
 
   // 批量保存合成参数（扩散步数/默认语速/线程/调试），写入 [tts] 后刷新配置。

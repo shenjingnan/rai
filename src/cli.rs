@@ -460,17 +460,26 @@ async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             let cfg = tts_config(model_dir.as_ref())?;
             let engine = crate::tts::TtsEngine::new(cfg.clone())?;
             let speed = speed.unwrap_or(1.0);
-            let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
-                &cfg,
-                voice.as_deref(),
-                reference_wav.as_deref(),
-                reference_text.as_deref(),
-            )?;
+            // 合成参数：ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）
+            let voice_params = if cfg.model_type.uses_reference_audio() {
+                let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
+                    &cfg,
+                    voice.as_deref(),
+                    reference_wav.as_deref(),
+                    reference_text.as_deref(),
+                )?;
+                crate::tts::TtsVoiceParams::Reference {
+                    wav_path: ref_wav,
+                    reference_text: ref_text,
+                }
+            } else {
+                crate::tts::TtsVoiceParams::Sid(0)
+            };
             let out_path = output.unwrap_or_else(crate::tts::default_output_path);
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("创建输出目录失败: {e}"))?;
             }
-            engine.synthesize_to_wav(&text, speed, &ref_wav, &ref_text, &out_path)?;
+            engine.synthesize_to_wav(&text, speed, &voice_params, &out_path)?;
             println!("已合成: {}", out_path.display());
             Ok(())
         }

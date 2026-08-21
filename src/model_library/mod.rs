@@ -390,6 +390,20 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
         ModelType::Tts => {
             let tts = cfg.tts.get_or_insert_with(Default::default);
             tts.model_dir = Some(path_str);
+            // 切换时同步持久化模型类型：managed 安装目录名 == registry `name`，据此
+            // 推导 vits/matcha/zipvoice；external/local 目录探测不到时保持原值
+            // （resolve 会按目录内容兜底探测）。
+            if let Some(name) = path.file_name() {
+                let base = name.to_string_lossy().to_string();
+                if let Some(kind) = crate::model_library::registry::all_models()
+                    .iter()
+                    .filter(|m| m.model_type == ModelType::Tts)
+                    .find(|m| m.name == base)
+                    .and_then(|m| m.tts_kind)
+                {
+                    tts.model_type = Some(kind);
+                }
+            }
             // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
             // 会污染新模型的文件探测，交回 resolve 自动探测（与 KWS/ASR 分支同款取舍）。
             // reference_wav/text 指向旧模型目录内的参考音频，一并重置回默认音色；
@@ -1540,6 +1554,46 @@ mod tests {
     }
 
     #[test]
+    fn test_set_selected_tts_persists_model_type_from_registry_name() {
+        run_with_temp_home(|home| {
+            // managed 安装目录名 == registry `name` → 切换时推导并持久化对应 kind
+            let vits = home.join("models/vits-melo-tts-zh_en");
+            set_selected_model(ModelType::Tts, &vits).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.tts.as_ref().and_then(|t| t.model_type),
+                Some(crate::tts::config::TtsModelKind::Vits)
+            );
+
+            let matcha = home.join("models/matcha-icefall-zh-baker");
+            set_selected_model(ModelType::Tts, &matcha).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.tts.as_ref().and_then(|t| t.model_type),
+                Some(crate::tts::config::TtsModelKind::Matcha)
+            );
+
+            let zip = home.join("models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia");
+            set_selected_model(ModelType::Tts, &zip).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.tts.as_ref().and_then(|t| t.model_type),
+                Some(crate::tts::config::TtsModelKind::Zipvoice)
+            );
+
+            // 非 registry 目录名：不写错 kind（保持上一次推导值，resolve 再按目录探测兜底）
+            let unknown = home.join("models/my-local-model");
+            set_selected_model(ModelType::Tts, &unknown).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.tts.as_ref().and_then(|t| t.model_type),
+                Some(crate::tts::config::TtsModelKind::Zipvoice),
+                "未知目录不应覆盖已推导的 kind"
+            );
+        });
+    }
+
+    #[test]
     fn test_add_local_model_registry_binding() {
         run_with_temp_home(|home| {
             // 造一个合法的 GGUF（magic 头）
@@ -1722,6 +1776,7 @@ mod tests {
             name: name.to_string(),
             display_name: name.to_string(),
             model_type: ModelType::Kws,
+            tts_kind: None,
             runtime: "sherpa-onnx".into(),
             format: "ONNX".into(),
             description: String::new(),

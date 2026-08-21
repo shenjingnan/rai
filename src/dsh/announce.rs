@@ -47,26 +47,33 @@ impl Announcer {
         if !cfg.enabled {
             return Err("TTS 未启用（[tts].enabled = false）".to_string());
         }
-        // 逐文件预检，给出明确的「模型未就绪」错误而非深层引擎报错
-        let files = [
-            &cfg.encoder,
-            &cfg.decoder,
-            &cfg.vocoder,
-            &cfg.tokens,
-            &cfg.lexicon,
-        ];
-        if let Some(missing) = files.iter().find(|p| !p.is_file()) {
-            return Err(format!("TTS 模型未就绪: {}", missing.display()));
+        // 逐文件预检（按模型类型所需文件，与 synthesize_tts 一致），给出明确的
+        // 「模型未就绪」错误而非深层引擎报错
+        let files = tts::config::required_files(cfg.model_type);
+        if let Some(missing) = files.iter().find(|f| !cfg.model_dir.join(f).is_file()) {
+            return Err(format!(
+                "TTS 模型未就绪: {}",
+                cfg.model_dir.join(missing).display()
+            ));
         }
-        if !cfg.data_dir.is_dir() {
+        if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
             return Err(format!("TTS 数据目录缺失: {}", cfg.data_dir.display()));
         }
-        let (ref_wav, ref_text) = tts::voice::resolve_reference(&cfg, None, None, None)?;
+        // 合成参数：ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）
+        let voice = if cfg.model_type.uses_reference_audio() {
+            let (ref_wav, ref_text) = tts::voice::resolve_reference(&cfg, None, None, None)?;
+            tts::TtsVoiceParams::Reference {
+                wav_path: ref_wav,
+                reference_text: ref_text,
+            }
+        } else {
+            tts::TtsVoiceParams::Sid(0)
+        };
         let engine = tts::TtsEngine::new(cfg.clone())?;
         let sample_rate = engine.sample_rate() as u32;
         let speed = cfg.speed;
         Ok(Self::with(
-            move |text| engine.synthesize(text, speed, &ref_wav, &ref_text),
+            move |text| engine.synthesize(text, speed, &voice),
             move |samples, rate| {
                 if let Ok(mut speaker) = crate::voice::player::Speaker::try_new() {
                     use crate::voice::player::AudioPlayer;

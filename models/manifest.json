@@ -114,6 +114,39 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "vits-melo-tts-zh_en",
+      "role": "tts-vits-melo",
+      "version": "melo-zh_en",
+      "kind": "archive",
+      "archive": "vits-melo-tts-zh_en.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2",
+      "sha256": "e58351ed7149f290a54534538badd4077cdbe6fddc964b24d0bee870415d1514",
+      "size_bytes": 167006755,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "matcha-icefall-zh-baker",
+      "role": "tts-matcha",
+      "version": "zh-baker",
+      "kind": "archive",
+      "archive": "matcha-icefall-zh-baker.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
+      "sha256": "20de2ec034b55562609d6362771c934905dfe11d0f41ec103d593427ad9a7efb",
+      "size_bytes": 75463442,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "matcha-icefall-zh-baker",
+      "role": "tts-vocoder-22khz",
+      "version": "zh-baker",
+      "kind": "raw",
+      "archive": "vocos-22khz-univ.onnx",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+      "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+      "size_bytes": 53884024,
+      "license": "Apache-2.0"
+    },
+    {
       "name": "Qwen3-0.6B",
       "role": "llm-qwen3-0.6b-q4-k-m",
       "version": "instruct",

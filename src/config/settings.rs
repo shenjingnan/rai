@@ -448,6 +448,9 @@ pub struct TtsSettings {
     /// 是否启用语音合成，缺省 true
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// 模型类型（sherpa-onnx 分支：zipvoice/vits/matcha/...；缺省按模型目录内容探测）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<crate::tts::config::TtsModelKind>,
     /// 模型目录（支持 ${env.VAR} 引用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
@@ -1023,6 +1026,7 @@ mod tests {
     fn test_tts_settings_serde_roundtrip() {
         let tts = TtsSettings {
             enabled: Some(false),
+            model_type: Some(crate::tts::config::TtsModelKind::Zipvoice),
             model_dir: Some("${env.TTS_MODEL_DIR}".to_string()),
             encoder: Some("encoder.int8.onnx".to_string()),
             decoder: None,

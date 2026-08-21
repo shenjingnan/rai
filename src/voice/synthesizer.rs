@@ -8,8 +8,7 @@
 /// 编排线程只接受 `gen_id == current` 的结果；打断时 `cancel_all()` 置 cancel，
 /// 当前句经 `synthesize_with_progress` 的进度回调返回 false 提前终止，待处理命令
 /// 快速返回错误（不浪费算力）。
-use crate::tts::TtsEngine;
-use std::path::PathBuf;
+use crate::tts::{TtsEngine, TtsVoiceParams};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -43,8 +42,8 @@ pub struct SynthHandle {
 }
 
 impl SynthHandle {
-    /// 启动合成线程。`ref_wav` / `ref_text` / `speed` 为每句合成固定使用的参考音色参数。
-    pub fn new(tts: TtsEngine, ref_wav: PathBuf, ref_text: String, speed: f32) -> Self {
+    /// 启动合成线程。`voice` / `speed` 为每句合成固定使用的说话人/音色与语速参数。
+    pub fn new(tts: TtsEngine, voice: TtsVoiceParams, speed: f32) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -68,13 +67,10 @@ impl SynthHandle {
                             // progress 回调返回 false 可提前终止当前句（打断时减少无用计算）；
                             // 闭包需 'static，clone 一份 cancel 标志再 move。
                             let progress_cancel = cancel_clone.clone();
-                            let result = tts.synthesize_with_progress(
-                                &text,
-                                speed,
-                                &ref_wav,
-                                &ref_text,
-                                move |_p| !progress_cancel.load(Ordering::Relaxed),
-                            );
+                            let result =
+                                tts.synthesize_with_progress(&text, speed, &voice, move |_p| {
+                                    !progress_cancel.load(Ordering::Relaxed)
+                                });
                             let payload = match result {
                                 Ok(samples) => SynthResult::Done {
                                     gen_id,

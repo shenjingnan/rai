@@ -3,6 +3,12 @@ name: Release
 # 每次 release-plz 创建 vX.Y.Z tag（推送）后，在原生 runner 上构建
 # Windows / macOS（双架构）/ Linux 的安装包，合并到一个 GitHub Release。
 # 构建成功后自动发布为正式 Release。
+#
+# 发布走 RELEASE_PAT Secret（对仓库具 Contents 读写权限的 fine-grained PAT）
+# 而非默认 GITHUB_TOKEN：GITHUB_TOKEN 产生的事件不触发其他 workflow（GitHub
+# 防递归机制），upload-baidu-pan.yml 依赖 release: published 事件自动上传百度网盘，
+# 用 GITHUB_TOKEN 发布会让它永远静默不触发（无失败记录）。PAT 过期/失效时
+# 下方 Check release token 步骤会提前报错。
 on:
   push:
     tags:
@@ -183,9 +189,23 @@ jobs:
           EOF
           cat release_body.md
 
+      - name: Check release token
+        # 发布前确认 RELEASE_PAT 已配置，缺失/过期时在这里报清晰错误，
+        # 避免发布 job 跑到最后一步才失败（见文件头注释，为何不能用 GITHUB_TOKEN）。
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "::error::缺少 RELEASE_PAT Secret。请创建对仓库具 Contents 读写权限的 fine-grained PAT，配置到 Settings → Secrets and variables → Actions 后重跑。"
+            exit 1
+          fi
+
       - name: Attach installers to draft release
         uses: softprops/action-gh-release@v3
         with:
+          # 显式传 PAT：用 GITHUB_TOKEN 发布的 release 事件不会触发
+          # upload-baidu-pan.yml（GitHub 防递归机制，事件被静默丢弃）
+          token: ${{ secrets.RELEASE_PAT }}
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false

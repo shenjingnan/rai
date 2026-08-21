@@ -38,6 +38,12 @@ jobs:
     # GitHub 托管 runner 在海外，跨境上传百度网盘可能较慢，封顶防悬挂
     timeout-minutes: 30
     steps:
+      - name: Normalize tag
+        # 手动 dispatch 容易漏写 v 前缀（tag 实为 vX.Y.Z），漏写时
+        # gh release download 报 release not found。归一化补齐前缀，同时保证
+        # 网盘目录名（/apps/zapmomo/<tag>）与 release 事件触发时的口径一致。
+        run: echo "TAG=v${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Check credentials
         env:
           BDUSS: ${{ secrets.BAIDU_BDUSS }}

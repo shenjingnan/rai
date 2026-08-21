@@ -1,14 +1,6 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import {
-  api,
-  onTtsDownloadProgress,
-  onTtsProgress,
-  onTtsResult,
-  onTtsStopped,
-  toAssetUrl,
-} from "@/lib/tauri";
+import { api, onTtsProgress, onTtsResult, onTtsStopped, toAssetUrl } from "@/lib/tauri";
 import type {
-  DownloadProgress,
   SaveTtsVoiceRequest,
   TtsConfigInfo,
   TtsParamsPatch,
@@ -42,18 +34,15 @@ export interface TtsState {
   /** 发起一次合成；`opts.speed` 为真实 synthesize_tts 一次性参数（缺省走后端配置默认）。 */
   synthesize: (text: string, opts?: { speed?: number | null }) => Promise<void>;
   stop: () => Promise<void>;
-  downloading: boolean;
-  downloadProgress: DownloadProgress | null;
-  downloadError: string | null;
-  download: () => Promise<void>;
   audioUrl: string | null;
   audioRef: RefObject<HTMLAudioElement | null>;
   play: () => void;
 }
 
 /**
- * TTS 状态管理：配置读取、音色列表、合成触发/进度/结果、模型下载、播放、自定义音色库。
+ * TTS 状态管理：配置读取、音色列表、合成触发/进度/结果、播放、自定义音色库。
  * 合成走后台线程，进度与结果经 `tts-progress` / `tts-result` / `tts-stopped` 事件同步。
+ * 模型下载/切换统一走模型库（`list_model_library` 弹窗），此处不持有 legacy 下载通道。
  */
 export function useTts(): TtsState {
   const [config, setConfig] = useState<TtsConfigInfo | null>(null);
@@ -64,9 +53,6 @@ export function useTts(): TtsState {
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<TtsResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const refreshConfig = useCallback(async () => {
@@ -119,7 +105,6 @@ export function useTts(): TtsState {
         setSynthesizing(false);
         if (payload.error) setError(payload.error);
       }),
-      onTtsDownloadProgress(setDownloadProgress),
     ];
     return () => {
       unsubs.forEach((u) => {
@@ -205,21 +190,6 @@ export function useTts(): TtsState {
     }
   }, []);
 
-  const download = useCallback(async () => {
-    setDownloading(true);
-    setDownloadError(null);
-    setDownloadProgress(null);
-    try {
-      await api.downloadTtsModel();
-      void refreshConfig();
-      await refreshVoices();
-    } catch (e) {
-      setDownloadError(String(e));
-    } finally {
-      setDownloading(false);
-    }
-  }, [refreshConfig, refreshVoices]);
-
   const play = useCallback(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -246,10 +216,6 @@ export function useTts(): TtsState {
     error,
     synthesize,
     stop,
-    downloading,
-    downloadProgress,
-    downloadError,
-    download,
     audioUrl,
     audioRef,
     play,

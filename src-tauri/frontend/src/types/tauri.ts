@@ -402,3 +402,47 @@ export type ShortcutActionId =
   | "toggle_voice_session"
   | "interrupt_reply"
   | "open_settings";
+
+// ---- dsh 桥（deepseek-harness 任务事件 → 桌宠说话）----
+
+/** dsh 任务事件（后端 DshEvent 序列化；type 为 kebab-case 判别字段） */
+export interface DshEventInfo {
+  type: "task-started" | "task-finished" | "task-failed" | "task-interrupted";
+  session_id: string;
+  title?: string | null;
+  reason?: string | null;
+  detail?: string | null;
+}
+
+/** `dsh-speak` 事件载荷（气泡台词 + 原始事件） */
+export interface DshSpeakPayload {
+  text: string;
+  event: DshEventInfo;
+}
+
+/** `dsh-bridge-status` 事件载荷 / `get_dsh_bridge_status` 返回 */
+export interface DshBridgeStatus {
+  running: boolean;
+  port: number | null;
+  error: string | null;
+}
+
+/** `get_dsh_config` 返回 */
+export interface DshConfigInfo {
+  enabled: boolean;
+  port: number;
+  voice_enabled: boolean;
+  record_to_history: boolean;
+  running: boolean;
+  actual_port: number | null;
+  /** 最近一次桥线程错误（启动失败/退出异常；null = 正常），设置页展示 */
+  error: string | null;
+  discovery_path: string;
+}
+
+/** `set_dsh_params` 载荷（snake_case 直传，缺省项不修改） */
+export interface DshParamsPatch {
+  voice_enabled?: boolean;
+  record_to_history?: boolean;
+  port?: number;
+}

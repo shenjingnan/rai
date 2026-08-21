@@ -5,6 +5,7 @@ pub mod cli;
 pub mod companion;
 pub mod config;
 pub mod datetime;
+pub mod dsh;
 pub mod kws;
 pub mod live2d;
 pub mod llm;

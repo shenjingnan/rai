@@ -54,6 +54,8 @@ interface Live2dStageProps {
   onLayout?: (layout: ModelLayout | null) => void;
   /** 命令式句柄（React 19 ref as prop）：参数直写与布局读取。 */
   ref?: Ref<Live2dStageHandle>;
+  /** 模型加载成功（或清屏置 null）时回调，供上层持有模型句柄触发动作。 */
+  onModelLoaded?: (model: Live2DModel | null) => void;
 }
 
 /** Cubism4 运行时参数/事件结构子集（基类类型不带具体定义，按结构断言）。 */
@@ -133,6 +135,7 @@ export function Live2dStage({
   onModelReady,
   onLayout,
   ref,
+  onModelLoaded,
 }: Live2dStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
@@ -147,6 +150,8 @@ export function Live2dStage({
   onModelReadyRef.current = onModelReady;
   const onLayoutRef = useRef(onLayout);
   onLayoutRef.current = onLayout;
+  const onModelLoadedRef = useRef(onModelLoaded);
+  onModelLoadedRef.current = onModelLoaded;
   const sizeRef = useRef({ width, height });
   sizeRef.current = { width, height };
   // 模型加载 effect 用 ref 读缩放，避免 scale 变化触发销毁重载；布局由 resize effect 在 deps 里重算。
@@ -214,6 +219,7 @@ export function Live2dStage({
         layoutRef.current = null;
         onLayoutRef.current?.(null);
       }
+      onModelLoadedRef.current?.(null);
       return;
     }
     const app = appRef.current;
@@ -227,6 +233,7 @@ export function Live2dStage({
       modelRef.current = null;
       layoutRef.current = null;
       onLayoutRef.current?.(null);
+      onModelLoadedRef.current?.(null);
       try {
         // 显式关闭 autoInteract：原版默认值是 true（眼睛跟随鼠标 + 点击触发动作），
         // 必须显式传 false 才能关闭；呼吸/眨眼等自动动画仍由 PIXI ticker 驱动。
@@ -237,6 +244,7 @@ export function Live2dStage({
         }
         app.stage.addChild(model);
         modelRef.current = model;
+        onModelLoadedRef.current?.(model);
         layoutModel(model, sizeRef.current.width, sizeRef.current.height, modelScaleRef.current);
         const bounds = computeModelBounds(model);
         const valid =

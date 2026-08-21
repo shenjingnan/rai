@@ -181,6 +181,10 @@ pub struct Selections {
 pub struct RuntimeActuals<'a> {
     pub kws: Option<&'a Path>,
     pub asr: Option<&'a Path>,
+    /// TTS 无常驻引擎：actual = 当前 selection（与 current 判定同源）
+    pub tts: Option<&'a Path>,
+    /// 是否有合成线程在跑（在飞合成用旧配置完成，下次合成读新配置）
+    pub tts_active: bool,
     pub llm: Option<&'a Path>,
     pub llm_switching: bool,
     pub llm_switch_target: Option<&'a Path>,
@@ -358,7 +362,7 @@ pub fn is_path_current(mt: ModelType, path: &Path) -> bool {
     selection_path(mt).is_some_and(|p| paths_equal(&p, path))
 }
 
-/// 设置当前模型（只写 `model_dir` / `model_path`，绝不写 enabled）。
+/// 设置当前模型（写 `model_dir` / `model_path` 并重置文件级覆盖，绝不写 enabled）。
 pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
     let path_str = path.to_string_lossy().to_string();
     update_settings(|cfg| match mt {
@@ -384,7 +388,20 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             asr.tokens = None;
         }
         ModelType::Tts => {
-            cfg.tts.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let tts = cfg.tts.get_or_insert_with(Default::default);
+            tts.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
+            // 会污染新模型的文件探测，交回 resolve 自动探测（与 KWS/ASR 分支同款取舍）。
+            // reference_wav/text 指向旧模型目录内的参考音频，一并重置回默认音色；
+            // enabled / voice / num_steps / speed 等用户偏好不重置。
+            tts.encoder = None;
+            tts.decoder = None;
+            tts.vocoder = None;
+            tts.tokens = None;
+            tts.lexicon = None;
+            tts.data_dir = None;
+            tts.reference_wav = None;
+            tts.reference_text = None;
         }
         ModelType::Llm => {
             cfg.llm.get_or_insert_with(Default::default).model_path = Some(path_str);
@@ -453,7 +470,7 @@ pub fn enrich_runtime_status(models: &mut [LibraryModel], a: &RuntimeActuals) {
             ModelType::Kws => (a.kws, a.kws.is_some()),
             ModelType::Asr => (a.asr, a.asr.is_some()),
             ModelType::Llm => (a.llm, a.llm.is_some()),
-            ModelType::Tts => (None, false),
+            ModelType::Tts => (a.tts, a.tts_active),
         };
         let switching = m.model_type == ModelType::Llm
             && a.llm_switching
@@ -1317,6 +1334,66 @@ mod tests {
         );
     }
 
+    /// 测试用最小 TTS LibraryModel（enrich 只读 current / model_type / local_path）。
+    fn tts_library_model(current: bool) -> LibraryModel {
+        LibraryModel {
+            id: "tts-zipvoice-distill-int8".to_string(),
+            name: "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia".to_string(),
+            display_name: "ZipVoice TTS zh-en".to_string(),
+            model_type: ModelType::Tts,
+            runtime: "sherpa-onnx".to_string(),
+            format: "ONNX".to_string(),
+            description: String::new(),
+            languages: vec![],
+            tags: vec![],
+            parameter_count: None,
+            quantization: None,
+            version: "distill-int8".to_string(),
+            size_bytes: None,
+            homepage: None,
+            downloadable: true,
+            source: ModelSource::Registry,
+            ownership: StorageOwnership::Managed,
+            install_state: InstallState::Installed,
+            current,
+            runtime_status: RuntimeStatus::Inactive,
+            local_path: Some("/models/zipvoice".to_string()),
+            installed_at: None,
+            install_id: None,
+            repo_id: None,
+            compatibility: None,
+        }
+    }
+
+    #[test]
+    fn test_enrich_runtime_status_tts() {
+        let dir = Path::new("/models/zipvoice");
+        // 合成中：当前模型 Active、非当前恒 Inactive
+        let mut models = vec![tts_library_model(true), tts_library_model(false)];
+        let actuals = RuntimeActuals {
+            kws: None,
+            asr: None,
+            tts: Some(dir),
+            tts_active: true,
+            llm: None,
+            llm_switching: false,
+            llm_switch_target: None,
+            llm_load_error_path: None,
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Active);
+        assert_eq!(models[1].runtime_status, RuntimeStatus::Inactive);
+
+        // 空闲（无合成线程）：当前模型 Inactive
+        let mut models = vec![tts_library_model(true)];
+        let actuals = RuntimeActuals {
+            tts_active: false,
+            ..actuals
+        };
+        enrich_runtime_status(&mut models, &actuals);
+        assert_eq!(models[0].runtime_status, RuntimeStatus::Inactive);
+    }
+
     #[test]
     fn test_current_selection_and_set_restore() {
         run_with_temp_home(|home| {
@@ -1412,6 +1489,53 @@ mod tests {
             assert_eq!(asr.tokens, None);
             // enabled 不受切换影响
             assert_eq!(asr.enabled, Some(true));
+        });
+    }
+
+    #[test]
+    fn test_set_selected_tts_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟手工改过的配置）
+            update_settings(|cfg| {
+                let tts = cfg.tts.get_or_insert_with(Default::default);
+                tts.model_dir = Some("old-model".to_string());
+                tts.encoder = Some("old-encoder.onnx".to_string());
+                tts.decoder = Some("old-decoder.onnx".to_string());
+                tts.vocoder = Some("old-vocoder.onnx".to_string());
+                tts.tokens = Some("old-tokens.txt".to_string());
+                tts.lexicon = Some("old-lexicon.txt".to_string());
+                tts.data_dir = Some("old-espeak-ng-data".to_string());
+                tts.reference_wav = Some("old-ref.wav".to_string());
+                tts.reference_text = Some("旧参考文本".to_string());
+                tts.enabled = Some(true);
+                tts.voice = Some("leijun-1".to_string());
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/zipvoice");
+            set_selected_model(ModelType::Tts, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let tts = cfg.tts.as_ref().expect("tts 段应存在");
+            assert_eq!(
+                tts.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(tts.encoder, None);
+            assert_eq!(tts.decoder, None);
+            assert_eq!(tts.vocoder, None);
+            assert_eq!(tts.tokens, None);
+            assert_eq!(tts.lexicon, None);
+            assert_eq!(tts.data_dir, None);
+            // reference_wav/text 是旧模型目录内的参考音频，一并重置回默认音色
+            assert_eq!(tts.reference_wav, None);
+            assert_eq!(tts.reference_text, None);
+            // enabled / 音色偏好 / 参数不受切换影响
+            assert_eq!(tts.enabled, Some(true));
+            assert_eq!(tts.voice, Some("leijun-1".to_string()));
         });
     }
 

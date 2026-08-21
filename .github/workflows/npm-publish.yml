@@ -1,0 +1,37 @@
+name: npm Publish (dsh-plugin)
+
+# 发布 integrations/dsh-plugin → npm @zapmomo-ai/dsh-plugin。
+# 触发：手动 dispatch，或推送 dsh-plugin-v* tag（发版流程：改 version → 打 tag → push）。
+#
+# 认证走 npm Trusted Publishing（OIDC），不依赖 NPM_TOKEN：
+# - npm 侧已为 @zapmomo-ai/dsh-plugin 配置 Trusted Publisher（绑定本仓库 + 本 workflow 文件名）
+# - GitHub 注入 OIDC id-token，npm CLI（>= 11.5.1）自动用它认证并生成 provenance
+# - 要求 npm 侧「Workflow filename」= npm-publish.yml，且「Environment」留空
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'dsh-plugin-v*'
+
+permissions:
+  contents: read
+  id-token: write # OIDC Trusted Publishing 必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/dsh-plugin
+    steps:
+      - uses: actions/checkout@v7
+      # 版本单一来源 .node-version（= 24，与本地 fnm / 其它 CI 读同一文件）。
+      # Node 24 捆绑 npm >= 11.17（本地实测 24.19.0 -> npm 11.17.0），满足 OIDC 要求的 >= 11.5.1，
+      # 无需额外升级 npm。
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      # package.json version 未变时 npm publish 会以 E403（already published）拒绝——正常保护。
+      # 发布后 package.json 的 version 记得递增，再打 dsh-plugin-vX.Y.Z tag。
+      - name: Publish to npm
+        run: npm publish

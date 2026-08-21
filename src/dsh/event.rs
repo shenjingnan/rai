@@ -107,13 +107,18 @@ fn normalize_text(s: Option<String>) -> Option<String> {
 /// - 已知 `type` → 规范化为 [`DshEvent`]：文本字段 trim + 截断 200 字符、空白视为
 ///   缺失；`session_id` 类型漂移退化为空串（节流 key 退化为 `("", kind)`，属已知行为）
 pub fn parse_event(body: &str) -> Result<Option<DshEvent>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|e| format!("事件载荷不是合法 JSON 对象: {e}"))?;
+    if !value.is_object() {
+        return Err(format!("事件载荷不是 JSON 对象: {value}"));
+    }
     let RawEvent {
         r#type,
         session_id,
         title,
         reason,
         detail,
-    } = serde_json::from_str(body).map_err(|e| format!("事件载荷不是合法 JSON 对象: {e}"))?;
+    } = serde_json::from_value(value).map_err(|e| format!("事件载荷不是合法 JSON 对象: {e}"))?;
     // `type` 非字符串（null/数字/对象）按未知类型处理，整条忽略而非报错
     let Some(r#type) = value_as_string(&r#type) else {
         return Ok(None);
@@ -204,6 +209,9 @@ mod tests {
     fn test_parse_invalid_json_errs() {
         assert!(parse_event("不是json").is_err());
         assert!(parse_event(r#""裸字符串""#).is_err());
+        // 数组载荷：Value 化后 serde 派生 visit_seq 被打开，对象守卫必须拦截
+        assert!(parse_event("[1]").is_err());
+        assert!(parse_event(r#"["task-started","s1"]"#).is_err());
     }
 
     #[test]
@@ -294,6 +302,26 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_all_fields_drift_still_delivers() {
+        // 全字段漂移组合：session_id 数字/title 数字/reason 空对象 → 全部降级，事件仍到达
+        let ev = parse_event(r#"{"type":"task-finished","session_id":123,"title":5,"reason":{}}"#)
+            .unwrap()
+            .unwrap();
+        match ev {
+            DshEvent::TaskFinished {
+                session_id,
+                title,
+                reason,
+            } => {
+                assert_eq!(session_id, "");
+                assert_eq!(title, None);
+                assert_eq!(reason, None);
+            }
+            other => panic!("应为 TaskFinished: {other:?}"),
+        }
     }
 
     #[test]

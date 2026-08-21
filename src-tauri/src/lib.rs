@@ -837,6 +837,8 @@ impl Default for TtsDownloadState {
 /// GUI 展示用的 TTS 配置信息。
 #[derive(Serialize)]
 struct TtsConfigInfo {
+    /// 模型类型（zipvoice/vits/matcha/...），前端据此切换音色语义
+    model_type: String,
     model_dir: String,
     provider: String,
     num_threads: i32,
@@ -869,16 +871,12 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
 
-    let files = [
-        &cfg.encoder,
-        &cfg.decoder,
-        &cfg.vocoder,
-        &cfg.tokens,
-        &cfg.lexicon,
-    ];
-    let models_present = files.iter().all(|p| p.is_file()) && cfg.data_dir.is_dir();
+    let files = zapmomo::tts::config::required_files(cfg.model_type);
+    let models_present = files.iter().all(|f| cfg.model_dir.join(f).is_file())
+        && (!cfg.model_type.requires_data_dir() || cfg.data_dir.is_dir());
 
     Ok(TtsConfigInfo {
+        model_type: cfg.model_type.as_str().to_string(),
         model_dir: cfg.model_dir.display().to_string(),
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
@@ -901,8 +899,7 @@ fn synthesize_inner(
     cfg: &zapmomo::tts::config::ResolvedTtsConfig,
     text: &str,
     speed: f32,
-    reference_wav: &Path,
-    reference_text: &str,
+    voice: &zapmomo::tts::TtsVoiceParams,
 ) -> Result<(), String> {
     let engine = zapmomo::tts::TtsEngine::new(cfg.clone())?;
     let out_dir = zapmomo::config::settings::get_tts_output_dir();
@@ -912,20 +909,14 @@ fn synthesize_inner(
     let out_path = zapmomo::tts::default_output_path();
 
     let progress_app = app.clone();
-    let sample_count = engine.synthesize_to_wav_with_progress(
-        text,
-        speed,
-        reference_wav,
-        reference_text,
-        &out_path,
-        move |p| {
+    let sample_count =
+        engine.synthesize_to_wav_with_progress(text, speed, voice, &out_path, move |p| {
             let _ = progress_app.emit(
                 "tts-progress",
                 zapmomo::tts::reaction::TtsProgress { percent: p },
             );
             true
-        },
-    )?;
+        })?;
 
     let sample_rate = engine.sample_rate();
     let duration = sample_count as f32 / sample_rate as f32;
@@ -941,11 +932,17 @@ fn synthesize_inner(
 }
 
 /// 列出可用参考音色：模型包内置 + 用户自定义音色库。
+///
+/// sid 模型（vits/matcha/kokoro...）无参考音色克隆概念，返回空列表
+/// （前端音色下拉只剩「模型固定」占位并禁用）。
 #[tauri::command]
 fn list_tts_voices() -> Result<Vec<zapmomo::tts::TtsVoice>, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+    if !cfg.model_type.uses_reference_audio() {
+        return Ok(Vec::new());
+    }
     let mut voices = zapmomo::tts::voice::list_builtin_voices(&cfg.model_dir);
     voices.extend(zapmomo::tts::voice_store::list_custom_voices());
     Ok(voices)
@@ -1000,12 +997,14 @@ async fn transcribe_reference_audio(wav_path: String) -> Result<String, String> 
 ///
 /// 校验模型文件后启动独立线程合成，进度经 `tts-progress` 事件推给前端；
 /// 完成后发 `tts-result`（含 wav 路径），线程末发 `tts-stopped`。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn synthesize_tts(
     app: AppHandle,
     state: State<'_, TtsSynthesizeState>,
     text: String,
     speed: Option<f32>,
+    sid: Option<i32>,
     voice: Option<String>,
     reference_wav: Option<String>,
     reference_text: Option<String>,
@@ -1027,35 +1026,38 @@ fn synthesize_tts(
         return Err("语音合成已禁用，请在「模型与能力」中开启语音合成。".to_string());
     }
 
-    // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
-    let files = [
-        &cfg.encoder,
-        &cfg.decoder,
-        &cfg.vocoder,
-        &cfg.tokens,
-        &cfg.lexicon,
-    ];
-    if let Some(missing) = files.iter().find(|p| !p.is_file()) {
+    // 预检模型文件（按模型类型所需文件清单），失败同步返回清晰错误（避免在后台线程里才报错）
+    let files = zapmomo::tts::config::required_files(cfg.model_type);
+    if let Some(missing) = files.iter().find(|f| !cfg.model_dir.join(f).is_file()) {
         return Err(format!(
-            "缺少模型文件: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo tts install-model` 下载模型。",
-            missing.display()
+            "缺少模型文件: {}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。",
+            cfg.model_dir.join(missing).display()
         ));
     }
-    if !cfg.data_dir.is_dir() {
+    if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
         return Err(format!(
-            "缺少数据目录: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo tts install-model` 下载模型。",
+            "缺少数据目录: {}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。",
             cfg.data_dir.display()
         ));
     }
 
-    // 解析参考音色：自定义 wav > 内置音色 id > 配置默认（在后台线程外解析，尽早报错）。
-    let custom_wav = reference_wav.map(std::path::PathBuf::from);
-    let (ref_wav, ref_text) = zapmomo::tts::voice::resolve_reference(
-        &cfg,
-        voice.as_deref(),
-        custom_wav.as_deref(),
-        reference_text.as_deref(),
-    )?;
+    // 合成参数：ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
+    // sid 模型走固定说话人（本期单说话人恒 0）。在后台线程外解析，尽早报错。
+    let voice_params = if cfg.model_type.uses_reference_audio() {
+        let custom_wav = reference_wav.map(std::path::PathBuf::from);
+        let (ref_wav, ref_text) = zapmomo::tts::voice::resolve_reference(
+            &cfg,
+            voice.as_deref(),
+            custom_wav.as_deref(),
+            reference_text.as_deref(),
+        )?;
+        zapmomo::tts::TtsVoiceParams::Reference {
+            wav_path: ref_wav,
+            reference_text: ref_text,
+        }
+    } else {
+        zapmomo::tts::TtsVoiceParams::Sid(sid.unwrap_or(0))
+    };
 
     let speed = speed.unwrap_or(cfg.speed);
 
@@ -1064,7 +1066,7 @@ fn synthesize_tts(
     let thread_app = app.clone();
     let handle = std::thread::spawn(move || {
         tracing::info!("TTS synthesize thread started");
-        let result = synthesize_inner(&thread_app, &cfg, &text, speed, &ref_wav, &ref_text);
+        let result = synthesize_inner(&thread_app, &cfg, &text, speed, &voice_params);
         busy.store(false, Ordering::Relaxed);
         match &result {
             Ok(()) => tracing::info!("TTS synthesize thread finished (clean)"),

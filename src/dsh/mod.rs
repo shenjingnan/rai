@@ -146,8 +146,16 @@ pub fn serve(
     running: &std::sync::atomic::AtomicBool,
     on_ready: &mut dyn FnMut(u16),
 ) -> Result<(), String> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| format!("绑定 127.0.0.1:{port} 失败: {e}"))?;
+    // 固定端口被占时回退随机端口（设计承诺：`port == 0` 随机，非 0 被占则 warn 后重试随机）
+    let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => l,
+        Err(e) if port != 0 => {
+            tracing::warn!("dsh 桥固定端口 127.0.0.1:{port} 被占（{e}），回退随机端口");
+            std::net::TcpListener::bind(("127.0.0.1", 0))
+                .map_err(|e2| format!("回退随机端口绑定失败: {e2}"))?
+        }
+        Err(e) => return Err(format!("绑定 127.0.0.1:{port} 失败: {e}")),
+    };
     let actual = listener
         .local_addr()
         .map_err(|e| format!("获取监听端口失败: {e}"))?
@@ -567,6 +575,38 @@ mod tests {
                 .send(oversized.as_str())
                 .unwrap();
             assert_eq!(resp.status(), 413);
+
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            join_with_deadline(handle, Duration::from_secs(1));
+        });
+    }
+
+    /// 固定端口被占时 serve 应回退随机端口（设计承诺）。
+    #[test]
+    fn test_serve_falls_back_to_random_port_when_fixed_taken() {
+        run_with_temp_home(|_| {
+            // 先占住一个固定端口
+            let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let fixed = blocker.local_addr().unwrap().port();
+
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let (event_tx, _event_rx) = std::sync::mpsc::channel::<DshEvent>();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<u16>();
+            let r = running.clone();
+            let handle = std::thread::spawn(move || {
+                let mut sink = move |ev: DshEvent| {
+                    let _ = event_tx.send(ev);
+                };
+                let mut on_ready = |port: u16| {
+                    let _ = ready_tx.send(port);
+                };
+                serve(fixed, "test-token", &mut sink, &r, &mut on_ready).unwrap();
+            });
+            let actual = ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("on_ready 应回报端口");
+            assert_ne!(actual, fixed, "固定端口被占时应回退到随机端口");
+            assert!(actual > 0);
 
             running.store(false, std::sync::atomic::Ordering::Relaxed);
             join_with_deadline(handle, Duration::from_secs(1));

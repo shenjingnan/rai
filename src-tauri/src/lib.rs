@@ -2022,6 +2022,8 @@ struct DshConfigInfo {
     running: bool,
     /// 实际监听端口（RuntimeActual；None = 未就绪）
     actual_port: Option<u16>,
+    /// 最近一次桥线程错误（启动失败/退出异常；None = 正常），供设置页展示
+    error: Option<String>,
     discovery_path: String,
 }
 
@@ -2037,6 +2039,11 @@ fn get_dsh_config(state: State<'_, DshBridgeState>) -> Result<DshConfigInfo, Str
         record_to_history: cfg.record_to_history,
         running: state.is_running(),
         actual_port: (actual != 0).then_some(actual),
+        error: state
+            .last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         discovery_path: zapmomo::dsh::discovery_file().display().to_string(),
     })
 }

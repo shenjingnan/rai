@@ -388,6 +388,8 @@ export interface DshConfigInfo {
   record_to_history: boolean;
   running: boolean;
   actual_port: number | null;
+  /** 最近一次桥线程错误（启动失败/退出异常；null = 正常），设置页展示 */
+  error: string | null;
   discovery_path: string;
 }
 

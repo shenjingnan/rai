@@ -27,10 +27,12 @@ export function DshSection() {
 
   useEffect(reload, [reload]);
 
-  // 运行状态实时同步（桥启动/停止事件）
+  // 运行状态实时同步（桥启动/停止事件；error 一并带上供展示）
   useEffect(() => {
     const unlisten = onDshBridgeStatus((s) => {
-      setInfo((prev) => (prev ? { ...prev, running: s.running, actual_port: s.port } : prev));
+      setInfo((prev) =>
+        prev ? { ...prev, running: s.running, actual_port: s.port, error: s.error } : prev,
+      );
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -77,6 +79,11 @@ export function DshSection() {
           ? ` 桥运行中 · 端口 ${info.actual_port}。`
           : " 桥未启动。"}
       </p>
+      {info.error && (
+        <p className="text-sm text-destructive" data-testid="dsh-bridge-error">
+          桥异常：{info.error}
+        </p>
+      )}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-4 text-sm">
           <span>启用 dsh 桥</span>

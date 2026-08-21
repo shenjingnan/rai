@@ -86,9 +86,10 @@ fn test_parse_dsh_section() {
 
 #[test]
 fn test_dsh_section_absent_defaults_none() {
-    run_with_temp_home(|_| {
-        let cfg = load_settings().unwrap();
-        assert!(cfg.is_none());
+    run_with_temp_home(|home| {
+        write_toml_settings(home, "debug = true\n");
+        let cfg = load_settings().unwrap().unwrap();
+        assert!(cfg.dsh.is_none());
     });
 }
 ```

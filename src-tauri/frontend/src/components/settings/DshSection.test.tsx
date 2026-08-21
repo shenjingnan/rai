@@ -46,8 +46,8 @@ describe("DshSection", () => {
     invokeMock.mockResolvedValue(baseInfo);
     render(<DshSection />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalled());
-    const toggles = screen.getAllByRole("switch");
-    await userEvent.click(toggles[0]);
+    const toggle = screen.getByRole("switch", { name: "启用 dsh 桥" });
+    await userEvent.click(toggle);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("set_dsh_enabled", { enabled: false }),
     );

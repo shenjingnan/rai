@@ -51,15 +51,10 @@ export function DshSection() {
     }
   };
 
-  const patchParams = async (params: Partial<DshConfigInfo>) => {
+  const patchParams = async (params: { voice_enabled?: boolean; record_to_history?: boolean }) => {
     setBusy(true);
     try {
-      await api.setDshParams({
-        params: {
-          voice_enabled: params.voice_enabled,
-          record_to_history: params.record_to_history,
-        },
-      });
+      await api.setDshParams({ params });
       setInfo((prev) => (prev ? { ...prev, ...params } : prev));
     } catch (e) {
       toast.error(String(e));

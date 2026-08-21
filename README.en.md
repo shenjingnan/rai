@@ -40,6 +40,7 @@ An open-source, real-time desktop **AI companion** with voice, memory, and a cus
 - **Voice Session** — wake word → ASR → LLM sentence-level streaming reply → TTS playback, with wake-word barge-in and hands-free follow-up
 - **Live2D Virtual Character** — persistent character window (Cubism 2/3/4/5) with position memory and percentage scaling; drag without stealing focus
 - **Desktop App** — Tauri 2 GUI (multi-page control panel: Overview / Chat / Companion / Models / Settings, plus a persistent character window), with installers for Windows / macOS / Linux
+- **deepseek-harness Integration** — the desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time, announcing task started / finished / failed / interrupted with a speech bubble + voice ([usage guide](docs/content/docs/desktop-app/dsh-bridge.mdx))
 - **CLI** — `kws` / `asr` / `tts` / `llm` / `voice` subcommands covering every capability, with bash / zsh / fish / powershell / elvish autocompletion
 
 ## Download the Desktop App
@@ -391,6 +392,27 @@ model_dir = "/path/to/live2d-model"      # Model root directory (containing .mod
 window_position = { x = 100, y = 100 }   # Character window position memory
 window_scale = 1.0                       # Window scaling (0.25 ~ 2.0)
 ```
+
+### deepseek-harness Integration (dsh Bridge)
+
+The desktop companion reacts to [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) task state in real time: when a task **starts / finishes / fails / is interrupted**, the Live2D character announces it with a speech bubble + voice. Under the hood it is a loopback HTTP push (no polling) — install the `@zapmomo-ai/dsh-plugin` plugin on the dsh side to connect.
+
+- **One-click connect** — the "External sensing · dsh bridge" settings section is enabled by default; the bridge port and token are auto-written to `~/.zapmomo/runtime/dsh-bridge.json`
+- **Install the plugin** — `dsh plugin --profile web add @zapmomo-ai/dsh-plugin`, then restart `dsh web`
+- **Tunable** — the settings panel / `[dsh]` config section toggle voice announcements and whether events are recorded to chat history
+- **Secure & isolated** — binds `127.0.0.1` only with Bearer-token auth; the plugin silently skips when ZapMomo is not running, never blocking dsh
+
+Add a `[dsh]` section to `~/.zapmomo/settings.toml` to override defaults (all optional):
+
+```toml
+[dsh]
+enabled = true            # Enable the bridge service (loopback HTTP), default true
+port = 0                  # Listen port; 0 = random (recommended), default 0
+voice_enabled = true      # Voice-announce events (silent during an active voice session), default true
+record_to_history = true  # Record events into chat history, default true
+```
+
+Full details and the event mapping: see the [docs site page](docs/content/docs/desktop-app/dsh-bridge.mdx) (Chinese); the plugin source lives in `integrations/dsh-plugin/README.md`.
 
 ## Contributing
 

@@ -514,6 +514,17 @@ pub enum CompanionWindowLayer {
     Back,
 }
 
+/// 角色窗口拖拽模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionDragMode {
+    /// 直接拖动：按住左键即可移动窗口（默认，现状）。
+    #[default]
+    Direct,
+    /// 修饰键拖动：需按住 cmd（macOS）/ Ctrl（Windows、Linux）才能拖动。
+    Modifier,
+}
+
 /// Live2D 角色配置。
 ///
 /// 字段可缺省：未配置时回退到 `live2d::config` 的默认目录。
@@ -540,6 +551,9 @@ pub struct Live2dSettings {
     /// 角色窗口位置锁定（true = 禁止拖动窗口；滚轮缩放与右键菜单保留；缺省视为 false）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked: Option<bool>,
+    /// 角色窗口拖拽模式（direct = 左键直接拖动；modifier = 需按住 cmd/Ctrl；缺省视为 direct）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag_mode: Option<CompanionDragMode>,
 }
 
 /// 本地 LLM 配置。
@@ -1069,14 +1083,17 @@ mod tests {
             click_through: Some(true),
             window_layer: Some(CompanionWindowLayer::Back),
             locked: Some(true),
+            drag_mode: Some(CompanionDragMode::Modifier),
         };
         let toml_str = toml::to_string(&live2d).unwrap();
         assert!(toml_str.contains("click_through = true"));
         assert!(toml_str.contains("window_layer = \"back\""));
         assert!(toml_str.contains("locked = true"));
+        assert!(toml_str.contains("drag_mode = \"modifier\""));
         let deserialized: Live2dSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(live2d, deserialized);
         assert_eq!(deserialized.window_layer, Some(CompanionWindowLayer::Back));
+        assert_eq!(deserialized.drag_mode, Some(CompanionDragMode::Modifier));
         // 未记录位置/比例/穿透/层级时字段应被 skip_serializing_if 忽略
         let none_pos = Live2dSettings {
             model_dir: Some("/tmp/some-model".to_string()),
@@ -1086,6 +1103,7 @@ mod tests {
             click_through: None,
             window_layer: None,
             locked: None,
+            drag_mode: None,
         };
         let none_toml = toml::to_string(&none_pos).unwrap();
         assert!(!none_toml.contains("window_position"));
@@ -1094,8 +1112,11 @@ mod tests {
         assert!(!none_toml.contains("click_through"));
         assert!(!none_toml.contains("window_layer"));
         assert!(!none_toml.contains("locked"));
+        assert!(!none_toml.contains("drag_mode"));
         // 缺省层级为置顶
         assert_eq!(CompanionWindowLayer::default(), CompanionWindowLayer::Front);
+        // 缺省拖拽模式为直接拖动
+        assert_eq!(CompanionDragMode::default(), CompanionDragMode::Direct);
     }
 
     #[test]
@@ -1105,9 +1126,19 @@ mod tests {
             let result = load_settings().unwrap().unwrap();
             let live2d = result.live2d.unwrap();
             assert_eq!(live2d.model_dir.as_deref(), Some("/tmp/model-dir"));
-            // 旧版配置无 click_through / locked 字段 → 反序列化回退 None（视为关闭）。
+            // 旧版配置无 click_through / locked / drag_mode 字段 → 反序列化回退 None（视为关闭/直拖）。
             assert_eq!(live2d.click_through, None);
             assert_eq!(live2d.locked, None);
+            assert_eq!(live2d.drag_mode, None);
+        });
+    }
+
+    #[test]
+    fn test_live2d_drag_mode_invalid_value_rejected() {
+        run_with_temp_home(|home| {
+            write_toml_settings(home, "[live2d]\ndrag_mode = \"bogus\"\n");
+            let err = load_settings().unwrap_err();
+            assert!(err.to_string().contains("drag_mode"));
         });
     }
 

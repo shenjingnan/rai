@@ -24,8 +24,8 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use zapmomo::asr::config::AsrParamsPatch;
 use zapmomo::asr::{AsrReaction, AsrResult};
 use zapmomo::config::settings::{
-    self, AsrSettings, CompanionWindowLayer, CompanionWindowPosition, KwsSettings, Live2dSettings,
-    LlmSettings, TtsSettings,
+    self, AsrSettings, CompanionDragMode, CompanionWindowLayer, CompanionWindowPosition,
+    KwsSettings, Live2dSettings, LlmSettings, TtsSettings,
 };
 use zapmomo::datetime::iso_timestamp_now;
 use zapmomo::kws::{KwsResult, Reaction, ReactionOutcome};
@@ -1987,6 +1987,7 @@ struct Live2dConfigInfo {
     click_through: Option<bool>,
     window_layer: Option<CompanionWindowLayer>,
     locked: Option<bool>,
+    drag_mode: Option<CompanionDragMode>,
     settings_path: String,
 }
 
@@ -2012,6 +2013,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let click_through = live2d_settings.as_ref().and_then(|l| l.click_through);
     let window_layer = live2d_settings.as_ref().and_then(|l| l.window_layer);
     let locked = live2d_settings.as_ref().and_then(|l| l.locked);
+    let drag_mode = live2d_settings.as_ref().and_then(|l| l.drag_mode);
 
     Ok(Live2dConfigInfo {
         model_dir: Some(cfg.model_dir.display().to_string()),
@@ -2023,6 +2025,7 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
         click_through,
         window_layer,
         locked,
+        drag_mode,
         settings_path: settings::get_settings_path().display().to_string(),
     })
 }
@@ -2377,6 +2380,20 @@ fn apply_companion_locked(app: &AppHandle, enabled: bool) -> Result<(), String> 
     Ok(())
 }
 
+/// 保存并应用角色窗口拖拽模式（内部实现，供 command 调用）。
+///
+/// modifier 模式仅收紧前端拖动条件（CompanionRoot 的 mousedown → startDragging
+/// 需按住 cmd/Ctrl），滚轮缩放与右键菜单不受影响；与 locked 正交（locked 优先，
+/// 完全禁止拖动）。拖拽模式不进右键/托盘菜单，无需 rebuild_tray_menu。
+fn apply_companion_drag_mode(app: &AppHandle, mode: CompanionDragMode) -> Result<(), String> {
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let live2d = settings.live2d.get_or_insert_with(Live2dSettings::default);
+    live2d.drag_mode = Some(mode);
+    settings::save_settings(&settings)?;
+    let _ = app.emit("companion-drag-mode-changed", mode);
+    Ok(())
+}
+
 /// 读取持久化的角色窗口显示层级（缺省置顶）。
 fn current_companion_layer() -> CompanionWindowLayer {
     settings::load_settings()
@@ -2617,6 +2634,15 @@ fn set_companion_layer(app: AppHandle, layer: CompanionWindowLayer) -> Result<()
 #[tauri::command]
 fn set_companion_locked(app: AppHandle, enabled: bool) -> Result<(), String> {
     apply_companion_locked(&app, enabled)
+}
+
+/// 设置并持久化角色窗口拖拽模式（modifier = 需按住 cmd/Ctrl 才能拖动）。
+///
+/// 由设置面板调用：写入 `~/.zapmomo/settings.toml` 的 `[live2d].drag_mode`，
+/// 并通过 `companion-drag-mode-changed` 事件通知角色窗口实时生效。
+#[tauri::command]
+fn set_companion_drag_mode(app: AppHandle, mode: CompanionDragMode) -> Result<(), String> {
+    apply_companion_drag_mode(&app, mode)
 }
 
 /// 读取是否在 macOS Dock / Cmd+Tab 中隐藏应用图标（Accessory 模式）。
@@ -4479,6 +4505,7 @@ pub fn run() {
             set_companion_click_through,
             set_companion_layer,
             set_companion_locked,
+            set_companion_drag_mode,
             show_companion_menu,
             get_hide_dock_icon,
             set_hide_dock_icon,

@@ -112,6 +112,9 @@ export interface AsrResult {
 /** 角色窗口显示层级：置顶（front）悬浮在所有窗口之上 / 置底（back）沉到窗口之下并点穿 */
 export type CompanionWindowLayer = "front" | "back";
 
+/** 角色窗口拖拽模式：direct（左键直接拖动，默认）/ modifier（需按住 cmd/Ctrl） */
+export type CompanionDragMode = "direct" | "modifier";
+
 /** `get_live2d_config` 返回 */
 export interface Live2dConfigInfo {
   model_dir: string | null;
@@ -124,6 +127,8 @@ export interface Live2dConfigInfo {
   window_layer: CompanionWindowLayer | null;
   /** 位置锁定（禁止拖动窗口；null = 旧后端未返回，视为未锁定） */
   locked: boolean | null;
+  /** 拖拽模式（null = 旧后端未返回，视为 direct） */
+  drag_mode: CompanionDragMode | null;
   settings_path: string;
 }
 

@@ -6,6 +6,7 @@ import { useLive2dConfig } from "@/hooks/useLive2dConfig";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 import {
   api,
+  onCompanionDragModeChanged,
   onCompanionLayerChanged,
   onCompanionLockedChanged,
   onCompanionOpacityChanged,
@@ -14,7 +15,7 @@ import {
   toAssetUrl,
 } from "@/lib/tauri";
 import { centeredResizeTarget } from "@/lib/windowResize";
-import type { CompanionWindowLayer } from "@/types/tauri";
+import type { CompanionDragMode, CompanionWindowLayer } from "@/types/tauri";
 
 /** 角色窗口基准高度上限（100% 时高度 = min(480, 屏幕可用高度 × 0.6)）。 */
 const BASE_HEIGHT = 480;
@@ -39,7 +40,7 @@ const WHEEL_SCALE_STEP = 1.1;
  *   `style.opacity` 应用，语音状态点不受影响）；
  * - 窗口尺寸由「基准高度 × scale」派生（宽度按模型宽高比），缩放入口为设置面板、cmd/ctrl+滚轮
  *   与原生右键菜单（后端弹原生菜单，不受小窗口裁剪）；
- * - 按住左键拖动移动窗口（位置锁定时禁止）；右键弹出原生上下文菜单。
+ * - 按住左键拖动移动窗口（位置锁定时禁止；修饰键模式下需按住 cmd/ctrl）；右键弹出原生上下文菜单。
  */
 export function CompanionRoot() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -54,6 +55,8 @@ export function CompanionRoot() {
   const [layer, setLayer] = useState<CompanionWindowLayer>("front");
   // 位置锁定：禁止拖动窗口（滚轮缩放与右键菜单保留，右键菜单是解锁入口）。
   const [locked, setLocked] = useState(false);
+  // 拖拽模式：modifier = 需按住 cmd/ctrl 才能拖动（缺省 direct = 直接拖动）。
+  const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
   const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
 
   // 用 ref 保存最新值，供异步回调（滚轮/事件/模型加载）读取，避免闭包过期。
@@ -135,6 +138,7 @@ export function CompanionRoot() {
     if (config.window_layer) setLayer(config.window_layer);
     // 旧后端 / 测试桩可能不返回该字段，兜底为未锁定。
     setLocked(config.locked ?? false);
+    setDragMode(config.drag_mode ?? "direct");
     void resizeTo(aspectRatioRef.current, s);
   }, [config, resizeTo]);
 
@@ -186,6 +190,16 @@ export function CompanionRoot() {
   useEffect(() => {
     const unlisten = onCompanionLockedChanged((v) => {
       setLocked(v);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 设置面板切换拖拽模式时同步（只影响 mousedown 拖动条件，不影响缩放与右键）。
+  useEffect(() => {
+    const unlisten = onCompanionDragModeChanged((m) => {
+      setDragMode(m);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -259,6 +273,7 @@ export function CompanionRoot() {
       className="relative h-screen w-screen select-none overflow-hidden bg-transparent"
       onMouseDown={(e) => {
         if (e.button !== 0 || layer === "back" || locked) return;
+        if (dragMode === "modifier" && !(e.metaKey || e.ctrlKey)) return;
         void getCurrentWindow().startDragging();
       }}
       onContextMenu={(e) => {

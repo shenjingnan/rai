@@ -109,6 +109,114 @@ impl EventThrottle {
     }
 }
 
+/// 桥服务主循环：绑定 loopback -> `on_ready(实际端口)` -> 循环收事件交给 sink。
+///
+/// - `port == 0` 绑随机端口（推荐，避免冲突）
+/// - `running == false` 后最多一个 [`RECV_TIMEOUT`] 周期内退出
+/// - 事件处理（节流/台词/分发）在 sink 闭包内，本层只管 HTTP 语义
+pub fn serve(
+    port: u16,
+    token: &str,
+    sink: &mut dyn FnMut(event::DshEvent),
+    running: &std::sync::atomic::AtomicBool,
+    on_ready: &mut dyn FnMut(u16),
+) -> Result<(), String> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("绑定 127.0.0.1:{port} 失败: {e}"))?;
+    let actual = listener
+        .local_addr()
+        .map_err(|e| format!("获取监听端口失败: {e}"))?
+        .port();
+    let server = tiny_http::Server::from_listener(listener, None)
+        .map_err(|e| format!("启动 HTTP 服务失败: {e}"))?;
+    on_ready(actual);
+    tracing::info!("dsh 桥监听 127.0.0.1:{actual}");
+
+    loop {
+        if !running.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        match server.recv_timeout(RECV_TIMEOUT) {
+            Ok(Some(mut request)) => {
+                let status = handle_request(&mut request, token, sink);
+                let _ = request.respond(tiny_http::Response::empty(status));
+            }
+            Ok(None) => {} // 超时：回循环头检查 running
+            Err(e) => tracing::warn!("dsh 桥接收请求异常: {e}"),
+        }
+    }
+}
+
+/// 处理单条请求，返回响应状态码。
+fn handle_request(
+    request: &mut tiny_http::Request,
+    token: &str,
+    sink: &mut dyn FnMut(event::DshEvent),
+) -> u16 {
+    // 仅接受 POST 方法
+    if request.method() != &tiny_http::Method::Post {
+        return 405;
+    }
+    // 仅接受 /dsh/events 路径
+    if request.url() != "/dsh/events" {
+        return 404;
+    }
+    // 验证 Bearer token
+    let expected = format!("Bearer {token}");
+    let authorized = request
+        .headers()
+        .iter()
+        .any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected);
+    if !authorized {
+        return 401;
+    }
+    // 拒绝超大载荷
+    if request
+        .body_length()
+        .is_some_and(|len| len as u64 > MAX_BODY_BYTES)
+    {
+        return 413;
+    }
+    // 读取请求体（上限 MAX_BODY_BYTES，手动限制因 take 不可用于 trait object）
+    let mut body = String::new();
+    {
+        let mut buf = [0u8; 4096];
+        let mut total: u64 = 0;
+        let reader = request.as_reader();
+        loop {
+            match std::io::Read::read(reader, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    total += n as u64;
+                    if total > MAX_BODY_BYTES {
+                        return 413;
+                    }
+                    body.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(_) => return 400,
+            }
+        }
+    }
+    // 解析事件并分发到 sink
+    match event::parse_event(&body) {
+        Ok(Some(ev)) => {
+            sink(ev);
+            204
+        }
+        Ok(None) => {
+            tracing::debug!(
+                "dsh 桥忽略未知类型事件: {}",
+                body.chars().take(200).collect::<String>()
+            );
+            204
+        }
+        Err(e) => {
+            tracing::warn!("dsh 桥事件解析失败: {e}");
+            400
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +311,99 @@ mod tests {
         };
         assert!(t.allow(&a), "空 session 首次应放行");
         assert!(!t.allow(&a), "空 session 同类型窗口内应拦截");
+    }
+
+    /// 集成测试：serve 桥服务主循环的 HTTP 语义（401/400/404/405/204）与停止行为。
+    #[test]
+    fn test_serve_roundtrip() {
+        run_with_temp_home(|_| {
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let (event_tx, event_rx) = std::sync::mpsc::channel::<DshEvent>();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<u16>();
+            let r = running.clone();
+            let handle = std::thread::spawn(move || {
+                let mut sink = move |ev: DshEvent| {
+                    let _ = event_tx.send(ev);
+                };
+                let mut on_ready = |port: u16| {
+                    let _ = ready_tx.send(port);
+                };
+                serve(0, "test-token", &mut sink, &r, &mut on_ready).unwrap();
+            });
+
+            let port = ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("on_ready 应回报端口");
+
+            // 创建不把非 2xx 当错误的 agent，方便断言所有状态码
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into();
+
+            // 有效事件 -> 204 且 sink 收到
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer test-token")
+                .send(r#"{"type":"task-started","session_id":"s1","title":"修 bug"}"#)
+                .unwrap();
+            assert_eq!(resp.status(), 204);
+            let ev = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(
+                ev,
+                DshEvent::TaskStarted {
+                    session_id: "s1".to_string(),
+                    title: Some("修 bug".to_string()),
+                }
+            );
+
+            // 错 token -> 401
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer wrong")
+                .send(r#"{"type":"task-started","session_id":"s1"}"#)
+                .unwrap();
+            assert_eq!(resp.status(), 401);
+
+            // 坏 JSON -> 400
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer test-token")
+                .send("not-json")
+                .unwrap();
+            assert_eq!(resp.status(), 400);
+
+            // 未知 type -> 204 但不产生事件
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .header("Authorization", "Bearer test-token")
+                .send(r#"{"type":"future-event","session_id":"s1"}"#)
+                .unwrap();
+            assert_eq!(resp.status(), 204);
+            // 使用 recv_timeout 断言超时，避免前序 POST 排队事件干扰
+            assert!(
+                event_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+                "未知类型不应产生事件"
+            );
+
+            // 未知路径 -> 404
+            let resp = agent
+                .post(&format!("http://127.0.0.1:{port}/other"))
+                .header("Authorization", "Bearer test-token")
+                .send("")
+                .unwrap();
+            assert_eq!(resp.status(), 404);
+
+            // 非 POST -> 405
+            let resp = agent
+                .get(&format!("http://127.0.0.1:{port}/dsh/events"))
+                .call()
+                .unwrap();
+            assert_eq!(resp.status(), 405);
+
+            // 停止：running=false 后线程应在 ~1 个 RECV_TIMEOUT 内退出
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            handle.join().unwrap();
+        });
     }
 }

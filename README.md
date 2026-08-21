@@ -83,7 +83,9 @@ xattr -cr "/Applications/ZapMomo.app"
 
 其余能力（KWS 监听、ASR 转写、TTS 合成、LLM 配置）均可在控制面板的「模型」「设置」页中直接使用与调整。
 
-## 功能说明
+<details>
+
+<summary>📖 功能说明（语音会话 / AI 大脑 / Live2D 角色 / 桌宠播报 / 自启动 / 重启）</summary>
 
 ### 语音会话
 
@@ -127,6 +129,8 @@ dsh plugin --profile web add @zapmomo-ai/dsh-plugin
 ### 一键重启
 
 设置页「通用」、角色右键菜单与托盘菜单均提供「重启」：退出后自动重新拉起，用于让需要重启才能生效的配置立即生效。
+
+</details>
 
 ## 高级配置
 

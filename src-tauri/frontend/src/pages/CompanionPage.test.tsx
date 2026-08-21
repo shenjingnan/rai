@@ -2,11 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/toast";
-import type {
-  CompanionDragMode,
-  CompanionLibraryView,
-  CompanionModelInfo,
-} from "@/types/tauri";
+import type { CompanionDragMode, CompanionLibraryView, CompanionModelInfo } from "@/types/tauri";
 import { CompanionPage } from "./CompanionPage";
 
 type StageCatalog = import("@/components/live2d/previewManager").Live2dCatalog;

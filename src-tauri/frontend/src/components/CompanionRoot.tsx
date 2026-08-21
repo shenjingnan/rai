@@ -138,7 +138,7 @@ export function CompanionRoot() {
     if (config.window_layer) setLayer(config.window_layer);
     // 旧后端 / 测试桩可能不返回该字段，兜底为未锁定。
     setLocked(config.locked ?? false);
-    if (config.drag_mode) setDragMode(config.drag_mode);
+    setDragMode(config.drag_mode ?? "direct");
     void resizeTo(aspectRatioRef.current, s);
   }, [config, resizeTo]);
 

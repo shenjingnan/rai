@@ -56,7 +56,7 @@ export function TtsModelDialog({ open, onClose }: TtsModelDialogProps) {
               className="flex items-center justify-between gap-3 rounded-lg border border-panel-border px-3 py-2.5"
             >
               <div className="min-w-0">
-                <p className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
                   {p.name}
                   <Badge
                     variant="outline"
@@ -64,7 +64,7 @@ export function TtsModelDialog({ open, onClose }: TtsModelDialogProps) {
                   >
                     {ttsModelKindLabel(p.kind)}
                   </Badge>
-                </p>
+                </div>
                 <p className="mt-0.5 text-xs text-text-muted">
                   {`${p.languages} · ${formatBytes(p.sizeBytes)} · ${p.tagline}`}
                 </p>

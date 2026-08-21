@@ -114,6 +114,50 @@ let asrListening = false;
 /** 模拟后端持久化的麦克风（get_microphone / set_microphone）。 */
 let mic = "";
 
+/** 模型库列表桩的最小形状（list_model_library 返回条目的测试子集）。 */
+type LibraryStub = {
+  id: string;
+  displayName: string;
+  modelType: string;
+  installState: string;
+  current: boolean;
+  localPath: string | null;
+  installId: string | null;
+  repoId: string | null;
+  ownership: string;
+};
+
+/** 默认模型库桩：双语已装为当前，zh-14m 未装（弹窗只依赖这两条）。 */
+function defaultAsrModelLibrary(): LibraryStub[] {
+  return [
+    {
+      id: "asr-streaming-bilingual-zh-en",
+      displayName: "Streaming Zipformer ASR zh-en",
+      modelType: "asr",
+      installState: "installed",
+      current: true,
+      localPath:
+        "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+      installId: "asr-streaming-bilingual-zh-en",
+      repoId: null,
+      ownership: "managed",
+    },
+    {
+      id: "asr-streaming-zh-14m",
+      displayName: "Streaming Zipformer ASR zh 14M",
+      modelType: "asr",
+      installState: "not_installed",
+      current: false,
+      localPath: null,
+      installId: null,
+      repoId: null,
+      ownership: "managed",
+    },
+  ];
+}
+
+let modelLibrary: LibraryStub[] = defaultAsrModelLibrary();
+
 /** 默认 command 桩：非 ASR 测试用例直接复用。 */
 function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
   switch (cmd) {
@@ -146,6 +190,17 @@ function defaultInvoke(cmd: string, args?: Record<string, unknown>) {
     case "download_asr_model":
       asrConfig = { ...asrConfig, models_present: true };
       return Promise.resolve(undefined);
+    case "list_model_library":
+      return Promise.resolve(modelLibrary);
+    case "set_current_model":
+      return Promise.resolve({
+        modelType: "asr",
+        modelId: "asr-streaming-zh-14m",
+        path: "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23",
+        runtimeAction: "restart_required",
+        effectiveImmediately: false,
+        message: "已将 Streaming Zipformer ASR zh 14M 设为 ASR 当前模型，将在下次启动识别时生效",
+      });
     case "get_tts_config":
       return Promise.resolve({ ...TTS_CONFIG });
     case "list_tts_voices":
@@ -173,6 +228,7 @@ beforeEach(() => {
   asrConfig = { ...ASR_CONFIG };
   asrListening = false;
   mic = "";
+  modelLibrary = defaultAsrModelLibrary();
   invokeMock.mockImplementation(defaultInvoke);
 });
 
@@ -781,5 +837,97 @@ describe("AsrPage（语音识别配置）", () => {
     await user.click(screen.getByRole("link", { name: "配置语音识别（ASR）" }));
     expect(await screen.findByText("语音识别（ASR）配置")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "麦克风来源" })).toHaveTextContent("内置麦克风");
+  });
+
+  it("当前模型行有「切换模型」入口，点击打开选择模型弹窗", async () => {
+    asrConfig = { ...asrConfig, models_present: true };
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("未识别");
+
+    await user.click(screen.getByRole("button", { name: "切换识别模型" }));
+    expect(await screen.findByText("选择识别模型")).toBeInTheDocument();
+    // 弹窗内展示内置预设：双语为当前，zh-14m 未装 → 下载按钮
+    expect(screen.getByText("Streaming Zipformer ASR zh-en")).toBeInTheDocument();
+    expect(screen.getByText("Streaming Zipformer ASR zh 14M")).toBeInTheDocument();
+    // 「当前模型」徽标依赖 list_model_library 异步返回（列表加载前两行都是下载按钮）；
+    // 页面行标签与弹窗徽标同名，取全部匹配断言两者都在
+    const currentBadges = await screen.findAllByText("当前模型");
+    expect(currentBadges.length).toBeGreaterThanOrEqual(2);
+    expect(
+      await screen.findByRole("button", { name: "下载Streaming Zipformer ASR zh 14M" }),
+    ).toBeInTheDocument();
+  });
+
+  it("正在识别时切换模型：set_current_model 后自动重启识别（stop → start）", async () => {
+    asrConfig = { ...asrConfig, models_present: true };
+    // zh-14m 已安装，可设为当前
+    modelLibrary = defaultAsrModelLibrary().map((m) =>
+      m.id === "asr-streaming-zh-14m"
+        ? {
+            ...m,
+            installState: "installed",
+            localPath:
+              "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23",
+            installId: m.id,
+          }
+        : m,
+    );
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("未识别");
+
+    // 开启识别
+    await user.click(screen.getByRole("switch", { name: "语音识别开关" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
+    });
+    invokeMock.mockClear();
+
+    // 打开切换弹窗，把 zh-14m 设为当前
+    await user.click(screen.getByRole("button", { name: "切换识别模型" }));
+    await user.click(await screen.findByRole("button", { name: "设为当前" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+        id: "asr-streaming-zh-14m",
+      });
+    });
+    // 后端返回 restart_required → 前端重启识别使新模型立即生效（只带 device，无 keywords）
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("stop_asr_listen");
+    });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("start_asr_listen", { device: null });
+    });
+  });
+
+  it("未识别时切换模型：只写配置，不重启识别", async () => {
+    asrConfig = { ...asrConfig, models_present: true };
+    modelLibrary = defaultAsrModelLibrary().map((m) =>
+      m.id === "asr-streaming-zh-14m"
+        ? {
+            ...m,
+            installState: "installed",
+            localPath:
+              "/home/user/.zapmomo/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23",
+            installId: m.id,
+          }
+        : m,
+    );
+    const user = userEvent.setup();
+    renderAsrPage();
+    await screen.findByText("未识别");
+
+    await user.click(screen.getByRole("button", { name: "切换识别模型" }));
+    await user.click(await screen.findByRole("button", { name: "设为当前" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_current_model", {
+        id: "asr-streaming-zh-14m",
+      });
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("stop_asr_listen");
+    expect(invokeMock).not.toHaveBeenCalledWith("start_asr_listen");
   });
 });

@@ -374,7 +374,14 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             kws.keywords_file = None;
         }
         ModelType::Asr => {
-            cfg.asr.get_or_insert_with(Default::default).model_dir = Some(path_str);
+            let asr = cfg.asr.get_or_insert_with(Default::default);
+            asr.model_dir = Some(path_str);
+            // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖会污染新模型的文件探测，
+            // 交回 resolve 自动探测（与 KWS 分支同款取舍）。
+            asr.encoder = None;
+            asr.decoder = None;
+            asr.joiner = None;
+            asr.tokens = None;
         }
         ModelType::Tts => {
             cfg.tts.get_or_insert_with(Default::default).model_dir = Some(path_str);
@@ -1103,21 +1110,7 @@ pub fn install_managed_model(
         return Err(ModelError::Cancelled);
     }
 
-    // 资产清单：required + optional（optional 计入总字节，保证总体进度 ≤ 100%）
-    let mut roles: Vec<&str> = model.required_assets.iter().map(String::as_str).collect();
-    roles.extend(model.optional_assets.iter().map(String::as_str));
-    let mut total_bytes: u64 = 0;
-    let mut assets: Vec<(
-        &'static crate::kws::model::ModelAsset,
-        &'static [&'static str],
-    )> = Vec::new();
-    for role in &roles {
-        let asset = crate::kws::model::asset_by_role(role)
-            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
-        total_bytes += asset.size_bytes;
-        assets.push((asset, registry::required_files_for_role(role)));
-    }
-
+    let (assets, total_bytes) = staged_assets(model)?;
     let final_dir = stage_and_commit(model, &assets, total_bytes, on_progress, cancel)?;
 
     // optional assets best-effort（独立目录，失败仅 warn，不回滚主模型）
@@ -1146,6 +1139,37 @@ pub fn install_managed_model(
     }
 
     Ok(final_dir)
+}
+
+/// staging 安装清单条目：（资产, 安装完成所需文件名清单）。
+type StagedAsset = (
+    &'static crate::kws::model::ModelAsset,
+    &'static [&'static str],
+);
+
+/// 收集 staging 安装清单与总字节：required 资产进清单，optional 资产只计入字节。
+///
+/// optional（如 ASR 的 punctuation）是独立目录的 tar.bz2，绝不能进 staging——
+/// `extract_and_place` 的原子落位是「目标已存在先移除」，第二个 tar.bz2 落到同一
+/// staging 目录会摧毁先解压的主模型文件，导致安装后完整性校验必然失败（ASR 模型库
+/// 下载必失败的根因）。optional 的实际安装由 [`install_managed_model`] commit 后的
+/// best-effort 循环装到各自独立目录。
+fn staged_assets(model: &RegistryModel) -> Result<(Vec<StagedAsset>, u64), ModelError> {
+    let mut total_bytes: u64 = 0;
+    let mut assets: Vec<StagedAsset> = Vec::new();
+    for role in model
+        .required_assets
+        .iter()
+        .chain(model.optional_assets.iter())
+    {
+        let asset = crate::kws::model::asset_by_role(role)
+            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
+        total_bytes += asset.size_bytes;
+        if model.required_assets.contains(role) {
+            assets.push((asset, registry::required_files_for_role(role)));
+        }
+    }
+    Ok((assets, total_bytes))
 }
 
 /// staging + 整体校验 + commit 的可测试核心：给定具体资产（可注入本地测试服务器）。
@@ -1356,6 +1380,42 @@ mod tests {
     }
 
     #[test]
+    fn test_set_selected_asr_resets_file_overrides() {
+        run_with_temp_home(|home| {
+            // 预写旧模型的文件级覆盖（模拟双语时代的手写配置）
+            update_settings(|cfg| {
+                let asr = cfg.asr.get_or_insert_with(Default::default);
+                asr.model_dir = Some("old-model".to_string());
+                asr.encoder = Some("old-encoder.onnx".to_string());
+                asr.decoder = Some("old-decoder.onnx".to_string());
+                asr.joiner = Some("old-joiner.onnx".to_string());
+                asr.tokens = Some("old-tokens.txt".to_string());
+                asr.enabled = Some(true);
+            })
+            .unwrap();
+
+            // 切换到新模型目录
+            let new_dir = home.join("models/zh-14m");
+            set_selected_model(ModelType::Asr, &new_dir).unwrap();
+
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let asr = cfg.asr.as_ref().expect("asr 段应存在");
+            assert_eq!(
+                asr.model_dir,
+                Some(new_dir.to_string_lossy().to_string()),
+                "model_dir 应更新"
+            );
+            // 文件级覆盖全部重置：交回 resolve 按目录探测
+            assert_eq!(asr.encoder, None);
+            assert_eq!(asr.decoder, None);
+            assert_eq!(asr.joiner, None);
+            assert_eq!(asr.tokens, None);
+            // enabled 不受切换影响
+            assert_eq!(asr.enabled, Some(true));
+        });
+    }
+
+    #[test]
     fn test_add_local_model_registry_binding() {
         run_with_temp_home(|home| {
             // 造一个合法的 GGUF（magic 头）
@@ -1502,6 +1562,34 @@ mod tests {
             let err = delete_managed_dir(&outside).unwrap_err();
             assert!(err.contains("管理目录内"));
         });
+    }
+
+    /// 回归：optional 资产（如 punctuation）绝不能进 staging 安装清单。
+    ///
+    /// 进了会因 extract_and_place「目标已存在先移除」的原子落位摧毁主模型文件，
+    /// 曾导致模型库下载任何 ASR 模型都在「安装后完整性校验失败」处必败。
+    #[test]
+    fn test_staged_assets_excludes_optional() {
+        // ASR：required 1 个 + optional punctuation → staging 只装 required，字节两者都计
+        let asr = registry::model_by_id("asr-streaming-zh-14m").unwrap();
+        let (assets, total) = staged_assets(asr).unwrap();
+        assert_eq!(assets.len(), 1, "punctuation 不得进 staging 清单");
+        assert_eq!(assets[0].0.role, "asr-zh-14m");
+        let req = crate::kws::model::asset_by_role("asr-zh-14m")
+            .unwrap()
+            .size_bytes;
+        let opt = crate::kws::model::asset_by_role("punctuation")
+            .unwrap()
+            .size_bytes;
+        assert_eq!(total, req + opt, "optional 只计字节（进度总量）");
+
+        // KWS（无 optional）单资产；TTS（tts + tts-vocoder 双 required）两资产
+        let (kws_assets, _) =
+            staged_assets(registry::model_by_id("kws-zipformer-zh-en-3m").unwrap()).unwrap();
+        assert_eq!(kws_assets.len(), 1);
+        let (tts_assets, _) =
+            staged_assets(registry::model_by_id("tts-zipvoice-distill-int8").unwrap()).unwrap();
+        assert_eq!(tts_assets.len(), 2);
     }
 
     fn test_reg_model(name: &str, id: &str) -> RegistryModel {

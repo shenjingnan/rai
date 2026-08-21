@@ -107,6 +107,7 @@ export const api = {
   synthesizeTts: (args: {
     text: string;
     speed: number | null;
+    sid: number | null;
     voice: string | null;
     referenceWav: string | null;
     referenceText: string | null;

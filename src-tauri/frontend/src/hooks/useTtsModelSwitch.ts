@@ -9,8 +9,26 @@ export const TTS_PRESETS = [
   {
     id: "tts-zipvoice-distill-int8",
     name: "ZipVoice TTS zh-en",
+    kind: "zipvoice",
+    languages: "中英",
     tagline: "零样本声音克隆 · 中英双语 · 含声码器",
     sizeBytes: 163_320_194,
+  },
+  {
+    id: "tts-vits-melo-zh-en",
+    name: "VITS Melo TTS zh-en",
+    kind: "vits",
+    languages: "中英",
+    tagline: "单说话人 · 中英双语 · 44.1kHz",
+    sizeBytes: 167_006_755,
+  },
+  {
+    id: "tts-matcha-zh-baker",
+    name: "Matcha Icefall zh-baker",
+    kind: "matcha",
+    languages: "中文",
+    tagline: "中文女声 · 22.05kHz",
+    sizeBytes: 75_463_442,
   },
 ] as const;
 

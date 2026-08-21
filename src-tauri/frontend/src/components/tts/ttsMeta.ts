@@ -33,3 +33,17 @@ export function ttsStatus(
   if (cfg.enabled === false) return { tone: "idle", label: "已关闭" };
   return { tone: "good", label: "已就绪" };
 }
+
+/** 模型类型徽标文案（选择模型弹窗 / 音色语义判断共用）。 */
+export function ttsModelKindLabel(kind: string): string {
+  switch (kind) {
+    case "zipvoice":
+      return "ZipVoice 克隆";
+    case "vits":
+      return "VITS";
+    case "matcha":
+      return "Matcha";
+    default:
+      return "TTS";
+  }
+}

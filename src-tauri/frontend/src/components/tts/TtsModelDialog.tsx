@@ -3,7 +3,9 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { LibraryDialog } from "@/components/library/LibraryDialog";
 import { ModelConfirmDialog } from "@/components/library/LibraryDialogs";
+import { ttsModelKindLabel } from "@/components/tts/ttsMeta";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
@@ -54,9 +56,17 @@ export function TtsModelDialog({ open, onClose }: TtsModelDialogProps) {
               className="flex items-center justify-between gap-3 rounded-lg border border-panel-border px-3 py-2.5"
             >
               <div className="min-w-0">
-                <p className="text-sm font-medium text-text-primary">{p.name}</p>
+                <p className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                  {p.name}
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 border-violet-500/20 bg-violet-500/10 px-1.5 py-0 text-[10px] text-violet-600"
+                  >
+                    {ttsModelKindLabel(p.kind)}
+                  </Badge>
+                </p>
                 <p className="mt-0.5 text-xs text-text-muted">
-                  {`${formatBytes(p.sizeBytes)} · ${p.tagline}`}
+                  {`${p.languages} · ${formatBytes(p.sizeBytes)} · ${p.tagline}`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">

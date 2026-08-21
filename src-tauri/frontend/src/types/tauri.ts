@@ -172,6 +172,8 @@ export interface ImportCompanionResult {
 
 /** `get_tts_config` 返回 */
 export interface TtsConfigInfo {
+  /** 模型类型（zipvoice/vits/matcha/...），前端据此切换音色语义 */
+  model_type: string;
   model_dir: string;
   provider: string;
   num_threads: number;

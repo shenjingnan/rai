@@ -510,6 +510,7 @@ describe("TtsPage（语音合成 TTS）", () => {
       expect(invokeMock).toHaveBeenCalledWith("synthesize_tts", {
         text: "你好世界",
         speed: 1,
+        sid: null,
         voice: "leijun-1",
         referenceWav: null,
         referenceText: null,
@@ -602,6 +603,7 @@ describe("TtsPage（语音合成 TTS）", () => {
       expect(invokeMock).toHaveBeenCalledWith("synthesize_tts", {
         text: "用我的声音",
         speed: 1,
+        sid: null,
         voice: null,
         referenceWav: "/home/user/.zapmomo/voices/custom-1.wav",
         referenceText: "克隆参考文本",

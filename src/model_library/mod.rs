@@ -1110,21 +1110,7 @@ pub fn install_managed_model(
         return Err(ModelError::Cancelled);
     }
 
-    // 资产清单：required + optional（optional 计入总字节，保证总体进度 ≤ 100%）
-    let mut roles: Vec<&str> = model.required_assets.iter().map(String::as_str).collect();
-    roles.extend(model.optional_assets.iter().map(String::as_str));
-    let mut total_bytes: u64 = 0;
-    let mut assets: Vec<(
-        &'static crate::kws::model::ModelAsset,
-        &'static [&'static str],
-    )> = Vec::new();
-    for role in &roles {
-        let asset = crate::kws::model::asset_by_role(role)
-            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
-        total_bytes += asset.size_bytes;
-        assets.push((asset, registry::required_files_for_role(role)));
-    }
-
+    let (assets, total_bytes) = staged_assets(model)?;
     let final_dir = stage_and_commit(model, &assets, total_bytes, on_progress, cancel)?;
 
     // optional assets best-effort（独立目录，失败仅 warn，不回滚主模型）
@@ -1153,6 +1139,37 @@ pub fn install_managed_model(
     }
 
     Ok(final_dir)
+}
+
+/// staging 安装清单条目：（资产, 安装完成所需文件名清单）。
+type StagedAsset = (
+    &'static crate::kws::model::ModelAsset,
+    &'static [&'static str],
+);
+
+/// 收集 staging 安装清单与总字节：required 资产进清单，optional 资产只计入字节。
+///
+/// optional（如 ASR 的 punctuation）是独立目录的 tar.bz2，绝不能进 staging——
+/// `extract_and_place` 的原子落位是「目标已存在先移除」，第二个 tar.bz2 落到同一
+/// staging 目录会摧毁先解压的主模型文件，导致安装后完整性校验必然失败（ASR 模型库
+/// 下载必失败的根因）。optional 的实际安装由 [`install_managed_model`] commit 后的
+/// best-effort 循环装到各自独立目录。
+fn staged_assets(model: &RegistryModel) -> Result<(Vec<StagedAsset>, u64), ModelError> {
+    let mut total_bytes: u64 = 0;
+    let mut assets: Vec<StagedAsset> = Vec::new();
+    for role in model
+        .required_assets
+        .iter()
+        .chain(model.optional_assets.iter())
+    {
+        let asset = crate::kws::model::asset_by_role(role)
+            .ok_or_else(|| ModelError::Download(format!("未知资产 role：{role}")))?;
+        total_bytes += asset.size_bytes;
+        if model.required_assets.contains(role) {
+            assets.push((asset, registry::required_files_for_role(role)));
+        }
+    }
+    Ok((assets, total_bytes))
 }
 
 /// staging + 整体校验 + commit 的可测试核心：给定具体资产（可注入本地测试服务器）。
@@ -1545,6 +1562,34 @@ mod tests {
             let err = delete_managed_dir(&outside).unwrap_err();
             assert!(err.contains("管理目录内"));
         });
+    }
+
+    /// 回归：optional 资产（如 punctuation）绝不能进 staging 安装清单。
+    ///
+    /// 进了会因 extract_and_place「目标已存在先移除」的原子落位摧毁主模型文件，
+    /// 曾导致模型库下载任何 ASR 模型都在「安装后完整性校验失败」处必败。
+    #[test]
+    fn test_staged_assets_excludes_optional() {
+        // ASR：required 1 个 + optional punctuation → staging 只装 required，字节两者都计
+        let asr = registry::model_by_id("asr-streaming-zh-14m").unwrap();
+        let (assets, total) = staged_assets(asr).unwrap();
+        assert_eq!(assets.len(), 1, "punctuation 不得进 staging 清单");
+        assert_eq!(assets[0].0.role, "asr-zh-14m");
+        let req = crate::kws::model::asset_by_role("asr-zh-14m")
+            .unwrap()
+            .size_bytes;
+        let opt = crate::kws::model::asset_by_role("punctuation")
+            .unwrap()
+            .size_bytes;
+        assert_eq!(total, req + opt, "optional 只计字节（进度总量）");
+
+        // KWS（无 optional）单资产；TTS（tts + tts-vocoder 双 required）两资产
+        let (kws_assets, _) =
+            staged_assets(registry::model_by_id("kws-zipformer-zh-en-3m").unwrap()).unwrap();
+        assert_eq!(kws_assets.len(), 1);
+        let (tts_assets, _) =
+            staged_assets(registry::model_by_id("tts-zipvoice-distill-int8").unwrap()).unwrap();
+        assert_eq!(tts_assets.len(), 2);
     }
 
     fn test_reg_model(name: &str, id: &str) -> RegistryModel {

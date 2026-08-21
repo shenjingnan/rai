@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::kws::model::{ModelAsset, asset_by_role};
+use crate::tts::config::TtsModelKind;
 
 /// 能力类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,9 @@ pub struct RegistryModel {
     pub display_name: String,
     #[serde(rename = "model_type")]
     pub model_type: ModelType,
+    /// TTS 子类型（zipvoice/vits/matcha/...；仅 `model_type == Tts` 有意义，其余为 None）
+    #[serde(default)]
+    pub tts_kind: Option<TtsModelKind>,
     pub runtime: String,
     pub format: String,
     pub description: String,
@@ -140,9 +144,16 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
         "tts" => &crate::tts::config::REQUIRED_FILES,
         "tts-vocoder" => &[crate::tts::config::DEFAULT_VOCODER],
+        "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
+        "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
         // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }
+}
+
+/// 按 registry id 查 TTS 子类型（非 TTS 或无 `tts_kind` 时返回 None）。
+pub fn registry_tts_kind(id: &str) -> Option<TtsModelKind> {
+    model_by_id(id).and_then(|m| m.tts_kind)
 }
 
 #[cfg(test)]
@@ -154,8 +165,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            18,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM"
+            20,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS"
         );
         assert!(
             models
@@ -224,6 +235,9 @@ mod tests {
         assert_eq!(required_files_for_role("punctuation").len(), 1);
         assert_eq!(required_files_for_role("tts").len(), 5); // 含 vocoder
         assert_eq!(required_files_for_role("tts-vocoder").len(), 1);
+        assert_eq!(required_files_for_role("tts-vits-melo").len(), 3);
+        assert_eq!(required_files_for_role("tts-matcha").len(), 4);
+        assert!(required_files_for_role("tts-matcha").contains(&"vocos-22khz-univ.onnx"));
         assert_eq!(required_files_for_role("wake-word").len(), 5);
         // wenetspeech：epoch-12 三件套 + tokens + test_wavs/test_keywords.txt
         let ws = required_files_for_role("wake-word-wenetspeech");
@@ -231,6 +245,25 @@ mod tests {
         assert!(ws.contains(&"encoder-epoch-12-avg-2-chunk-16-left-64.onnx"));
         assert!(ws.contains(&"test_wavs/test_keywords.txt"));
         assert!(required_files_for_role("unknown").is_empty());
+    }
+
+    #[test]
+    fn test_registry_tts_kind() {
+        assert_eq!(
+            registry_tts_kind("tts-zipvoice-distill-int8"),
+            Some(TtsModelKind::Zipvoice)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-vits-melo-zh-en"),
+            Some(TtsModelKind::Vits)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-matcha-zh-baker"),
+            Some(TtsModelKind::Matcha)
+        );
+        // 非 TTS 或无 tts_kind → None
+        assert_eq!(registry_tts_kind("qwen3-1.7b-q4-k-m"), None);
+        assert_eq!(registry_tts_kind("不存在"), None);
     }
 
     #[test]

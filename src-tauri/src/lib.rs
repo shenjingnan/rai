@@ -2724,17 +2724,38 @@ struct Live2dConfigInfo {
 ///
 /// asset 协议 scope 不跨进程持久，因此每次启动/读取都要重新
 /// `allow_directory`，否则 WebView 无法加载模型文件。
+///
+/// 模型路径优先从伙伴库 active 读取（库是唯一 Source of Truth，且 GIF 伙伴
+/// 无 `.model3.json`，`resolve()` 扫描不到）；库无 active 时回退旧版
+/// `settings.model_dir` 解析（后台旧版迁移完成前的窗口期桌宠仍可显示）。
 #[tauri::command]
 fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let settings = settings::load_settings()?;
     let live2d_settings = settings.as_ref().and_then(|s| s.live2d.clone());
-    let cfg = zapmomo::live2d::config::resolve(live2d_settings.as_ref())?;
 
-    let models_present = cfg.model_file.as_ref().is_some_and(|f| f.is_file());
-    if models_present {
-        let _ = app
-            .asset_protocol_scope()
-            .allow_directory(&cfg.model_dir, true);
+    let lib = zapmomo::companion::load_library_fast()?;
+    let active =
+        zapmomo::companion::active_model(&lib).filter(|m| zapmomo::companion::quick_valid(m));
+    let (model_dir, model_file, format, models_present) = match active {
+        Some(m) => (
+            Some(m.model_dir.clone()),
+            Some(m.model_file.clone()),
+            Some(m.format.clone()),
+            true,
+        ),
+        None => {
+            let cfg = zapmomo::live2d::config::resolve(live2d_settings.as_ref())?;
+            let present = cfg.model_file.as_ref().is_some_and(|f| f.is_file());
+            (
+                Some(cfg.model_dir.display().to_string()),
+                cfg.model_file.map(|p| p.display().to_string()),
+                cfg.format.map(|f| f.to_str().to_string()),
+                present,
+            )
+        }
+    };
+    if models_present && let Some(dir) = &model_dir {
+        let _ = app.asset_protocol_scope().allow_directory(dir, true);
     }
 
     let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
@@ -2745,9 +2766,9 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let drag_mode = live2d_settings.as_ref().and_then(|l| l.drag_mode);
 
     Ok(Live2dConfigInfo {
-        model_dir: Some(cfg.model_dir.display().to_string()),
-        model_file: cfg.model_file.map(|p| p.display().to_string()),
-        format: cfg.format.map(|f| f.to_str().to_string()),
+        model_dir,
+        model_file,
+        format,
         models_present,
         window_scale,
         window_opacity,

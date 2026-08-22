@@ -15,12 +15,16 @@ export interface TtsState {
   setEnabled: (enabled: boolean) => Promise<void>;
   /** 批量保存合成参数（扩散步数/默认语速/线程/调试）；失败向上抛出，由调用方展示内联错误。 */
   setParams: (patch: TtsParamsPatch) => Promise<void>;
-  /** 音色列表（模型包内置 + 用户自定义音色库）。 */
+  /** 音色列表（模型包内置 + 用户自定义音色库；kokoro 时为 103 内置说话人）。 */
   voices: TtsVoice[];
   /** 当前音色 id（持久化到 `[tts].voice`，即全局默认音色；空 = 内置 leijun）。 */
   selectedVoice: string;
   /** 设定音色并持久化为全局默认音色（写 `[tts].voice`）；失败经 `error` 暴露。 */
   setSelectedVoice: (id: string) => Promise<void>;
+  /** 当前说话人 id（持久化到 `[tts].speaker_id`，kokoro 多说话人模型用）。 */
+  selectedSpeaker: number;
+  /** 设定说话人并持久化为全局默认（写 `[tts].speaker_id`）；失败经 `error` 暴露。 */
+  setSelectedSpeaker: (sid: number) => Promise<void>;
   /** 保存一个自定义音色到音色库；成功后刷新 voices。 */
   saveVoice: (req: SaveTtsVoiceRequest) => Promise<TtsVoice>;
   /** 删除一个自定义音色；成功后刷新 voices。 */
@@ -49,6 +53,7 @@ export function useTts(): TtsState {
   const [configError, setConfigError] = useState<string | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [selectedVoice, setSelectedVoiceLocal] = useState("");
+  const [selectedSpeaker, setSelectedSpeakerLocal] = useState(0);
   const [synthesizing, setSynthesizing] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<TtsResult | null>(null);
@@ -62,6 +67,8 @@ export function useTts(): TtsState {
       setConfigError(null);
       // 载入持久化的默认音色（[tts].voice；未设置则空 = 内置 leijun）
       setSelectedVoiceLocal(cfg.voice ?? "");
+      // 载入持久化的默认说话人（[tts].speaker_id；未设置则 0）
+      setSelectedSpeakerLocal(cfg.speaker_id ?? 0);
     } catch (e) {
       setConfigError(String(e));
     }
@@ -123,6 +130,16 @@ export function useTts(): TtsState {
     }
   }, []);
 
+  // 设定说话人并持久化为全局默认（[tts].speaker_id），kokoro 模型的测试/语音会话生效。
+  const setSelectedSpeaker = useCallback(async (sid: number) => {
+    setSelectedSpeakerLocal(sid);
+    try {
+      await api.setTtsSpeaker(sid);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   const synthesize = useCallback(
     async (text: string, opts?: { speed?: number | null }) => {
       const trimmed = text.trim();
@@ -131,9 +148,11 @@ export function useTts(): TtsState {
       setResult(null);
       setProgress(null);
       setSynthesizing(true);
-      // sid 模型（vits/matcha/...）无参考音频克隆概念：固定 speaker id（本期单说话人恒 0），
-      // 不传 voice/reference；zipvoice 走克隆（自定义音色 → 直接传其 wav+转写；否则内置/默认）。
+      // sid 模型无参考音频克隆概念，不传 voice/reference：
+      // kokoro 多说话人传持久化的 selectedSpeaker；vits/matcha 单说话人不传（后端用 0）。
+      // zipvoice 走克隆（自定义音色 → 直接传其 wav+转写；否则内置/默认）。
       const sidModel = !!config?.model_type && config.model_type !== "zipvoice";
+      const kokoroModel = config?.model_type === "kokoro";
       const savedVoice = !sidModel
         ? voices.find((v) => v.custom && v.id === selectedVoice)
         : undefined;
@@ -141,7 +160,7 @@ export function useTts(): TtsState {
         await api.synthesizeTts({
           text: trimmed,
           speed: opts?.speed ?? null,
-          sid: sidModel ? 0 : null,
+          sid: kokoroModel ? selectedSpeaker : null,
           voice: sidModel ? null : savedVoice ? null : selectedVoice || null,
           referenceWav: sidModel ? null : savedVoice ? savedVoice.wav_path : null,
           referenceText: sidModel ? null : savedVoice ? savedVoice.reference_text : null,
@@ -151,7 +170,7 @@ export function useTts(): TtsState {
         setSynthesizing(false);
       }
     },
-    [config, voices, selectedVoice],
+    [config, voices, selectedVoice, selectedSpeaker],
   );
 
   // 批量保存合成参数（扩散步数/默认语速/线程/调试），写入 [tts] 后刷新配置。
@@ -212,6 +231,8 @@ export function useTts(): TtsState {
     voices,
     selectedVoice,
     setSelectedVoice,
+    selectedSpeaker,
+    setSelectedSpeaker,
     saveVoice,
     deleteVoice,
     recordVoice,

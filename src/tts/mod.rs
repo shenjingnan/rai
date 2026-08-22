@@ -6,6 +6,7 @@
 /// 设计上对齐 KWS/ASR：模型清单下载、配置解析、引擎「逐文件预检 + install-model 提示」
 /// 等模式保持一致；进度通过 `generate_with_config` 的回调（`FnMut(f32) -> bool`）暴露。
 pub mod config;
+pub mod kokoro;
 pub mod reaction;
 pub mod voice;
 pub mod voice_store;
@@ -26,7 +27,7 @@ pub use voice::TtsVoice;
 /// `Reference`（ZipVoice 参考音频克隆）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsVoiceParams {
-    /// speaker id（本期单说话人模型恒 0；多说话人二期扩展）
+    /// speaker id（kokoro 103 说话人可选；vits/matcha 单说话人恒 0）
     Sid(i32),
     /// 参考音频 + 逐字转写（ZipVoice 零样本克隆）
     Reference {
@@ -93,13 +94,12 @@ pub(crate) fn build_offline_model_config(cfg: &ResolvedTtsConfig) -> OfflineTtsM
         TtsModelKind::Kokoro => {
             config.kokoro = OfflineTtsKokoroModelConfig {
                 model: path(cfg.model.as_ref()),
-                // voices.bin 需二期接入（含 speaker 名字映射）
-                voices: None,
+                voices: path(cfg.voices.as_ref()),
                 tokens: path(Some(&cfg.tokens)),
                 data_dir: path(Some(&cfg.data_dir)),
                 length_scale: 1.0,
                 dict_dir,
-                lexicon: path(Some(&cfg.lexicon)),
+                lexicon: cfg.kokoro_lexicon.clone(),
                 lang: None,
             };
         }
@@ -153,17 +153,23 @@ impl TtsEngine {
         }
 
         let model_config = build_offline_model_config(&cfg);
-        // VITS 根级 rule fsts 存在时启用（日期/数字规范化；缺省不影响合成）
-        let rule_fsts = if cfg.model_type == TtsModelKind::Vits {
-            let fsts = ["date.fst", "number.fst"]
+        // 根级 rule fsts 存在时启用（日期/数字规范化；缺省不影响合成）。
+        // VITS（date.fst/number.fst）与 Kokoro（date-zh.fst/number-zh.fst，官方包自带）。
+        // 注意必须传绝对路径：sherpa C++ 侧按进程 CWD 解析相对路径，非模型目录运行时会误报
+        // "Rule fst 'xxx' does not exist"。
+        let fst_names: &[&str] = match cfg.model_type {
+            TtsModelKind::Vits => &["date.fst", "number.fst"],
+            TtsModelKind::Kokoro => &["date-zh.fst", "number-zh.fst"],
+            _ => &[],
+        };
+        let rule_fsts = {
+            let fsts = fst_names
                 .iter()
                 .filter(|f| cfg.model_dir.join(f).is_file())
-                .map(|f| f.to_string())
+                .map(|f| cfg.model_dir.join(f).to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join(",");
             (!fsts.is_empty()).then_some(fsts)
-        } else {
-            None
         };
         let config = OfflineTtsConfig {
             model: model_config,
@@ -298,6 +304,14 @@ fn build_generation_config(
     };
     match voice {
         TtsVoiceParams::Sid(sid) => {
+            // Kokoro 103 说话人：越界 sid 会触发 sherpa C++ 越界访问（Rust 无法捕获），
+            // 在此提前拦截。其余 sid 模型（vits/matcha）为单说话人，恒 0。
+            if model_type == TtsModelKind::Kokoro && !kokoro::is_valid_sid(*sid) {
+                return Err(format!(
+                    "Kokoro 说话人 id 需在 0~{}，当前 {sid}",
+                    kokoro::KOKORO_MAX_SID
+                ));
+            }
             gc.sid = *sid;
         }
         TtsVoiceParams::Reference {
@@ -564,6 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn test_build_offline_model_config_kokoro_branch() {
+        let mut cfg = config::ResolvedTtsConfig::default();
+        cfg.model_type = TtsModelKind::Kokoro;
+        cfg.model = Some(PathBuf::from("/m/kokoro/model.int8.onnx"));
+        cfg.voices = Some(PathBuf::from("/m/kokoro/voices.bin"));
+        cfg.kokoro_lexicon =
+            Some("/m/kokoro/lexicon-us-en.txt,/m/kokoro/lexicon-zh.txt".to_string());
+        let c = build_offline_model_config(&cfg);
+        assert_eq!(c.kokoro.model.as_deref(), Some("/m/kokoro/model.int8.onnx"));
+        assert_eq!(c.kokoro.voices.as_deref(), Some("/m/kokoro/voices.bin"));
+        assert_eq!(
+            c.kokoro.lexicon.as_deref(),
+            Some("/m/kokoro/lexicon-us-en.txt,/m/kokoro/lexicon-zh.txt")
+        );
+        assert_eq!(c.kokoro.length_scale, 1.0);
+        assert!(c.kokoro.lang.is_none());
+        // kokoro 分支不应污染其它模型字段
+        assert!(c.vits.model.is_none());
+        assert!(c.zipvoice.encoder.is_none());
+    }
+
+    #[test]
     fn test_build_generation_config_sid() {
         let gc =
             build_generation_config(TtsModelKind::Vits, 4, 1.2, &TtsVoiceParams::Sid(0), 22050)
@@ -572,6 +608,39 @@ mod tests {
         assert_eq!(gc.speed, 1.2);
         assert_eq!(gc.num_steps, 4);
         assert!(gc.reference_audio.is_none(), "sid 不应携带参考音频");
+    }
+
+    #[test]
+    fn test_build_generation_config_kokoro_sid_bounds() {
+        // 边界内通过
+        let gc = build_generation_config(
+            TtsModelKind::Kokoro,
+            4,
+            1.0,
+            &TtsVoiceParams::Sid(102),
+            24000,
+        )
+        .unwrap();
+        assert_eq!(gc.sid, 102);
+        // 越界拦截（防 sherpa C++ 越界崩溃）
+        let err = build_generation_config(
+            TtsModelKind::Kokoro,
+            4,
+            1.0,
+            &TtsVoiceParams::Sid(103),
+            24000,
+        )
+        .unwrap_err();
+        assert!(err.contains("Kokoro 说话人 id"), "err: {err}");
+        let err = build_generation_config(
+            TtsModelKind::Kokoro,
+            4,
+            1.0,
+            &TtsVoiceParams::Sid(-1),
+            24000,
+        )
+        .unwrap_err();
+        assert!(err.contains("Kokoro 说话人 id"), "err: {err}");
     }
 
     #[test]

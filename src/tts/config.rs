@@ -87,9 +87,9 @@ impl TtsModelKind {
         matches!(self, Self::Zipvoice)
     }
 
-    /// 是否需要 espeak-ng 数据目录：本期 3 个模型仅 ZipVoice 需要。
+    /// 是否需要 espeak-ng 数据目录：ZipVoice 与 Kokoro（espeak-ng-data）需要。
     pub fn requires_data_dir(&self) -> bool {
-        matches!(self, Self::Zipvoice)
+        matches!(self, Self::Zipvoice | Self::Kokoro)
     }
 
     /// 是否需要中文词库 `dict/` 目录。
@@ -130,12 +130,44 @@ pub const MATCHA_REQUIRED_FILES: [&str; 4] = [
     DEFAULT_MATCHA_VOCODER,
 ];
 
+/// Kokoro 说话人 embedding 表（`kokoro-multi-lang-v1_1` 官方包）。
+pub const DEFAULT_KOKORO_VOICES: &str = "voices.bin";
+/// Kokoro fp32 主模型文件名（`kokoro-multi-lang-v1_1.tar.bz2`）。
+pub const KOKORO_MODEL_FILE: &str = "model.onnx";
+/// Kokoro int8 主模型文件名（`kokoro-int8-multi-lang-v1_1.tar.bz2`，与 fp32 包不同名）。
+pub const KOKORO_INT8_MODEL_FILE: &str = "model.int8.onnx";
+/// Kokoro 词典候选（存在的按序拼逗号传给 sherpa `lexicon`；官方示例用 us-en + zh）。
+pub const KOKORO_LEXICON_CANDIDATES: [&str; 2] = ["lexicon-us-en.txt", "lexicon-zh.txt"];
+
+/// Kokoro 模型安装完成所需文件（fp32 与 int8 两包共有；主模型文件名不同，由
+/// `resolve()` 探测填充 `cfg.model`，registry 侧按 role 给各自完整清单）。
+pub const KOKORO_REQUIRED_FILES: [&str; 2] = [DEFAULT_TOKENS, DEFAULT_KOKORO_VOICES];
+
+/// Kokoro int8 包安装完成所需文件（`required_files_for_role("tts-kokoro-int8")`）。
+pub const KOKORO_INT8_REQUIRED_FILES: [&str; 5] = [
+    KOKORO_INT8_MODEL_FILE,
+    DEFAULT_TOKENS,
+    DEFAULT_KOKORO_VOICES,
+    "lexicon-us-en.txt",
+    "lexicon-zh.txt",
+];
+
+/// Kokoro fp32 包安装完成所需文件（`required_files_for_role("tts-kokoro")`）。
+pub const KOKORO_FP32_REQUIRED_FILES: [&str; 5] = [
+    KOKORO_MODEL_FILE,
+    DEFAULT_TOKENS,
+    DEFAULT_KOKORO_VOICES,
+    "lexicon-us-en.txt",
+    "lexicon-zh.txt",
+];
+
 /// 各模型类型安装完成所需文件（相对模型目录；`data_dir`/参考音频由引擎单独校验）。
 pub fn required_files(kind: TtsModelKind) -> &'static [&'static str] {
     match kind {
         TtsModelKind::Zipvoice => &REQUIRED_FILES,
         TtsModelKind::Vits => &VITS_REQUIRED_FILES,
         TtsModelKind::Matcha => &MATCHA_REQUIRED_FILES,
+        TtsModelKind::Kokoro => &KOKORO_REQUIRED_FILES,
         // 二期模型：registry 尚未收录，暂无下载路径
         _ => &[],
     }
@@ -165,6 +197,12 @@ pub struct ResolvedTtsConfig {
     pub reference_text: String,
     /// 默认音色 id（如 `leijun-1` / 自定义音色 id；None = 用 reference_wav 即 leijun）。
     pub voice: Option<String>,
+    /// 默认说话人 id（sid 模型如 kokoro；单说话人模型恒 0）。
+    pub speaker_id: i32,
+    /// Kokoro 说话人 embedding 表 voices.bin（仅 Kokoro）。
+    pub voices: Option<PathBuf>,
+    /// Kokoro 词典路径串（存在的候选按序拼逗号；仅 Kokoro）。
+    pub kokoro_lexicon: Option<String>,
     /// 扩散解码步数（质量/速度权衡）
     pub num_steps: i32,
     /// 语速
@@ -194,6 +232,9 @@ impl Default for ResolvedTtsConfig {
             model_dir,
             reference_text: DEFAULT_REFERENCE_TEXT.to_string(),
             voice: None,
+            speaker_id: 0,
+            voices: None,
+            kokoro_lexicon: None,
             num_steps: 4,
             speed: 1.0,
             provider: "cpu".to_string(),
@@ -285,12 +326,15 @@ fn resolve_model_dir(
 
 /// 按模型目录内容探测模型类型（settings 未配置 `model_type` 时的兜底）。
 ///
-/// 文件探针：`model-steps-3.onnx`→Matcha、`model.onnx`+lexicon→Vits、
-/// `encoder.int8.onnx`→Zipvoice，否则默认 Zipvoice。managed 安装目录名 == registry
-/// name 的权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
+/// 文件探针：`model-steps-3.onnx`→Matcha、`voices.bin`→Kokoro、
+/// `model.onnx`+lexicon→Vits、`encoder.int8.onnx`→Zipvoice，否则默认 Zipvoice。
+/// managed 安装目录名 == registry name 的权威匹配在 `set_selected_model` 写配置时
+/// 已保证，此处仅兜底外部/本地目录。
 fn detect_kind_from_dir(model_dir: &Path) -> TtsModelKind {
     if model_dir.join("model-steps-3.onnx").is_file() {
         TtsModelKind::Matcha
+    } else if model_dir.join(DEFAULT_KOKORO_VOICES).is_file() {
+        TtsModelKind::Kokoro
     } else if model_dir.join("model.onnx").is_file() && model_dir.join(DEFAULT_LEXICON).is_file() {
         TtsModelKind::Vits
     } else {
@@ -350,7 +394,24 @@ pub fn resolve(
             cfg.vocoder = cfg.model_dir.join("vocos-22khz-univ.onnx");
             cfg.dict_dir = Some(cfg.model_dir.join("dict"));
         }
-        TtsModelKind::Kokoro | TtsModelKind::Kitten => {
+        TtsModelKind::Kokoro => {
+            // 主模型文件名 fp32/int8 两包不同，按存在探测（都不在时回退 fp32 名，
+            // 由 `required_files` 预检报缺文件）。
+            cfg.model = Some(if cfg.model_dir.join(KOKORO_MODEL_FILE).is_file() {
+                cfg.model_dir.join(KOKORO_MODEL_FILE)
+            } else {
+                cfg.model_dir.join(KOKORO_INT8_MODEL_FILE)
+            });
+            cfg.voices = Some(cfg.model_dir.join(DEFAULT_KOKORO_VOICES));
+            // 词典按候选探测拼逗号（sherpa `lexicon` 接受逗号分隔多文件）
+            let lexicons = KOKORO_LEXICON_CANDIDATES
+                .iter()
+                .filter(|name| cfg.model_dir.join(name).is_file())
+                .map(|name| cfg.model_dir.join(name).to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            cfg.kokoro_lexicon = (!lexicons.is_empty()).then(|| lexicons.join(","));
+        }
+        TtsModelKind::Kitten => {
             cfg.model = Some(cfg.model_dir.join("model.onnx"));
         }
         _ => {}
@@ -360,6 +421,7 @@ pub fn resolve(
         .and_then(|s| s.reference_text.clone())
         .unwrap_or_else(|| DEFAULT_REFERENCE_TEXT.to_string());
     cfg.voice = s.and_then(|s| s.voice.clone());
+    cfg.speaker_id = s.and_then(|s| s.speaker_id).unwrap_or(0);
     // Matcha 官方推荐更多扩散步数（现共享默认 4 偏低，zipvoice 语义），未显式设置时用 10
     cfg.num_steps = s
         .and_then(|s| s.num_steps)
@@ -612,8 +674,10 @@ mod tests {
         assert_eq!(required_files(TtsModelKind::Matcha).len(), 4);
         assert!(required_files(TtsModelKind::Matcha).contains(&"vocos-22khz-univ.onnx"));
         assert!(required_files(TtsModelKind::Matcha).contains(&"model-steps-3.onnx"));
+        // kokoro：两精度包共有文件（主模型文件名不同，由 resolve 探测）
+        assert_eq!(required_files(TtsModelKind::Kokoro).len(), 2);
+        assert!(required_files(TtsModelKind::Kokoro).contains(&"voices.bin"));
         // 二期模型尚无下载路径
-        assert!(required_files(TtsModelKind::Kokoro).is_empty());
         assert!(required_files(TtsModelKind::Kitten).is_empty());
     }
 
@@ -634,8 +698,9 @@ mod tests {
         assert!(TtsModelKind::Zipvoice.uses_reference_audio());
         assert!(!TtsModelKind::Vits.uses_reference_audio());
         assert!(!TtsModelKind::Matcha.uses_reference_audio());
-        // espeak-ng-data 需求仅 zipvoice（本期 3 模型）
+        // espeak-ng-data 需求：zipvoice 与 kokoro
         assert!(TtsModelKind::Zipvoice.requires_data_dir());
+        assert!(TtsModelKind::Kokoro.requires_data_dir());
         assert!(!TtsModelKind::Vits.requires_data_dir());
         assert!(!TtsModelKind::Matcha.requires_data_dir());
         // 中文词库 dict/ 需求
@@ -658,6 +723,17 @@ mod tests {
         std::fs::write(v.join("model.onnx"), b"x").unwrap();
         std::fs::write(v.join(DEFAULT_LEXICON), b"x").unwrap();
         assert_eq!(detect_kind_from_dir(&v), TtsModelKind::Vits);
+        // kokoro：voices.bin（fp32/int8 两包都有）
+        let k = base.path().join("k");
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join(DEFAULT_KOKORO_VOICES), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(&k), TtsModelKind::Kokoro);
+        // kokoro int8 包无 model.onnx 但有 voices.bin，仍应识别（不应兜底 Zipvoice）
+        let ki = base.path().join("ki");
+        std::fs::create_dir_all(&ki).unwrap();
+        std::fs::write(ki.join(KOKORO_INT8_MODEL_FILE), b"x").unwrap();
+        std::fs::write(ki.join(DEFAULT_KOKORO_VOICES), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(&ki), TtsModelKind::Kokoro);
         // zipvoice：encoder.int8.onnx
         let z = base.path().join("z");
         std::fs::create_dir_all(&z).unwrap();
@@ -727,6 +803,66 @@ mod tests {
                 Some("model.onnx".to_string())
             );
             assert_eq!(cfg.dict_dir.is_some(), true);
+        });
+    }
+
+    #[test]
+    fn test_resolve_kokoro_int8_sets_model_voices_and_lexicon() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models/kokoro-int8-multi-lang-v1_1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(KOKORO_INT8_MODEL_FILE), b"x").unwrap();
+            std::fs::write(dir.join(DEFAULT_KOKORO_VOICES), b"x").unwrap();
+            std::fs::write(dir.join(DEFAULT_TOKENS), b"x").unwrap();
+            std::fs::write(dir.join("lexicon-us-en.txt"), b"x").unwrap();
+            std::fs::write(dir.join("lexicon-zh.txt"), b"x").unwrap();
+            let settings = TtsSettings {
+                model_type: Some(TtsModelKind::Kokoro),
+                model_dir: Some(dir.to_string_lossy().to_string()),
+                speaker_id: Some(47),
+                ..TtsSettings::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(cfg.model_type, TtsModelKind::Kokoro);
+            assert_eq!(
+                cfg.model.as_deref().and_then(|p| p.file_name()),
+                Some(std::ffi::OsStr::new(KOKORO_INT8_MODEL_FILE))
+            );
+            assert_eq!(
+                cfg.voices.as_deref().and_then(|p| p.file_name()),
+                Some(std::ffi::OsStr::new(DEFAULT_KOKORO_VOICES))
+            );
+            // 两词典存在 → 逗号拼接（顺序按候选）
+            let lex = cfg.kokoro_lexicon.as_deref().unwrap();
+            assert!(lex.contains("lexicon-us-en.txt"));
+            assert!(lex.contains("lexicon-zh.txt"));
+            assert_eq!(lex.matches(',').count(), 1);
+            // speaker_id 从 settings 透传
+            assert_eq!(cfg.speaker_id, 47);
+        });
+    }
+
+    #[test]
+    fn test_resolve_kokoro_fp32_prefers_model_onnx() {
+        run_with_temp_home(|home| {
+            let dir = home.join("models/kokoro-multi-lang-v1_1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(KOKORO_MODEL_FILE), b"x").unwrap();
+            std::fs::write(dir.join(DEFAULT_KOKORO_VOICES), b"x").unwrap();
+            // 词典缺失 → kokoro_lexicon 为 None（不拼空串）
+            let settings = TtsSettings {
+                model_type: Some(TtsModelKind::Kokoro),
+                model_dir: Some(dir.to_string_lossy().to_string()),
+                ..TtsSettings::default()
+            };
+            let cfg = resolve(Some(&settings), None).unwrap();
+            assert_eq!(
+                cfg.model.as_deref().and_then(|p| p.file_name()),
+                Some(std::ffi::OsStr::new(KOKORO_MODEL_FILE))
+            );
+            assert_eq!(cfg.kokoro_lexicon, None);
+            // 未配置 speaker_id → 默认 0
+            assert_eq!(cfg.speaker_id, 0);
         });
     }
 

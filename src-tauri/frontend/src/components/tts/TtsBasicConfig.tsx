@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useRuntime } from "@/providers/RuntimeContext";
+import { TtsSpeakerSelect } from "./TtsSpeakerSelect";
 import { modelNameFromDir } from "./ttsMeta";
 
 interface TtsBasicConfigProps {
@@ -39,6 +40,8 @@ export function TtsBasicConfig({
   const modelName = modelNameFromDir(modelPath);
   // sid 模型（vits/matcha/...）无参考音频克隆语义：音色固定，不提供「默认音色」选择与音色管理
   const sidModel = !!config?.model_type && config.model_type !== "zipvoice";
+  // kokoro 多说话人：说话人选择替代禁用占位（选即持久化 [tts].speaker_id）
+  const kokoroModel = config?.model_type === "kokoro";
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">
@@ -130,12 +133,23 @@ export function TtsBasicConfig({
       </dl>
 
       {/* 默认音色：zipvoice 走克隆（所有合成默认用该音色，选即持久化 [tts].voice）；
-          sid 模型音色固定，仅显示禁用占位 */}
+          kokoro 多说话人（选即持久化 [tts].speaker_id）；其余 sid 模型音色固定，仅显示禁用占位 */}
       <dl>
         <div className="flex items-center justify-between gap-3.5 border-t border-divider px-3.5 py-2.5">
-          <dt className="shrink-0 text-sm text-text-primary">音色</dt>
+          <dt className="shrink-0 text-sm text-text-primary">
+            {kokoroModel ? "说话人" : "音色"}
+          </dt>
           <dd className="min-w-0">
-            {sidModel ? (
+            {kokoroModel ? (
+              <TtsSpeakerSelect
+                value={tts.selectedSpeaker}
+                onValueChange={(sid) => void tts.setSelectedSpeaker(sid)}
+                speakers={voices}
+                id="tts-default-speaker"
+                ariaLabel="默认说话人"
+                className="w-48"
+              />
+            ) : sidModel ? (
               <Select value="fixed" disabled>
                 <SelectTrigger id="tts-default-voice" aria-label="默认音色" className="h-8 w-48">
                   <SelectValue placeholder="默认音色（模型固定）" />

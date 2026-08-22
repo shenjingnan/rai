@@ -83,6 +83,7 @@ const TTS_CONFIG = {
   speed: 1.0,
   debug: false,
   voice: null as string | null,
+  speaker_id: 0,
 };
 
 const LLM_CONFIG = {
@@ -114,13 +115,14 @@ const LLM_CONFIG = {
 /** 可变 TTS 配置：单个用例可翻转 models_present / enabled 等字段（贴近真实后端）。 */
 let ttsConfig: typeof TTS_CONFIG;
 
-/** 音色（内置 + 自定义；对应 list_tts_voices 合并返回）。 */
+/** 音色（内置 + 自定义；对应 list_tts_voices 合并返回；kokoro 时为说话人带 sid）。 */
 let ttsVoices: {
   id: string;
   name: string;
   wav_path: string;
   reference_text: string;
   custom: boolean;
+  sid?: number;
 }[];
 
 /** 模型库列表桩的最小形状（list_model_library 返回条目的测试子集）。 */
@@ -166,6 +168,7 @@ function defaultInvoke(
     id?: string;
     seconds?: number;
     voice?: string | null;
+    sid?: number | null;
   },
 ) {
   switch (cmd) {
@@ -188,6 +191,9 @@ function defaultInvoke(
       return Promise.resolve(undefined);
     case "set_tts_voice":
       ttsConfig = { ...ttsConfig, voice: args?.voice ?? null };
+      return Promise.resolve(undefined);
+    case "set_tts_speaker":
+      ttsConfig = { ...ttsConfig, speaker_id: args?.sid ?? 0 };
       return Promise.resolve(undefined);
     case "save_tts_voice": {
       const saved = {
@@ -519,7 +525,7 @@ describe("TtsPage（语音合成 TTS）", () => {
     });
   });
 
-  it("sid 模型（vits）：音色固定禁用、无音色管理入口，合成携带 sid=0 且不传 voice/reference", async () => {
+  it("sid 模型（vits）：音色固定禁用、无音色管理入口，合成不传 sid/voice（后端用默认说话人 0）", async () => {
     ttsConfig = { ...ttsConfig, model_type: "vits", models_present: true };
     const user = userEvent.setup();
     renderTtsPage();
@@ -538,7 +544,47 @@ describe("TtsPage（语音合成 TTS）", () => {
       expect(invokeMock).toHaveBeenCalledWith("synthesize_tts", {
         text: "测试vits模型",
         speed: 1,
-        sid: 0,
+        sid: null,
+        voice: null,
+        referenceWav: null,
+        referenceText: null,
+      });
+    });
+  });
+
+  it("kokoro 模型：说话人下拉可选并持久化，合成携带所选 sid", async () => {
+    ttsConfig = { ...ttsConfig, model_type: "kokoro", models_present: true };
+    // list_tts_voices 在 kokoro 下返回说话人（带 sid）
+    ttsVoices = [
+      { id: "af_maple", name: "英文女声 maple", wav_path: "", reference_text: "", custom: false, sid: 0 },
+      { id: "zf_099", name: "中文女声 099", wav_path: "", reference_text: "", custom: false, sid: 57 },
+      { id: "zm_095", name: "中文男声 095", wav_path: "", reference_text: "", custom: false, sid: 98 },
+    ];
+    const user = userEvent.setup();
+    renderTtsPage();
+    await user.click(await screen.findByRole("button", { name: "测试语音" }));
+
+    // kokoro 显示「说话人」选择（非禁用占位），无「音色管理」入口
+    expect(screen.getByRole("button", { name: "说话人" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "音色管理" })).not.toBeInTheDocument();
+
+    // 展开面板：分组 + 搜索；选择中文女声 099（sid 57）
+    await user.click(screen.getByRole("button", { name: "说话人" }));
+    await user.click(await screen.findByRole("option", { name: /中文女声 099/ }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_tts_speaker", { sid: 57 });
+    });
+
+    const textarea = screen.getByLabelText("测试文本");
+    await user.clear(textarea);
+    await user.type(textarea, "测试kokoro");
+    await user.click(screen.getByRole("button", { name: "合成并播放" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("synthesize_tts", {
+        text: "测试kokoro",
+        speed: 1,
+        sid: 57,
         voice: null,
         referenceWav: null,
         referenceText: null,

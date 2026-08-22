@@ -30,6 +30,22 @@ export const TTS_PRESETS = [
     tagline: "中文女声 · 22.05kHz",
     sizeBytes: 75_463_442,
   },
+  {
+    id: "tts-kokoro-int8-multi-lang-v1_1",
+    name: "Kokoro 中英 int8",
+    kind: "kokoro",
+    languages: "中英",
+    tagline: "103 音色 · 中英双语 · 24kHz · int8",
+    sizeBytes: 147_031_220,
+  },
+  {
+    id: "tts-kokoro-multi-lang-v1_1",
+    name: "Kokoro 中英",
+    kind: "kokoro",
+    languages: "中英",
+    tagline: "103 音色 · 中英双语 · 24kHz · fp32 全精度",
+    sizeBytes: 364_816_464,
+  },
 ] as const;
 
 export interface TtsModelSwitchState {

@@ -131,6 +131,7 @@ export const api = {
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
   setTtsVoice: (voice: string | null) => invoke<void>("set_tts_voice", { voice }),
+  setTtsSpeaker: (sid: number | null) => invoke<void>("set_tts_speaker", { sid }),
   getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
   loadLlmModel: () => invoke<void>("load_llm_model"),
   unloadLlmModel: () => invoke<void>("unload_llm_model"),

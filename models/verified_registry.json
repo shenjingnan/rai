@@ -90,6 +90,14 @@
       "compatibility_notes": "内置 TTS（ZipVoice），sherpa-onnx OfflineTts 验证可用。"
     },
     {
+      "model_id": "tts-kokoro-int8-multi-lang-v1_1",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "tts",
+      "architecture": "sherpa-tts-kokoro",
+      "compatibility_notes": "内置 TTS（Kokoro int8 中英 103 说话人），sherpa-onnx OfflineTts 验证可用（voices.bin + 双词典 + espeak-ng-data + date/number-zh.fst）。"
+    },
+    {
       "model_id": "qwen3-0.6b-q4-k-m",
       "provider": "huggingface",
       "repo_id": "unsloth/Qwen3-0.6B-GGUF",

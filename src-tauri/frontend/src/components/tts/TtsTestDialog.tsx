@@ -13,6 +13,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
+import { TtsSpeakerSelect } from "./TtsSpeakerSelect";
 import { modelNameFromDir } from "./ttsMeta";
 
 /** 退出动画时长，需与卡片/遮罩的 duration 一致。 */
@@ -125,6 +126,8 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
   const modelName = modelNameFromDir(tts.config?.model_dir);
   // sid 模型（vits/matcha/...）无参考音频克隆语义：音色固定，不提供选择与「管理音色」
   const sidModel = !!tts.config?.model_type && tts.config.model_type !== "zipvoice";
+  // kokoro 多说话人：说话人选择替代禁用占位（选即持久化，本次合成跟随）
+  const kokoroModel = tts.config?.model_type === "kokoro";
   const synthPercent = Math.max(0, Math.min(100, (tts.progress ?? 0) * 100));
 
   return (
@@ -174,11 +177,15 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
             </div>
           </dl>
 
-          {/* 音色：默认 + 内置 + 已保存自定义（来自 list_tts_voices）；自定义经「管理音色」添加 */}
+          {/* 音色/说话人：默认 + 内置 + 已保存自定义（来自 list_tts_voices）；自定义经「管理音色」添加；
+              kokoro 为说话人选择（103 项，搜索 + 分组） */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">
-              <label className="text-sm text-text-primary" htmlFor="tts-test-voice">
-                音色
+              <label
+                className="text-sm text-text-primary"
+                htmlFor={kokoroModel ? "tts-test-speaker" : "tts-test-voice"}
+              >
+                {kokoroModel ? "说话人" : "音色"}
               </label>
               {onManageVoices && !sidModel && (
                 <Button
@@ -192,7 +199,16 @@ export function TtsTestDialog({ open, onClose, onManageVoices, manageOpen }: Tts
                 </Button>
               )}
             </div>
-            {sidModel ? (
+            {kokoroModel ? (
+              <TtsSpeakerSelect
+                value={tts.selectedSpeaker}
+                onValueChange={(sid) => void tts.setSelectedSpeaker(sid)}
+                speakers={tts.voices}
+                id="tts-test-speaker"
+                ariaLabel="说话人"
+                disabled={tts.synthesizing}
+              />
+            ) : sidModel ? (
               <Select value="fixed" disabled>
                 <SelectTrigger id="tts-test-voice" aria-label="音色" className="w-full">
                   <SelectValue placeholder="默认音色（模型固定）" />

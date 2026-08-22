@@ -157,6 +157,28 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "kokoro-int8-multi-lang-v1_1",
+      "role": "tts-kokoro-int8",
+      "version": "multi-lang-v1_1",
+      "kind": "archive",
+      "archive": "kokoro-int8-multi-lang-v1_1.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
+      "sha256": "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6",
+      "size_bytes": 147031220,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "kokoro-multi-lang-v1_1",
+      "role": "tts-kokoro",
+      "version": "multi-lang-v1_1",
+      "kind": "archive",
+      "archive": "kokoro-multi-lang-v1_1.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2",
+      "sha256": "a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad",
+      "size_bytes": 364816464,
+      "license": "Apache-2.0"
+    },
+    {
       "name": "Qwen3-0.6B",
       "role": "llm-qwen3-0.6b-q4-k-m",
       "version": "instruct",

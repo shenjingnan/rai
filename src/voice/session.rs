@@ -147,7 +147,7 @@ impl VoiceSession {
         let llm_rx = llm.subscribe();
         let tts = TtsEngine::new(cfg.tts.clone())?;
         // 合成参数：ZipVoice 走参考音频克隆（自定义音色 > 内置音色 > 配置默认）；
-        // sid 模型走固定说话人（本期单说话人恒 0）
+        // sid 模型走说话人（kokoro 多说话人用 settings 的 speaker_id）
         let voice = if cfg.tts.model_type.uses_reference_audio() {
             let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
                 &cfg.tts,
@@ -160,7 +160,7 @@ impl VoiceSession {
                 reference_text: ref_text,
             }
         } else {
-            crate::tts::TtsVoiceParams::Sid(0)
+            crate::tts::TtsVoiceParams::Sid(cfg.tts.speaker_id)
         };
         let synth = SynthHandle::new(tts, voice, cfg.speed);
         let mic = MicLoop::new(

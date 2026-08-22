@@ -59,7 +59,7 @@ impl Announcer {
         if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
             return Err(format!("TTS 数据目录缺失: {}", cfg.data_dir.display()));
         }
-        // 合成参数：ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）
+        // 合成参数：ZipVoice 走参考音频克隆；sid 模型走说话人（kokoro 用 speaker_id）
         let voice = if cfg.model_type.uses_reference_audio() {
             let (ref_wav, ref_text) = tts::voice::resolve_reference(&cfg, None, None, None)?;
             tts::TtsVoiceParams::Reference {
@@ -67,7 +67,7 @@ impl Announcer {
                 reference_text: ref_text,
             }
         } else {
-            tts::TtsVoiceParams::Sid(0)
+            tts::TtsVoiceParams::Sid(cfg.speaker_id)
         };
         let engine = tts::TtsEngine::new(cfg.clone())?;
         let sample_rate = engine.sample_rate() as u32;

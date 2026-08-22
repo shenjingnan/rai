@@ -160,6 +160,9 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
         "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
         "tts-vocoder-22khz" => &[crate::tts::config::DEFAULT_MATCHA_VOCODER],
+        // Kokoro 两精度包主模型文件名不同（model.onnx vs model.int8.onnx），各自给全清单
+        "tts-kokoro-int8" => &crate::tts::config::KOKORO_INT8_REQUIRED_FILES,
+        "tts-kokoro" => &crate::tts::config::KOKORO_FP32_REQUIRED_FILES,
         // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }
@@ -184,8 +187,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            26,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）"
+            28,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro（int8/fp32）"
         );
         assert!(
             models
@@ -257,6 +260,13 @@ mod tests {
         assert_eq!(required_files_for_role("tts-vits-melo").len(), 3);
         assert_eq!(required_files_for_role("tts-matcha").len(), 4);
         assert!(required_files_for_role("tts-matcha").contains(&"vocos-22khz-univ.onnx"));
+        // kokoro 两精度：主模型文件名不同，各自 5 件套（model + tokens + voices + 双词典）
+        assert_eq!(required_files_for_role("tts-kokoro-int8").len(), 5);
+        assert!(required_files_for_role("tts-kokoro-int8").contains(&"model.int8.onnx"));
+        assert!(required_files_for_role("tts-kokoro-int8").contains(&"voices.bin"));
+        assert_eq!(required_files_for_role("tts-kokoro").len(), 5);
+        assert!(required_files_for_role("tts-kokoro").contains(&"model.onnx"));
+        assert!(required_files_for_role("tts-kokoro").contains(&"lexicon-zh.txt"));
         assert_eq!(required_files_for_role("wake-word").len(), 5);
         // wenetspeech：epoch-12 三件套 + tokens + test_wavs/test_keywords.txt
         let ws = required_files_for_role("wake-word-wenetspeech");
@@ -306,6 +316,14 @@ mod tests {
         assert_eq!(
             registry_tts_kind("tts-matcha-zh-baker"),
             Some(TtsModelKind::Matcha)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-kokoro-int8-multi-lang-v1_1"),
+            Some(TtsModelKind::Kokoro)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-kokoro-multi-lang-v1_1"),
+            Some(TtsModelKind::Kokoro)
         );
         // 非 TTS 或无 tts_kind → None
         assert_eq!(registry_tts_kind("qwen3-1.7b-q4-k-m"), None);

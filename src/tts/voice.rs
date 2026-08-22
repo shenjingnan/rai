@@ -10,7 +10,7 @@ use crate::tts::config::ResolvedTtsConfig;
 /// 一个可用音色。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TtsVoice {
-    /// 唯一标识（wav 文件名去 `.wav` 后缀，如 `leijun-1`）。
+    /// 唯一标识（wav 文件名去 `.wav` 后缀，如 `leijun-1`；kokoro 说话人用官方名如 `zf_001`）。
     pub id: String,
     /// 显示名（内置音色有友好中文名，否则用 id）。
     pub name: String,
@@ -20,6 +20,9 @@ pub struct TtsVoice {
     pub reference_text: String,
     /// 是否为用户自定义音色（true = 来自音色库，false = 模型包内置）。
     pub custom: bool,
+    /// sid 模型的说话人编号（kokoro 103 说话人；参考音频克隆模型恒 None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<i32>,
 }
 
 /// 内置音色的友好中文名（prompt.txt 只有文件名，这里做一层展示映射）。
@@ -51,6 +54,7 @@ fn parse_prompt_line(line: &str, model_dir: &Path) -> Option<TtsVoice> {
         wav_path: model_dir.join("test_wavs").join(wav_name),
         reference_text: text.to_string(),
         custom: false,
+        sid: None,
     })
 }
 

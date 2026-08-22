@@ -246,6 +246,8 @@ export interface TtsConfigInfo {
   debug: boolean;
   /** 默认音色 id（`null` = 内置 leijun），可经 `set_tts_voice` 修改 */
   voice: string | null;
+  /** 默认说话人 id（kokoro 多说话人），可经 `set_tts_speaker` 修改 */
+  speaker_id: number;
 }
 
 /** `set_tts_params` 载荷：可调整的 TTS 合成参数（snake_case 直传，缺省项不修改）。 */
@@ -276,6 +278,8 @@ export interface TtsVoice {
   reference_text: string;
   /** 是否为用户自定义音色（true = 来自音色库，false = 模型包内置） */
   custom: boolean;
+  /** sid 模型的说话人编号（kokoro 103 说话人；参考音频克隆模型无此字段） */
+  sid?: number;
 }
 
 /** `save_tts_voice` 载荷：把源 wav 拷贝进音色库并登记。 */

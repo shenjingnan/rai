@@ -408,8 +408,9 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             let tts = cfg.tts.get_or_insert_with(Default::default);
             tts.model_dir = Some(path_str);
             // 切换时同步持久化模型类型：managed 安装目录名 == registry `name`，据此
-            // 推导 vits/matcha/zipvoice；external/local 目录探测不到时保持原值
+            // 推导 vits/matcha/zipvoice/kokoro；external/local 目录探测不到时保持原值
             // （resolve 会按目录内容兜底探测）。
+            let mut detected_kind = None;
             if let Some(name) = path.file_name() {
                 let base = name.to_string_lossy().to_string();
                 if let Some(kind) = crate::model_library::registry::all_models()
@@ -419,7 +420,13 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
                     .and_then(|m| m.tts_kind)
                 {
                     tts.model_type = Some(kind);
+                    detected_kind = Some(kind);
                 }
+            }
+            // 切到非 Kokoro 模型时重置说话人选择（vits/matcha 单说话人恒 0，
+            // 残留的 kokoro speaker_id 会污染新模型）。
+            if detected_kind.is_some_and(|k| k != crate::tts::config::TtsModelKind::Kokoro) {
+                tts.speaker_id = None;
             }
             // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
             // 会污染新模型的文件探测，交回 resolve 自动探测（与 KWS/ASR 分支同款取舍）。

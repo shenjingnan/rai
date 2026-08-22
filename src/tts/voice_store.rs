@@ -79,6 +79,8 @@ pub fn list_custom_voices() -> Vec<TtsVoice> {
             wav_path: dir.join(&e.wav),
             reference_text: e.reference_text,
             custom: true,
+            sid: None,
+            group: None,
         })
         .collect()
 }
@@ -132,6 +134,8 @@ pub fn save_voice(
         wav_path: dest,
         reference_text: reference_text.to_string(),
         custom: true,
+        sid: None,
+        group: None,
     })
 }
 

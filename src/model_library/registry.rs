@@ -160,6 +160,10 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
         "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
         "tts-vocoder-22khz" => &[crate::tts::config::DEFAULT_MATCHA_VOCODER],
+        // Kokoro 两量化变体：registry 层按 role 钉死主模型文件名（staging 校验抓错误归档），
+        // 引擎层用 kokoro_model_file_in 双名探测容忍两种包
+        "tts-kokoro" => &crate::tts::config::KOKORO_FP32_REQUIRED_FILES,
+        "tts-kokoro-int8" => &crate::tts::config::KOKORO_INT8_REQUIRED_FILES,
         // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }
@@ -184,8 +188,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            26,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）"
+            28,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro TTS"
         );
         assert!(
             models
@@ -257,6 +261,14 @@ mod tests {
         assert_eq!(required_files_for_role("tts-vits-melo").len(), 3);
         assert_eq!(required_files_for_role("tts-matcha").len(), 4);
         assert!(required_files_for_role("tts-matcha").contains(&"vocos-22khz-univ.onnx"));
+        // Kokoro：fp32 / int8 各自钉死主模型文件名，其余三件（voices.bin/tokens/lexicon-zh）共享
+        let kf = required_files_for_role("tts-kokoro");
+        assert_eq!(kf.len(), 4);
+        assert!(kf.contains(&"model.onnx"));
+        assert!(kf.contains(&"voices.bin"));
+        let ki = required_files_for_role("tts-kokoro-int8");
+        assert_eq!(ki.len(), 4);
+        assert!(ki.contains(&"model.int8.onnx"));
         assert_eq!(required_files_for_role("wake-word").len(), 5);
         // wenetspeech：epoch-12 三件套 + tokens + test_wavs/test_keywords.txt
         let ws = required_files_for_role("wake-word-wenetspeech");
@@ -306,6 +318,14 @@ mod tests {
         assert_eq!(
             registry_tts_kind("tts-matcha-zh-baker"),
             Some(TtsModelKind::Matcha)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-kokoro-int8-multi-lang-v1-1"),
+            Some(TtsModelKind::Kokoro)
+        );
+        assert_eq!(
+            registry_tts_kind("tts-kokoro-multi-lang-v1-1"),
+            Some(TtsModelKind::Kokoro)
         );
         // 非 TTS 或无 tts_kind → None
         assert_eq!(registry_tts_kind("qwen3-1.7b-q4-k-m"), None);

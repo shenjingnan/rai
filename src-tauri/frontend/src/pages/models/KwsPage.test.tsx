@@ -32,6 +32,7 @@ const KWS_CONFIG = {
   enabled: false,
   custom_keywords: "",
   model_dir: "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-zh-en-3M",
+  keyword_languages: ["zh", "en"] as string[],
   provider: "cpu",
   num_threads: 4,
   sample_rate: 16000,
@@ -326,6 +327,43 @@ describe("KwsPage（唤醒词配置）", () => {
     kwsConfig = { ...kwsConfig, custom_keywords: "你好小智", models_present: true };
     renderKwsPage();
     expect(await screen.findByDisplayValue("你好小智")).toBeInTheDocument();
+  });
+
+  it("英文专用模型 + 存量中文唤醒词：输入框常驻兼容性警示与英文示例 placeholder", async () => {
+    // gigaspeech（keyword_languages=["en"]）+ 切换前遗留的中文唤醒词 → 不等启动监听即提示
+    kwsConfig = {
+      ...kwsConfig,
+      custom_keywords: "大月下",
+      models_present: true,
+      model_dir:
+        "/home/user/.zapmomo/models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      keyword_languages: ["en"],
+    };
+    renderKwsPage();
+    expect(await screen.findByDisplayValue("大月下")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/当前模型仅支持英文唤醒词，输入含中文将无法启动监听/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "自定义唤醒词" })).toHaveAttribute(
+      "placeholder",
+      "如 HEY MOMO，多个用 / 分隔",
+    );
+  });
+
+  it("双语模型 + 中文唤醒词：不出现英文专用警示（回归）", async () => {
+    kwsConfig = {
+      ...kwsConfig,
+      custom_keywords: "你好小智",
+      models_present: true,
+      keyword_languages: ["zh", "en"],
+    };
+    renderKwsPage();
+    expect(await screen.findByDisplayValue("你好小智")).toBeInTheDocument();
+    expect(screen.queryByText(/仅支持英文唤醒词/)).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "自定义唤醒词" })).toHaveAttribute(
+      "placeholder",
+      "多个用 / 分隔",
+    );
   });
 
   it("start/stop 在途（pending）时顶部开关禁用，完成后恢复", async () => {

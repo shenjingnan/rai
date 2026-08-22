@@ -21,6 +21,12 @@ export const KWS_PRESETS = [
     tagline: "纯中文 · 轻量（WenetSpeech 1 万小时）",
     sizeBytes: 32_654_866,
   },
+  {
+    id: "kws-zipformer-gigaspeech-3.3m",
+    name: "Zipformer KWS gigaspeech 3.3M",
+    tagline: "纯英文 · 轻量（GigaSpeech 1 万小时）",
+    sizeBytes: 17_626_723,
+  },
 ] as const;
 
 export interface KwsModelSwitchState {

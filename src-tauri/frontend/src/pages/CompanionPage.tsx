@@ -1,5 +1,14 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { CircleAlert, Info, Pencil, Sparkles, Star, Trash2, Upload } from "lucide-react";
+import {
+  CircleAlert,
+  Image as ImageIcon,
+  Info,
+  Pencil,
+  Sparkles,
+  Star,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -436,15 +445,30 @@ export function CompanionPage() {
     void api.setCompanionDragMode({ mode: next });
   }, []);
 
-  const handleImport = useCallback(async () => {
+  // 通用导入收尾：清错误、调导入命令并选中新伙伴。
+  const importAndSelect = useCallback(
+    async (source: string) => {
+      setStageError(null);
+      const model = await importModel(source);
+      if (model) {
+        setSelectedId(model.id);
+      }
+    },
+    [importModel],
+  );
+
+  const handleImportDir = useCallback(async () => {
     const dir = await open({ directory: true, title: "选择 Live2D 模型目录" });
-    if (typeof dir !== "string") return;
-    setStageError(null);
-    const model = await importModel(dir);
-    if (model) {
-      setSelectedId(model.id);
-    }
-  }, [importModel]);
+    if (typeof dir === "string") await importAndSelect(dir);
+  }, [importAndSelect]);
+
+  const handleImportGif = useCallback(async () => {
+    const file = await open({
+      title: "选择 GIF 动图",
+      filters: [{ name: "GIF 动图", extensions: ["gif"] }],
+    });
+    if (typeof file === "string") await importAndSelect(file);
+  }, [importAndSelect]);
 
   const handleRemoveConfirm = useCallback(() => {
     if (!removeTarget) return;
@@ -471,8 +495,11 @@ export function CompanionPage() {
     [selected, saveCover],
   );
 
+  const isGif = selected?.format === "gif";
   const previewUrl = selected ? toAssetUrl(selected.model_file) : null;
-  const showStage = !!selected?.valid && previewSize.width > 0 && previewSize.height > 0;
+  // GIF 伙伴不走 PIXI 预览（无 canvas/动作目录），单独 img 分支。
+  const showStage =
+    !!selected?.valid && !isGif && previewSize.width > 0 && previewSize.height > 0;
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -492,10 +519,16 @@ export function CompanionPage() {
                 我的伙伴
               </CardTitle>
             </div>
-            <Button size="sm" onClick={handleImport} disabled={loading}>
-              <Upload className="h-4 w-4" />
-              添加伙伴
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button size="sm" onClick={handleImportDir} disabled={loading}>
+                <Upload className="h-4 w-4" />
+                导入模型
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleImportGif} disabled={loading}>
+                <ImageIcon className="h-4 w-4" />
+                导入 GIF
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3">
             {error && (
@@ -660,6 +693,14 @@ export function CompanionPage() {
             )}
 
             <div ref={previewRef} className="relative min-h-0 flex-1 overflow-hidden">
+              {selected?.valid && selected.format === "gif" && (
+                <img
+                  src={previewUrl ?? undefined}
+                  alt={selected.name}
+                  draggable={false}
+                  className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain"
+                />
+              )}
               {showStage && previewUrl && (
                 <SharedLive2dStage
                   modelUrl={previewUrl}

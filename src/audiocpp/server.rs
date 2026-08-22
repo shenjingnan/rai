@@ -371,7 +371,7 @@ mod tests {
     /// 写一个最小 stub audiocpp_server（python3 http server）：解析 `--config <path>`
     /// 的 json 取端口，实现 /health、/v1/models、/v1/audio/speech（返回固定 wav）。
     /// 放入固定临时目录并注入 SEARCH_DIRS（OnceLock 全局一次，目录固定保证幂等）。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn setup_stub_engine() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("zapmomo-audiocpp-stub-test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -416,7 +416,7 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
     }
 
     /// audiocpp 后端测试配置（HOME 隔离 + 模型两文件齐）。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn stub_ready_cfg(home: &std::path::Path) -> crate::tts::config::ResolvedTtsConfig {
         crate::test_util::set_custom_data_dir(home);
         let model_dir = home.join("models/pocket-stub");
@@ -430,13 +430,13 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
     }
 
     /// pidfile 是否存在（引擎目录在 HOME 隔离下随 data_dir 走）。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn stub_pidfile_exists() -> bool {
         pidfile_path().exists()
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn test_lease_lifecycle_with_stub_engine() {
         crate::test_util::run_with_temp_home(|home| {
             setup_stub_engine();
@@ -464,7 +464,7 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn test_idle_keepalive_delays_reaping() {
         crate::test_util::run_with_temp_home(|home| {
             setup_stub_engine();
@@ -484,7 +484,7 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn test_client_synthesize_via_stub_engine() {
         crate::test_util::run_with_temp_home(|home| {
             setup_stub_engine();

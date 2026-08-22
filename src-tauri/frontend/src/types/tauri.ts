@@ -151,6 +151,7 @@ export interface PerformanceKeyInfo {
 export interface Live2dConfigInfo {
   model_dir: string | null;
   model_file: string | null;
+  /** 模型格式："cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string | null;
   models_present: boolean;
   window_scale: number | null;
@@ -170,6 +171,7 @@ export interface Live2dConfigInfo {
 export interface Live2dModelInfo {
   model_dir: string | null;
   model_file: string | null;
+  /** "cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string | null;
   /** BongoCat 道具资源（非 BongoCat 模型为 null） */
   props: PerformancePropsInfo | null;
@@ -204,8 +206,9 @@ export interface CompanionModelInfo {
   source_path: string | null;
   /** 应用托管目录 `~/.zapmomo/companions/{id}` */
   model_dir: string;
-  /** 托管目录内的 .model3.json 绝对路径 */
+  /** 托管目录内的 .model3.json（Live2D）或 .gif（GIF 伙伴）绝对路径 */
   model_file: string;
+  /** "cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string;
   imported_at: string;
   /** 快速有效判定：托管目录与清单文件是否都还在磁盘上 */

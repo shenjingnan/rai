@@ -108,8 +108,10 @@ mod tests {
         let m = &sc.models[0];
         assert_eq!(m.id, "pocket-tts-english");
         assert_eq!(m.family, "pocket_tts");
+        // 路径分隔符按平台归一后断言（Windows 的 PathBuf::join 产生 `\`，
+        // server 侧同为原生程序读取，分隔符不影响运行时）
         assert_eq!(
-            m.path,
+            m.path.replace('\\', "/"),
             "/models/pocket-tts-english-audiocpp/pocket-tts-english-q8_0.gguf"
         );
         assert_eq!(m.task, "tts");

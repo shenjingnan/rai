@@ -366,6 +366,142 @@ mod tests {
         assert!(p > 0);
     }
 
+    // ---------- 全链路（python3 stub 引擎，unix-only：覆盖率在 ubuntu 跑） ----------
+
+    /// 写一个最小 stub audiocpp_server（python3 http server）：解析 `--config <path>`
+    /// 的 json 取端口，实现 /health、/v1/models、/v1/audio/speech（返回固定 wav）。
+    /// 放入固定临时目录并注入 SEARCH_DIRS（OnceLock 全局一次，目录固定保证幂等）。
+    #[cfg(unix)]
+    fn setup_stub_engine() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("zapmomo-audiocpp-stub-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = r#"#!/usr/bin/env python3
+import sys, json, struct
+cfg = json.load(open(sys.argv[sys.argv.index('--config') + 1]))
+port = cfg['port']
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def _ok(self, b):
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path == '/health':
+            self._ok(b'{"status":"ok"}')
+        elif self.path == '/v1/models':
+            self._ok(json.dumps({"data": [{"id": "pocket-tts-english"}]}).encode())
+        else:
+            self.send_error(404)
+    def do_POST(self):
+        if self.path == '/v1/audio/speech':
+            sr, n = 24000, 2400
+            data = b'\x00\x01' * n
+            hdr = b'RIFF' + struct.pack('<I', 36 + len(data)) + b'WAVEfmt ' \
+                + struct.pack('<IHHIIHH', 16, 1, 1, sr, sr * 2, 2, 16) \
+                + b'data' + struct.pack('<I', len(data))
+            self._ok(hdr + data)
+        else:
+            self.send_error(404)
+    def log_message(self, *a):
+        pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+"#;
+        let exe = dir.join(super::super::locator::engine_file_name());
+        std::fs::write(&exe, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::super::locator::set_search_dirs(vec![dir.clone()]);
+        dir
+    }
+
+    /// audiocpp 后端测试配置（HOME 隔离 + 模型两文件齐）。
+    #[cfg(unix)]
+    fn stub_ready_cfg(home: &std::path::Path) -> crate::tts::config::ResolvedTtsConfig {
+        crate::test_util::set_custom_data_dir(home);
+        let model_dir = home.join("models/pocket-stub");
+        std::fs::create_dir_all(model_dir.join("embeddings")).unwrap();
+        std::fs::write(model_dir.join(super::super::POCKET_GGUF_FILE), b"x").unwrap();
+        std::fs::write(model_dir.join("embeddings/alba.safetensors"), b"x").unwrap();
+        let mut cfg = crate::tts::config::ResolvedTtsConfig::default();
+        cfg.backend = crate::tts::config::TtsBackendKind::Audiocpp;
+        cfg.model_dir = model_dir;
+        cfg
+    }
+
+    /// pidfile 是否存在（引擎目录在 HOME 隔离下随 data_dir 走）。
+    #[cfg(unix)]
+    fn stub_pidfile_exists() -> bool {
+        pidfile_path().exists()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_lease_lifecycle_with_stub_engine() {
+        crate::test_util::run_with_temp_home(|home| {
+            setup_stub_engine();
+            let cfg = stub_ready_cfg(home);
+
+            // 首个 lease：spawn stub → 健康检查 → 模型在列
+            let l1 = lease(&cfg).expect("lease 应成功（stub 引擎健康）");
+            let url = l1.base_url();
+            assert!(url.starts_with("http://127.0.0.1:"), "url: {url}");
+            assert!(stub_pidfile_exists(), "pidfile 应写入");
+
+            // 第二个 lease 复用同一实例（计数 +1，不重复 spawn）
+            let l2 = lease(&cfg).expect("第二个 lease 复用实例");
+            assert_eq!(l2.base_url(), url);
+
+            // keepalive=None（测试环境缺省）：lease 全部释放后立即回收
+            drop(l1);
+            drop(l2);
+            assert!(!stub_pidfile_exists(), "归零应立即回收（CLI 语义）");
+
+            // 显式 shutdown 幂等
+            shutdown_blocking();
+            shutdown_blocking();
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_idle_keepalive_delays_reaping() {
+        crate::test_util::run_with_temp_home(|home| {
+            setup_stub_engine();
+            let cfg = stub_ready_cfg(home);
+
+            set_idle_keepalive(Some(Duration::from_millis(400)));
+            let l = lease(&cfg).expect("lease 应成功");
+            drop(l);
+            // 保活窗口内进程仍存活（pidfile 未删）
+            assert!(stub_pidfile_exists(), "保活窗口内不应回收");
+            // 窗口过后 reaper 回收
+            std::thread::sleep(Duration::from_millis(700));
+            assert!(!stub_pidfile_exists(), "窗口过后应回收");
+            set_idle_keepalive(None);
+            shutdown_blocking();
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_client_synthesize_via_stub_engine() {
+        crate::test_util::run_with_temp_home(|home| {
+            setup_stub_engine();
+            let cfg = stub_ready_cfg(home);
+
+            // 生产构造全链路：AudiocppTts::new → lease → POST /v1/audio/speech → wav 解码
+            let tts = super::super::client::AudiocppTts::new(cfg.clone())
+                .expect("生产构造应成功（stub 健康且模型在列）");
+            let samples = tts
+                .synthesize("hello", 1.0, &crate::tts::TtsVoiceParams::Sid(0))
+                .expect("stub 合成应成功");
+            assert_eq!(samples.len(), 2400, "stub 返回 2400 样本（静音）");
+            assert_eq!(tts.sample_rate(), 24000, "首响应校准采样率");
+            shutdown_blocking();
+        });
+    }
+
     #[test]
     fn test_config_hash_distinguishes_model_dir() {
         let mut cfg = ResolvedTtsConfig::default();

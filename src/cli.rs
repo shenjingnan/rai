@@ -1306,6 +1306,33 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_backend_override_valid_invalid_and_reprobe() {
+        let base = tempfile::tempdir().unwrap();
+        // vits 目录探针：model.onnx + lexicon
+        std::fs::write(base.path().join("model.onnx"), b"x").unwrap();
+        std::fs::write(base.path().join("lexicon.txt"), b"x").unwrap();
+        let mut cfg = crate::tts::config::ResolvedTtsConfig::default();
+        // 模拟从 audiocpp pocket 切回 sherpa：残留 Pocket kind + Audiocpp 后端
+        cfg.model_type = crate::tts::config::TtsModelKind::Pocket;
+        cfg.backend = crate::tts::config::TtsBackendKind::Audiocpp;
+        cfg.model_dir = base.path().to_path_buf();
+
+        // 非法后端报错（含支持列表）
+        let err = apply_backend_override(&mut cfg, Some("vllm".to_string()), None).unwrap_err();
+        assert!(err.contains("未知 TTS 后端"), "err: {err}");
+
+        // 合法切回 sherpa：backend 复位 + model_type 按目录重探测为 Vits
+        apply_backend_override(&mut cfg, Some("sherpa".to_string()), None).unwrap();
+        assert_eq!(cfg.backend, crate::tts::config::TtsBackendKind::Sherpa);
+        assert_eq!(cfg.model_type, crate::tts::config::TtsModelKind::Vits);
+
+        // engine_path 透传
+        let p = PathBuf::from("/opt/audiocpp_server");
+        apply_backend_override(&mut cfg, None, Some(p.clone())).unwrap();
+        assert_eq!(cfg.engine_path, Some(p));
+    }
+
+    #[test]
     fn test_cli_parse_voice_run_full() {
         let cli = Cli::try_parse_from(&[
             "test",

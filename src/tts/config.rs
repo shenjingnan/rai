@@ -862,7 +862,8 @@ mod tests {
                 lex.contains("lexicon-us-en.txt") && lex.contains("lexicon-zh.txt"),
                 "{lex}"
             );
-            assert!(lex.starts_with('/'), "应为绝对路径: {lex}");
+            // 跨平台绝对路径断言（Unix 以 / 开头，Windows 以盘符开头）
+            assert!(Path::new(lex).is_absolute(), "应为绝对路径: {lex}");
             // fp32 包：主模型探测为 model.onnx
             let (_, cfg) = make("kokoro-multi-lang-v1_1", DEFAULT_KOKORO_MODEL);
             assert_eq!(

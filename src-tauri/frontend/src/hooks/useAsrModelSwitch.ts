@@ -83,6 +83,13 @@ export const ASR_PRESETS = [
     sizeBytes: 207_557_382,
     kind: "whisper",
   },
+  {
+    id: "asr-qwen3-0.6b",
+    name: "Qwen3-ASR 0.6B (int8)",
+    tagline: "29 语言自动识别 · 离线整段转写 · 支持热词 · 包体约 840MB",
+    sizeBytes: 878_702_423,
+    kind: "qwen3_asr",
+  },
 ] as const;
 
 export interface AsrModelSwitchState {

@@ -174,6 +174,8 @@ export function AsrAdvancedParams() {
   const streaming = isStreamingAsr(params?.model_type);
   // 热词/空白惩罚为 transducer（zipformer）专属：paraformer 隐藏（后端也会忽略）
   const zipformerOnly = params?.model_type === "zipformer" || !params?.model_type;
+  // 热词：zipformer 走 context graph、Qwen3-ASR 嵌提示词（后端转逗号格式），均可见可存
+  const hotwordsSupported = zipformerOnly || params?.model_type === "qwen3_asr";
   const numericKeys: NumericKey[] = zipformerOnly
     ? NUMERIC_KEYS
     : streaming
@@ -234,8 +236,8 @@ export function AsrAdvancedParams() {
     }
     const patch: AsrParamsPatch = {
       ...numeric,
-      // 热词仅 zipformer 生效、端点检测属流式语义：不适用时不随保存下发（后端缺省不修改）
-      hotwords: zipformerOnly ? (hotwordsDraft ?? "") : undefined,
+      // 热词仅 zipformer/Qwen3-ASR 生效、端点检测属流式语义：不适用时不随保存下发（后端缺省不修改）
+      hotwords: hotwordsSupported ? (hotwordsDraft ?? "") : undefined,
       enable_endpoint: streaming ? (endpointDraft ?? params.enable_endpoint) : undefined,
       enable_punctuation: punctDraft ?? params.enable_punctuation,
       debug: debugDraft ?? params.debug,
@@ -285,12 +287,14 @@ export function AsrAdvancedParams() {
               />
             ))}
 
-            {zipformerOnly && (
+            {hotwordsSupported && (
               <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
                 <div className="min-w-0">
                   <p className="text-sm text-text-primary">热词增强</p>
                   <p className="mt-0.5 text-xs text-text-muted">
-                    空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。
+                    {zipformerOnly
+                      ? "空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。"
+                      : "空格分隔（中文直接写），嵌入 Qwen3 提示词提升专有名词/人名识别。"}
                   </p>
                 </div>
                 <Input

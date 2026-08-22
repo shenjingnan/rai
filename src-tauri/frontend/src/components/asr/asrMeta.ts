@@ -19,6 +19,8 @@ export function asrModelKindLabel(kind: string): string {
       return "SenseVoice";
     case "whisper":
       return "Whisper";
+    case "qwen3_asr":
+      return "Qwen3-ASR";
     default:
       return "ASR";
   }

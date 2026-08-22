@@ -48,6 +48,9 @@ pub enum AsrModelKind {
     SenseVoice,
     /// 离线 Whisper：`<size>-encoder.onnx` + `<size>-decoder.onnx` + `<size>-tokens.txt`
     Whisper,
+    /// 离线 Qwen3-ASR：`conv_frontend.onnx` + 裸名 `encoder/decoder.int8.onnx` +
+    /// `tokenizer/` 目录（LLM 自回归解码，29 语言自动识别，离线族中唯一支持热词）
+    Qwen3Asr,
 }
 
 impl AsrModelKind {
@@ -58,6 +61,7 @@ impl AsrModelKind {
             Self::Paraformer => "paraformer",
             Self::SenseVoice => "sensevoice",
             Self::Whisper => "whisper",
+            Self::Qwen3Asr => "qwen3_asr",
         }
     }
 
@@ -68,6 +72,7 @@ impl AsrModelKind {
             "paraformer" => Some(Self::Paraformer),
             "sensevoice" => Some(Self::SenseVoice),
             "whisper" => Some(Self::Whisper),
+            "qwen3_asr" => Some(Self::Qwen3Asr),
             _ => None,
         }
     }
@@ -121,6 +126,26 @@ pub const PARAFORMER_DECODER: &str = "decoder.int8.onnx";
 pub const PARAFORMER_REQUIRED_FILES: [&str; 3] =
     [PARAFORMER_ENCODER, PARAFORMER_DECODER, DEFAULT_TOKENS];
 
+/// Qwen3-ASR 卷积前端默认文件名（官方包固定名，无 int8 变体）。
+pub const QWEN3_CONV_FRONTEND: &str = "conv_frontend.onnx";
+
+/// Qwen3-ASR tokenizer 目录名（无 tokens.txt，tokenizer 从目录加载）。
+pub const QWEN3_TOKENIZER_DIR: &str = "tokenizer";
+
+/// Qwen3-ASR 模型安装完成所需的文件（相对模型目录）。
+///
+/// 注意：安装完整性判定（`has_required_files`）是 `is_file` 语义，tokenizer
+/// 目录不能作条目，以其内部三文件表达（子路径先例：KWS 的
+/// `test_wavs/test_keywords.txt`）。
+pub const QWEN3_REQUIRED_FILES: [&str; 6] = [
+    QWEN3_CONV_FRONTEND,
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "tokenizer/vocab.json",
+    "tokenizer/merges.txt",
+    "tokenizer/tokenizer_config.json",
+];
+
 /// 各模型类型安装完成所需的文件（相对模型目录）。
 ///
 /// Whisper 因 tiny/base 尺寸前缀不同返回空，运行时由目录探测
@@ -131,6 +156,7 @@ pub fn required_files(kind: AsrModelKind) -> &'static [&'static str] {
         AsrModelKind::Paraformer => &PARAFORMER_REQUIRED_FILES,
         AsrModelKind::SenseVoice => &SENSEVOICE_REQUIRED_FILES,
         AsrModelKind::Whisper => &[],
+        AsrModelKind::Qwen3Asr => &QWEN3_REQUIRED_FILES,
     }
 }
 
@@ -142,15 +168,18 @@ pub struct ResolvedAsrConfig {
     /// 模型类型（决定引擎构造分支；默认 Zipformer，老配置按目录探测兜底）
     pub model_type: AsrModelKind,
     pub model_dir: PathBuf,
-    /// SenseVoice 主模型 `model.onnx`（whisper/zipformer 为 None）
+    /// SenseVoice 主模型 `model.onnx` / Qwen3-ASR 卷积前端 `conv_frontend.onnx`
+    /// （whisper/zipformer 为 None）
     pub model: Option<PathBuf>,
-    /// SenseVoice/Whisper 转写语言（None = 自动检测）
+    /// SenseVoice/Whisper 转写语言（None = 自动检测；Qwen3-ASR 恒 None）
     pub language: Option<String>,
-    /// SenseVoice 反向文本正则化（数字/标点，缺省 true）
+    /// SenseVoice 反向文本正则化（数字/标点，缺省 true；Qwen3-ASR 不适用）
     pub use_itn: Option<bool>,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
     pub joiner: PathBuf,
+    /// tokens 文件（zipformer/paraformer/sensevoice/whisper）；
+    /// Qwen3-ASR 为 tokenizer 目录（无 tokens.txt，tokenizer 从目录加载）
     pub tokens: PathBuf,
     pub provider: String,
     pub num_threads: i32,
@@ -166,7 +195,9 @@ pub struct ResolvedAsrConfig {
     pub rule3_min_utterance_length: f32,
     /// transducer 空白符惩罚（通常 0.0）
     pub blank_penalty: f32,
-    /// 热词（空格分隔，中文直接写），提升专有名词识别
+    /// 热词（空格分隔，中文直接写），提升专有名词识别。
+    /// zipformer 走 context graph；Qwen3-ASR 在 build 层转逗号格式嵌入提示词；
+    /// paraformer 不支持（引擎层忽略）
     pub hotwords: Option<String>,
     /// 是否对最终结果自动加标点
     pub enable_punctuation: bool,
@@ -376,13 +407,13 @@ fn detect_whisper_prefix(model_dir: &Path) -> Option<String> {
     prefixes.into_iter().next()
 }
 
-/// Paraformer 组件默认文件探测：`<component>.int8.onnx` 存在取 int8，否则回退
-/// `<component>.onnx`（fp32-only 目录可运行；两文件均缺时回退 int8 名，
-/// 后续预检报「缺少模型文件」，错误路径清晰）。
+/// 裸名组件默认文件探测（Paraformer/Qwen3-ASR 共用）：`<component>.int8.onnx`
+/// 存在取 int8，否则回退 `<component>.onnx`（fp32-only 目录可运行；两文件均缺时
+/// 回退 int8 名，后续预检报「缺少模型文件」，错误路径清晰）。
 ///
 /// 与 zipformer 的 `{prefix}-` 前缀探测、SenseVoice 的 `model*.onnx` 探测不同：
-/// 官方 paraformer 包是裸名 `encoder.onnx`/`decoder.onnx`，用精确名二选一。
-fn detect_paraformer_onnx(model_dir: &Path, component: &str) -> String {
+/// 官方 paraformer/qwen3 包是裸名 `encoder.onnx`/`decoder.onnx`，用精确名二选一。
+fn detect_bare_int8_onnx(model_dir: &Path, component: &str) -> String {
     let int8 = format!("{component}.int8.onnx");
     if model_dir.join(&int8).is_file() {
         int8
@@ -403,13 +434,34 @@ fn paraformer_files_detected(model_dir: &Path) -> bool {
     encoder && decoder && model_dir.join(DEFAULT_TOKENS).is_file()
 }
 
+/// 目录是否含一套 Qwen3-ASR 文件（`conv_frontend.onnx` 独有标记 + 裸名
+/// int8|fp32 encoder/decoder + `tokenizer/` 目录）。
+///
+/// `conv_frontend.onnx` 是与其它族文件名形状互斥的独有指纹（paraformer 探针要求
+/// tokens.txt，qwen3 无 tokens.txt），放 `detect_kind_from_dir` 首位保确定性。
+fn qwen3_files_detected(model_dir: &Path) -> bool {
+    let conv = model_dir.join(QWEN3_CONV_FRONTEND).is_file();
+    let enc =
+        model_dir.join("encoder.int8.onnx").is_file() || model_dir.join("encoder.onnx").is_file();
+    let dec =
+        model_dir.join("decoder.int8.onnx").is_file() || model_dir.join("decoder.onnx").is_file();
+    conv && enc && dec && model_dir.join(QWEN3_TOKENIZER_DIR).is_dir()
+}
+
 /// 目录内容探测模型类型（settings 未配置 `model_type` 时的兜底）。
 ///
-/// 文件探针：`model.onnx`+tokens → SenseVoice；`*-encoder.onnx` 系 → Whisper；
+/// 文件探针：`conv_frontend.onnx`+裸名 encoder/decoder+`tokenizer/` → Qwen3-ASR；
+/// `model.onnx`+tokens → SenseVoice；`*-encoder.onnx` 系 → Whisper；
 /// 裸名 `encoder/decoder.onnx`+tokens → Paraformer；
 /// 否则 Zipformer（含空目录/不存在）。managed 安装目录名 == registry name 的
 /// 权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
 pub fn detect_kind_from_dir(model_dir: &Path) -> AsrModelKind {
+    // qwen3 首位：conv_frontend.onnx 是独有指纹（其余族探针都不会命中它），
+    // 且 qwen3 无 tokens.txt，若不先判会被 paraformer 之前的探针漏过、最终
+    // 落到 Zipformer 兜底。
+    if qwen3_files_detected(model_dir) {
+        return AsrModelKind::Qwen3Asr;
+    }
     if detect_model_onnx(model_dir).is_some() && model_dir.join(DEFAULT_TOKENS).is_file() {
         return AsrModelKind::SenseVoice;
     }
@@ -446,6 +498,7 @@ pub fn asr_files_present_for_kind(model_dir: &Path, kind: AsrModelKind) -> bool 
                 && model_dir.join(format!("{prefix}-decoder.onnx")).is_file()
                 && model_dir.join(format!("{prefix}-tokens.txt")).is_file()
         }),
+        AsrModelKind::Qwen3Asr => qwen3_files_detected(model_dir),
     }
 }
 
@@ -522,8 +575,8 @@ pub fn resolve(
         AsrModelKind::Paraformer => {
             // 裸名探测（int8 偏好）；不能用 `file()` 闭包——其内部走 `{prefix}-` 前缀
             // 探测，对裸名不命中。joiner 不消费，保留默认常量。
-            let enc = detect_paraformer_onnx(&cfg.model_dir, "encoder");
-            let dec = detect_paraformer_onnx(&cfg.model_dir, "decoder");
+            let enc = detect_bare_int8_onnx(&cfg.model_dir, "encoder");
+            let dec = detect_bare_int8_onnx(&cfg.model_dir, "decoder");
             cfg.encoder = resolve_file(s.and_then(|s| s.encoder.as_deref()), &enc, &cfg.model_dir)?;
             cfg.decoder = resolve_file(s.and_then(|s| s.decoder.as_deref()), &dec, &cfg.model_dir)?;
             cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
@@ -542,6 +595,22 @@ pub fn resolve(
             cfg.encoder = file("encoder", &format!("{prefix}-encoder.onnx"))?;
             cfg.decoder = file("decoder", &format!("{prefix}-decoder.onnx"))?;
             cfg.tokens = file("tokens", &format!("{prefix}-tokens.txt"))?;
+        }
+        AsrModelKind::Qwen3Asr => {
+            // 裸名 int8 探测与 paraformer 同款；conv_frontend 固定名不提供覆盖
+            // （包内无 int8 变体，同 SenseVoice 主模型取舍）。tokens 字段承载
+            // tokenizer 目录（settings.tokens 可覆盖目录名），不能用 `file()` 闭包
+            // ——那是 `{prefix}-` 文件名探测。
+            cfg.model = Some(cfg.model_dir.join(QWEN3_CONV_FRONTEND));
+            let enc = detect_bare_int8_onnx(&cfg.model_dir, "encoder");
+            let dec = detect_bare_int8_onnx(&cfg.model_dir, "decoder");
+            cfg.encoder = resolve_file(s.and_then(|s| s.encoder.as_deref()), &enc, &cfg.model_dir)?;
+            cfg.decoder = resolve_file(s.and_then(|s| s.decoder.as_deref()), &dec, &cfg.model_dir)?;
+            cfg.tokens = resolve_file(
+                s.and_then(|s| s.tokens.as_deref()),
+                QWEN3_TOKENIZER_DIR,
+                &cfg.model_dir,
+            )?;
         }
     }
 
@@ -636,9 +705,14 @@ impl AsrParamsPatch {
             return Err(format!("空白符惩罚需在 0~2，当前 {v}"));
         }
 
-        // Paraformer 仅 greedy_search：热词与空白符惩罚为 transducer 专属，
-        // 此族下不落盘（防止 zipformer 切换后残留无意义配置；引擎层另有一级忽略）
+        // 族专属参数不落盘（防止切换后残留无意义配置；引擎层另有一级忽略）：
+        // - blank_penalty / hotwords 为 transducer 专属，Paraformer（仅 greedy_search）跳过
+        // - blank_penalty：Qwen3-ASR（LLM 解码）同样跳过；hotwords 放行
+        //   （qwen3 是离线族中唯一支持热词的，build 层转逗号格式嵌 prompt）
+        // - language/use_itn 为 SenseVoice/Whisper 概念，Qwen3-ASR
+        //   （29 语言自动识别 + 原生标点）跳过
         let paraformer = asr.model_type == Some(AsrModelKind::Paraformer);
+        let qwen3 = asr.model_type == Some(AsrModelKind::Qwen3Asr);
 
         if let Some(v) = self.num_threads {
             asr.num_threads = Some(v);
@@ -659,7 +733,7 @@ impl AsrParamsPatch {
             asr.rule3_min_utterance_length = Some(v);
         }
         if let Some(v) = self.blank_penalty
-            && !paraformer
+            && !(paraformer || qwen3)
         {
             asr.blank_penalty = Some(v);
         }
@@ -675,14 +749,18 @@ impl AsrParamsPatch {
         if let Some(v) = self.enable_punctuation {
             asr.enable_punctuation = Some(v);
         }
-        if let Some(v) = &self.language {
+        if let Some(v) = &self.language
+            && !qwen3
+        {
             asr.language = if v.trim().is_empty() {
                 None
             } else {
                 Some(v.trim().to_string())
             };
         }
-        if let Some(v) = self.use_itn {
+        if let Some(v) = self.use_itn
+            && !qwen3
+        {
             asr.use_itn = Some(v);
         }
         if let Some(v) = self.debug {
@@ -1252,6 +1330,7 @@ mod tests {
             (AsrModelKind::Paraformer, "paraformer"),
             (AsrModelKind::SenseVoice, "sensevoice"),
             (AsrModelKind::Whisper, "whisper"),
+            (AsrModelKind::Qwen3Asr, "qwen3_asr"),
         ] {
             assert_eq!(kind.as_str(), s);
             assert_eq!(AsrModelKind::parse_str(s), Some(kind));
@@ -1265,6 +1344,8 @@ mod tests {
         assert!(AsrModelKind::SenseVoice.is_offline());
         assert!(!AsrModelKind::Whisper.is_streaming());
         assert!(AsrModelKind::Whisper.is_offline());
+        assert!(!AsrModelKind::Qwen3Asr.is_streaming());
+        assert!(AsrModelKind::Qwen3Asr.is_offline());
         // serde snake_case 往返
         assert_eq!(
             serde_json::from_str::<AsrModelKind>("\"sensevoice\"").unwrap(),
@@ -1273,6 +1354,14 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<AsrModelKind>("\"paraformer\"").unwrap(),
             AsrModelKind::Paraformer
+        );
+        assert_eq!(
+            serde_json::from_str::<AsrModelKind>("\"qwen3_asr\"").unwrap(),
+            AsrModelKind::Qwen3Asr
+        );
+        assert_eq!(
+            serde_json::to_string(&AsrModelKind::Qwen3Asr).unwrap(),
+            "\"qwen3_asr\""
         );
         assert_eq!(
             serde_json::to_string(&AsrModelKind::Whisper).unwrap(),
@@ -1293,6 +1382,17 @@ mod tests {
         );
         // whisper 因 tiny/base 文件名不同，安装清单按 role 精确声明，此处运行时返回空（探测兜底）
         assert!(required_files(AsrModelKind::Whisper).is_empty());
+        assert_eq!(
+            required_files(AsrModelKind::Qwen3Asr),
+            &[
+                QWEN3_CONV_FRONTEND,
+                "encoder.int8.onnx",
+                "decoder.int8.onnx",
+                "tokenizer/vocab.json",
+                "tokenizer/merges.txt",
+                "tokenizer/tokenizer_config.json",
+            ]
+        );
     }
 
     #[test]
@@ -1492,6 +1592,130 @@ mod tests {
         patch.apply_to(&mut zip).unwrap();
         assert_eq!(zip.hotwords.as_deref(), Some("新热词"));
         assert_eq!(zip.blank_penalty, Some(1.5));
+    }
+
+    #[test]
+    fn test_detect_kind_from_dir_qwen3() {
+        // int8 目录：conv_frontend（独有标记）+ 裸名 int8 encoder/decoder + tokenizer 目录
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "conv_frontend.onnx",
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("tokenizer")).unwrap();
+        std::fs::write(dir.path().join("tokenizer/vocab.json"), b"x").unwrap();
+        assert_eq!(detect_kind_from_dir(dir.path()), AsrModelKind::Qwen3Asr);
+        assert!(asr_files_present_for_kind(
+            dir.path(),
+            AsrModelKind::Qwen3Asr
+        ));
+        assert!(asr_files_present(dir.path()), "探测应归到 Qwen3-ASR");
+
+        // fp32 裸名目录同判（外部导出场景）
+        let fp32 = tempfile::tempdir().unwrap();
+        for name in ["conv_frontend.onnx", "encoder.onnx", "decoder.onnx"] {
+            std::fs::write(fp32.path().join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(fp32.path().join("tokenizer")).unwrap();
+        assert_eq!(detect_kind_from_dir(fp32.path()), AsrModelKind::Qwen3Asr);
+
+        // 删 tokenizer 目录后不再命中，且不误判 paraformer
+        // （裸名 encoder/decoder 在，但 paraformer 探针要求 tokens.txt）
+        std::fs::remove_dir_all(dir.path().join("tokenizer")).unwrap();
+        assert_ne!(detect_kind_from_dir(dir.path()), AsrModelKind::Qwen3Asr);
+        assert!(!asr_files_present_for_kind(
+            dir.path(),
+            AsrModelKind::Qwen3Asr
+        ));
+    }
+
+    #[test]
+    fn test_resolve_qwen3_maps_model_encoder_decoder_tokenizer_dir() {
+        // model=conv_frontend、encoder/decoder=裸名 int8、tokens=tokenizer 目录；
+        // joiner 不消费保留默认常量（与 SenseVoice/Paraformer 同款取舍）
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "conv_frontend.onnx",
+            "encoder.onnx",
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "decoder.int8.onnx",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("tokenizer")).unwrap();
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Qwen3Asr),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.model_type, AsrModelKind::Qwen3Asr);
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some(dir.path().join("conv_frontend.onnx").as_path())
+        );
+        assert_eq!(cfg.encoder.file_name().unwrap(), "encoder.int8.onnx");
+        assert_eq!(cfg.decoder.file_name().unwrap(), "decoder.int8.onnx");
+        assert_eq!(cfg.tokens.file_name().unwrap(), "tokenizer");
+        assert!(cfg.tokens.is_dir(), "tokens 承载 tokenizer 目录");
+        assert_eq!(cfg.joiner.file_name().unwrap(), DEFAULT_JOINER);
+
+        // 显式 settings 覆盖优先（fp32 文件名）
+        let settings_fp32 = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Qwen3Asr),
+            encoder: Some("encoder.onnx".to_string()),
+            decoder: Some("decoder.onnx".to_string()),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings_fp32), None).unwrap();
+        assert_eq!(cfg.encoder.file_name().unwrap(), "encoder.onnx");
+        assert_eq!(cfg.decoder.file_name().unwrap(), "decoder.onnx");
+    }
+
+    #[test]
+    fn test_asr_params_patch_qwen3_rules() {
+        // qwen3 下热词落盘（离线族唯一支持，build 层转逗号格式）；
+        // blank_penalty/language/use_itn 均非本族概念，不落盘
+        let mut asr = AsrSettings {
+            model_type: Some(AsrModelKind::Qwen3Asr),
+            ..AsrSettings::default()
+        };
+        let patch = AsrParamsPatch {
+            num_threads: Some(4),
+            blank_penalty: Some(1.5),
+            hotwords: Some("尼日尔河 ZapMomo".to_string()),
+            language: Some("zh".to_string()),
+            use_itn: Some(true),
+            ..AsrParamsPatch::default()
+        };
+        patch.apply_to(&mut asr).unwrap();
+        assert_eq!(asr.num_threads, Some(4));
+        assert_eq!(asr.hotwords.as_deref(), Some("尼日尔河 ZapMomo"));
+        assert_eq!(asr.blank_penalty, None, "空白惩罚不应落盘");
+        assert_eq!(asr.language, None, "qwen3 自动识别语种，language 不落盘");
+        assert_eq!(asr.use_itn, None, "qwen3 原生标点，use_itn 不落盘");
+
+        // paraformer/zipformer 回归不变（paraformer 热词仍跳过、language 正常落盘）
+        let mut para = AsrSettings {
+            model_type: Some(AsrModelKind::Paraformer),
+            ..AsrSettings::default()
+        };
+        patch.apply_to(&mut para).unwrap();
+        assert_eq!(para.hotwords, None, "paraformer 热词仍跳过");
+        assert_eq!(para.language.as_deref(), Some("zh"));
+        let mut zip = AsrSettings {
+            model_type: Some(AsrModelKind::Zipformer),
+            ..AsrSettings::default()
+        };
+        patch.apply_to(&mut zip).unwrap();
+        assert_eq!(zip.hotwords.as_deref(), Some("尼日尔河 ZapMomo"));
+        assert_eq!(zip.blank_penalty, Some(1.5));
+        assert_eq!(zip.language.as_deref(), Some("zh"));
     }
 
     #[test]

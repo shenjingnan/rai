@@ -40,6 +40,12 @@ const SCALE_MIN = 0.25;
 const SCALE_MAX = 2.0;
 /** cmd/ctrl + 滚轮单格缩放步长。 */
 const WHEEL_SCALE_STEP = 1.1;
+/**
+ * 窗口顶部为 dsh 事件 toast 堆叠预留的高度（最前卡片 + 2 层向上 peek）。
+ * 模型渲染区整体下移一条，堆叠卡片永不遮挡模型。
+ * 需与后端 `COMPANION_BUBBLE_STRIP`（src-tauri/src/lib.rs）保持一致。
+ */
+const BUBBLE_STRIP = 72;
 
 /**
  * 常驻角色窗口：静态展示 Live2D 模型（仅呼吸/眨眼等自动动画，不跟随鼠标）。
@@ -48,8 +54,8 @@ const WHEEL_SCALE_STEP = 1.1;
  * - 订阅 `live2d-model-changed` / `companion-scale-changed` / `companion-opacity-changed`，
  *   设置窗口切换模型、缩放或调透明度时即时同步（透明度由包裹模型的 wrapper div 的
  *   `style.opacity` 应用，语音状态点不受影响）；
- * - 窗口尺寸由「基准高度 × scale」派生（宽度按模型宽高比），缩放入口为设置面板、cmd/ctrl+滚轮
- *   与原生右键菜单（后端弹原生菜单，不受小窗口裁剪）；
+ * - 窗口尺寸由「基准高度 × scale + 顶部气泡预留条」派生（宽度按模型宽高比，不含预留条），
+ *   缩放入口为设置面板、cmd/ctrl+滚轮与原生右键菜单（后端弹原生菜单，不受小窗口裁剪）；
  * - 按住左键拖动移动窗口（位置锁定时禁止；修饰键模式下需按住 cmd/ctrl）；右键弹出原生上下文菜单。
  */
 export function CompanionRoot() {
@@ -67,7 +73,7 @@ export function CompanionRoot() {
   const [locked, setLocked] = useState(false);
   // 拖拽模式：modifier = 需按住 cmd/ctrl 才能拖动（缺省 direct = 直接拖动）。
   const [dragMode, setDragMode] = useState<CompanionDragMode>("direct");
-  const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT });
+  const [size, setSize] = useState({ width: INITIAL_WIDTH, height: BASE_HEIGHT + BUBBLE_STRIP });
   // 表演（BongoCat 兼容模拟键鼠）：道具资源、模型布局与引擎。
   const stageRef = useRef<Live2dStageHandle | null>(null);
   const [props, setProps] = useState<PerformancePropsInfo | null>(null);
@@ -83,13 +89,17 @@ export function CompanionRoot() {
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
 
-  /** 由「基准高度 × scale × 宽高比」计算窗口尺寸（逻辑像素），并 clamp 到屏幕可用区域。 */
+  /**
+   * 由「基准高度 × scale × 宽高比」计算窗口尺寸（逻辑像素），并 clamp 到屏幕可用区域。
+   * 宽度只由模型区（基准高度 × scale）派生；总高度额外加上顶部气泡预留条。
+   */
   const computeSize = useCallback((ratio: number, s: number) => {
     const availW = window.screen.availWidth;
     const availH = window.screen.availHeight;
     const baseH = Math.min(BASE_HEIGHT, availH * 0.6);
-    let height = Math.round(baseH * s);
-    let width = Math.round(height * ratio);
+    const modelH = Math.round(baseH * s);
+    let height = modelH + BUBBLE_STRIP;
+    let width = Math.round(modelH * ratio);
     height = Math.max(MIN_HEIGHT, Math.min(height, Math.floor(availH * 0.9)));
     width = Math.max(MIN_WIDTH, Math.min(width, Math.floor(availW * 0.9)));
     return { width, height };
@@ -324,23 +334,27 @@ export function CompanionRoot() {
     >
       {/* 透明度只作用于模型本身，语音状态点保持不透明 */}
       <div style={{ opacity }}>
-        <Live2dStage
-          ref={stageRef}
-          modelUrl={modelUrl}
-          width={size.width}
-          height={size.height}
-          onModelMetrics={handleModelMetrics}
-          onLayout={setModelLayout}
-          onModelLoaded={(m) => {
-            modelRef.current = m;
-          }}
-        />
-        {/* BongoCat 道具层：键盘背景 + 爪子按键贴图（仅 BongoCat 伙伴有 props） */}
-        <PropsLayer
-          layout={modelLayout}
-          backgroundUrl={props?.background ? toAssetUrl(props.background) : null}
-          pressedKeys={pressedKeys}
-        />
+        {/* 顶部预留 BUBBLE_STRIP 给事件 deck；内层 relative 让 PropsLayer 的画布
+            坐标映射（absolute left/top = layout.x/y）锚定到下移后的舞台原点。 */}
+        <div className="relative" style={{ marginTop: BUBBLE_STRIP }}>
+          <Live2dStage
+            ref={stageRef}
+            modelUrl={modelUrl}
+            width={size.width}
+            height={size.height - BUBBLE_STRIP}
+            onModelMetrics={handleModelMetrics}
+            onLayout={setModelLayout}
+            onModelLoaded={(m) => {
+              modelRef.current = m;
+            }}
+          />
+          {/* BongoCat 道具层：键盘背景 + 爪子按键贴图（仅 BongoCat 伙伴有 props） */}
+          <PropsLayer
+            layout={modelLayout}
+            backgroundUrl={props?.background ? toAssetUrl(props.background) : null}
+            pressedKeys={pressedKeys}
+          />
+        </div>
       </div>
       {/* dsh 任务事件气泡（pointer-events-none，不挡拖动/右键） */}
       <EventBubble />

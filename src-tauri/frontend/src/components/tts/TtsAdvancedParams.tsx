@@ -149,6 +149,9 @@ export function TtsAdvancedParams() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const params = tts.config;
+  // Kokoro 非扩散模型，扩散步数无意义，隐藏该行（保存时沿用 config 现值，无副作用）
+  const kokoro = params?.model_type === "kokoro";
+  const visibleKeys = PARAM_KEYS.filter((k) => !(kokoro && k === "num_steps"));
 
   // hydrate：config 就绪时填充草稿；dirty 时保留用户编辑，否则随 config 同步
   useEffect(() => {
@@ -213,7 +216,7 @@ export function TtsAdvancedParams() {
         </CollapsibleTrigger>
         <CollapsibleContent className="border-t border-divider">
           <div>
-            {PARAM_KEYS.map((k) => (
+            {visibleKeys.map((k) => (
               <ParamRow
                 key={k}
                 key_={k}

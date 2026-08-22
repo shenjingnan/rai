@@ -171,6 +171,18 @@ mod tests {
         assert!(err.contains("install-model"), "err: {err}");
     }
 
+    /// 离线族（Qwen3-ASR）：族自适应自动走 Offline 臂（报缺少 tokenizer 目录，
+    /// 而非流式引擎的「不支持实时流式」）——钉住 is_streaming 白名单不含 qwen3。
+    #[test]
+    fn test_asr_backend_new_offline_qwen3() {
+        let cfg = cfg_with(AsrModelKind::Qwen3Asr);
+        let err = AsrBackend::new(&cfg).err().unwrap();
+        assert!(
+            err.contains("tokenizer") || err.contains("缺少模型文件"),
+            "qwen3 应走离线引擎并报模型缺失，实际: {err}"
+        );
+    }
+
     /// 流式族（Paraformer）：同 Zipformer 走 AsrEngine 流式分支。
     #[test]
     fn test_asr_backend_new_streaming_paraformer() {

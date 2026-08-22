@@ -124,7 +124,7 @@ pub enum AsrCmd {
         #[arg(long)]
         hotwords: Option<String>,
     },
-    /// 离线转写 wav 文件（不需要麦克风；流式 zipformer / 离线 SenseVoice / Whisper 均可用）
+    /// 离线转写 wav 文件（不需要麦克风；流式 zipformer/paraformer / 离线 SenseVoice/Whisper/Qwen3-ASR 均可用）
     Test {
         /// wav 路径；默认 <model_dir>/test_wavs/0.wav
         #[arg(long)]
@@ -134,10 +134,10 @@ pub enum AsrCmd {
         /// 热词（空格分隔，中文直接写），提升专有名词识别
         #[arg(long)]
         hotwords: Option<String>,
-        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        /// 转写语言（SenseVoice/Whisper；Qwen3-ASR 自动识别、忽略此参数），如 zh / en / ja
         #[arg(long)]
         language: Option<String>,
-        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启；Qwen3-ASR 忽略此参数
         #[arg(long)]
         use_itn: Option<bool>,
     },
@@ -151,12 +151,12 @@ pub enum AsrCmd {
         /// 已安装也强制重新下载
         #[arg(long)]
         force: bool,
-        /// 指定 registry 模型 id（如 asr-sensevoice-zh-en-ja-ko-yue / asr-whisper-tiny）；
+        /// 指定 registry 模型 id（如 asr-sensevoice-zh-en-ja-ko-yue / asr-qwen3-0.6b）；
         /// 缺省安装默认双语 + 标点（legacy 一键下载）。
         #[arg(long)]
         model: Option<String>,
     },
-    /// 免提连续听写（离线 SenseVoice/Whisper + Silero VAD 分段，每段整句转写）
+    /// 免提连续听写（离线 SenseVoice/Whisper/Qwen3-ASR + Silero VAD 分段，每段整句转写）
     Dictate {
         /// 模型目录（覆盖 settings.toml 的 asr.model_dir）
         #[arg(long)]
@@ -167,10 +167,10 @@ pub enum AsrCmd {
         /// 听写时长（秒），默认无限
         #[arg(long)]
         duration: Option<u64>,
-        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        /// 转写语言（SenseVoice/Whisper；Qwen3-ASR 自动识别、忽略此参数），如 zh / en / ja
         #[arg(long)]
         language: Option<String>,
-        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启；Qwen3-ASR 忽略此参数
         #[arg(long)]
         use_itn: Option<bool>,
     },
@@ -199,9 +199,12 @@ pub enum TtsCmd {
         /// 输出 wav 路径；缺省 ~/.zapmomo/tts/<时间戳>.wav
         #[arg(long)]
         output: Option<PathBuf>,
-        /// 内置音色 id（如 leijun-1 / news-female / news-female-2）
+        /// 内置音色 id（zipvoice 如 leijun-1；Kokoro 如 zf_001 / zm_010）
         #[arg(long)]
         voice: Option<String>,
+        /// sid 模型（Kokoro 等）的说话人编号；优先于 --voice
+        #[arg(long)]
+        sid: Option<i32>,
         /// 自定义参考音频 wav（配合 --reference-text 使用）
         #[arg(long)]
         reference_wav: Option<PathBuf>,
@@ -437,6 +440,13 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             if hotwords.is_some() {
                 cfg.hotwords = hotwords;
             }
+            if cfg.model_type == crate::asr::config::AsrModelKind::Qwen3Asr
+                && (language.is_some() || use_itn.is_some())
+            {
+                eprintln!(
+                    "提示：Qwen3-ASR 自动识别语种并原生输出标点，--language/--use-itn 已忽略。"
+                );
+            }
             if language.is_some() {
                 cfg.language = language;
             }
@@ -523,9 +533,16 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             let mut cfg = asr_config(model_dir.as_ref())?;
             if cfg.model_type.is_streaming() {
                 return Err(format!(
-                    "当前模型类型 {} 不支持免提听写（离线模型专用）。请先安装并设为当前 SenseVoice/Whisper 模型。",
+                    "当前模型类型 {} 不支持免提听写（离线模型专用）。请先安装并设为当前 SenseVoice/Whisper/Qwen3-ASR 模型。",
                     cfg.model_type.as_str()
                 ));
+            }
+            if cfg.model_type == crate::asr::config::AsrModelKind::Qwen3Asr
+                && (language.is_some() || use_itn.is_some())
+            {
+                eprintln!(
+                    "提示：Qwen3-ASR 自动识别语种并原生输出标点，--language/--use-itn 已忽略。"
+                );
             }
             if language.is_some() {
                 cfg.language = language;
@@ -577,6 +594,7 @@ fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             speed,
             output,
             voice,
+            sid,
             reference_wav,
             reference_text,
         } => {
@@ -584,8 +602,8 @@ fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             apply_backend_override(&mut cfg, backend, engine_path)?;
             let engine = crate::tts::TtsEngine::new(cfg.clone())?;
             let speed = speed.unwrap_or(1.0);
-            // 合成参数：sherpa ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）；
-            // audiocpp（PocketTTS）走具名音色 alba
+            // 合成参数：sherpa ZipVoice 走参考音频克隆；sid 模型（Kokoro 等）按音色名/sid
+            // 解析说话人；audiocpp（PocketTTS）走具名音色 alba
             let voice_params = if cfg.uses_reference_audio() {
                 let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
                     &cfg,
@@ -602,7 +620,7 @@ fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
                     voice.unwrap_or_else(|| crate::audiocpp::DEFAULT_VOICE.to_string()),
                 )
             } else {
-                crate::tts::TtsVoiceParams::Sid(0)
+                crate::tts::voice::resolve_sid_voice(&cfg, voice.as_deref(), sid)?
             };
             let out_path = output.unwrap_or_else(crate::tts::default_output_path);
             if let Some(parent) = out_path.parent() {
@@ -622,9 +640,26 @@ fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
                 );
                 return Ok(());
             }
+            if cfg.model_type == crate::tts::config::TtsModelKind::Kokoro {
+                // Kokoro：103 预置音色按分组列出
+                println!("Kokoro 预置音色（--voice <id> 选择，共 103 个）:");
+                let mut current: Option<crate::tts::kokoro_voices::KokoroVoiceGroup> = None;
+                for v in crate::tts::kokoro_voices::list_voices() {
+                    if current != Some(v.group) {
+                        current = Some(v.group);
+                        println!("  [{}]", v.group.label());
+                    }
+                    println!("    {}  (sid {})", v.id, v.sid);
+                }
+                return Ok(());
+            }
             let voices = crate::tts::voice::list_builtin_voices(&cfg.model_dir);
             if voices.is_empty() {
-                println!("未找到内置音色（请先运行 `zapmomo tts install-model` 下载模型）。");
+                if cfg.model_type.uses_reference_audio() {
+                    println!("未找到内置音色（请先运行 `zapmomo tts install-model` 下载模型）。");
+                } else {
+                    println!("该模型为单说话人模型（speaker id 0），无音色列表。");
+                }
             } else {
                 println!("可用内置音色:");
                 for v in voices {
@@ -1082,7 +1117,8 @@ mod tests {
 
     #[test]
     fn test_cli_parse_asr_test_flags() {
-        // 离线模型（SenseVoice/Whisper）转写语言与 ITN 开关
+        // 离线模型（SenseVoice/Whisper/Qwen3-ASR）转写语言与 ITN 开关
+        // （Qwen3-ASR 自动识别语种，运行时提示忽略）
         let cli = Cli::try_parse_from(&[
             "test",
             "asr",

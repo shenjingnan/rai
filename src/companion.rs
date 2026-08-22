@@ -187,25 +187,59 @@ pub fn quick_valid(model: &CompanionModel) -> bool {
     Path::new(&model.model_dir).is_dir() && Path::new(&model.model_file).is_file()
 }
 
+/// GIF 伙伴的 format 标识（与 Live2D 的 "cubism3" 同一字段空间，判别式见 `is_gif`）。
+pub const GIF_FORMAT: &str = "gif";
+
+/// format 判别：GIF 伙伴。
+pub fn is_gif(model: &CompanionModel) -> bool {
+    model.format == GIF_FORMAT
+}
+
+/// 校验托管 GIF 伙伴：文件存在且带合法 GIF 文件头（GIF87a/GIF89a）。
+///
+/// 只读前 6 字节，不加载大尺寸 GIF 的全文。
+pub fn validate_gif_file(file: &Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(file).map_err(|e| format!("GIF 文件不存在或无法读取: {e}"))?;
+    let mut magic = [0u8; 6];
+    f.read_exact(&mut magic)
+        .map_err(|e| format!("读取 GIF 文件头失败: {e}"))?;
+    if &magic != b"GIF87a" && &magic != b"GIF89a" {
+        return Err("不是合法的 GIF 文件（缺少 GIF87a/GIF89a 文件头）".to_string());
+    }
+    Ok(())
+}
+
 /// 从库中解析当前 active 伙伴（库应已 sanitize）。
 pub fn active_model(lib: &CompanionLibrary) -> Option<&CompanionModel> {
     let active_id = lib.active_model_id.as_deref()?;
     lib.models.iter().find(|m| m.id.as_str() == active_id)
 }
 
+/// 按 format 分派轻量资源校验（GIF → 文件头；Live2D → 目录清单）。
+///
+/// 只查元数据/存在性，供 sanitize / set_active 等有效性判定使用。
+fn validate_managed(model: &CompanionModel) -> Result<(), String> {
+    if is_gif(model) {
+        validate_gif_file(Path::new(&model.model_file))
+    } else {
+        live2d_cfg::validate_managed_model(Path::new(&model.model_dir))
+    }
+}
+
 /// 校正 active：指向缺失/无效模型时落到第一个有效伙伴或 `None`；返回是否变更。
 ///
-/// 有效判定使用轻量资源校验（`validate_managed_model`，只查元数据/存在性）。
+/// 有效判定使用轻量资源校验（`validate_managed`，只查元数据/存在性）。
 fn sanitize_active_inner(lib: &mut CompanionLibrary) -> bool {
     if let Some(model) = active_model(lib)
-        && live2d_cfg::validate_managed_model(Path::new(&model.model_dir)).is_ok()
+        && validate_managed(model).is_ok()
     {
         return false;
     }
     let first_valid = lib
         .models
         .iter()
-        .find(|m| live2d_cfg::validate_managed_model(Path::new(&m.model_dir)).is_ok())
+        .find(|m| validate_managed(m).is_ok())
         .map(|m| m.id.clone());
     if lib.active_model_id != first_valid {
         lib.active_model_id = first_valid;
@@ -526,6 +560,81 @@ pub fn import_from_dir(source: &Path) -> Result<(CompanionModel, bool), String> 
     }
 }
 
+/// 导入 GIF 动图文件：复制到托管目录 `{id}/{原文件名}` 并登记进伙伴库。
+///
+/// 复用 `commit_import` 原子流程（同源去重 / 失败清理 / 首次导入自动 active）。
+pub fn import_gif_from_file(source: &Path) -> Result<(CompanionModel, bool), String> {
+    let source_abs = source
+        .canonicalize()
+        .map_err(|e| format!("无法访问源文件: {e}"))?;
+    let is_gif_ext = source_abs
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("gif"));
+    if !is_gif_ext {
+        return Err("仅支持导入 .gif 文件".to_string());
+    }
+    // 拒绝导入应用已托管的伙伴文件（与目录导入同防线，见 prepare_import 注释）。
+    for root in companion_store_roots() {
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if source_abs.starts_with(&root_canon) {
+            return Err("不能导入 ZapMomo 已托管的伙伴文件".to_string());
+        }
+    }
+
+    let id = derive_id(&source_abs);
+    let name = source_abs
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| id.clone());
+
+    // 去重预检（短锁，避免已导入时白白复制大文件）。
+    {
+        let _g = lock();
+        let lib = load_library_inner()?;
+        if let Some(existing) = lib.models.iter().find(|m| m.id == id).cloned() {
+            return Ok((existing, true));
+        }
+    }
+
+    let store_dir = settings::get_companions_store_dir();
+    let tmp_dir = store_dir.join(new_tmp_dir_name(&id));
+    let final_dir = store_dir.join(&id);
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let file_name = source_abs
+        .file_name()
+        .ok_or_else(|| "源文件缺少文件名".to_string())?
+        .to_owned();
+    std::fs::copy(&source_abs, tmp_dir.join(&file_name))
+        .map_err(|e| format!("复制 GIF 失败: {e}"))?;
+
+    // 托管副本校验：GIF 魔数必须合法，失败时清理 tmp（commit 内 RAII 只覆盖后续路径）。
+    if let Err(e) = validate_gif_file(&tmp_dir.join(&file_name)) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
+
+    commit_import(PreparedImport {
+        id,
+        name,
+        source_path: source_abs.display().to_string(),
+        tmp_dir,
+        final_dir,
+        model_file_rel: PathBuf::from(&file_name),
+        format: GIF_FORMAT.to_string(),
+        imported_at: now_rfc3339(),
+    })
+}
+
+/// 统一导入入口：目录 → Live2D 模型目录导入；`.gif` 文件 → GIF 动图导入。
+pub fn import_source(source: &Path) -> Result<(CompanionModel, bool), String> {
+    if source.is_file() {
+        import_gif_from_file(source)
+    } else {
+        import_from_dir(source)
+    }
+}
+
 // ===========================================================================
 // active / 迁移
 // ===========================================================================
@@ -544,8 +653,7 @@ pub fn set_active(id: &str) -> Result<CompanionLibrary, String> {
             .find(|m| m.id == id)
             .cloned()
             .ok_or_else(|| "未找到该伙伴".to_string())?;
-        live2d_cfg::validate_managed_model(Path::new(&model.model_dir))
-            .map_err(|e| format!("该伙伴模型不可用，无法设为当前使用：{e}"))?;
+        validate_managed(&model).map_err(|e| format!("该伙伴模型不可用，无法设为当前使用：{e}"))?;
         inner.active_model_id = Some(id.to_string());
         save_library_inner(&inner)?;
         lib = inner;
@@ -929,6 +1037,11 @@ mod tests {
             r#"{"FileReferences":{"Moc":"model.moc3","Textures":["textures/texture_00.png"]}}"#,
         )
         .unwrap();
+    }
+
+    /// 构造最小合法 GIF（GIF89a magic + 最少头部字节）。
+    fn make_valid_gif(path: &Path) {
+        std::fs::write(path, b"GIF89a\x01\x00\x01\x00\x00").unwrap();
     }
 
     /// 在 fixture 基础上补未注册的动作/表情文件（模拟「火花」这类模型：文件在、清单没登记）。
@@ -1626,6 +1739,133 @@ mod tests {
 
             assert!(fresh.exists(), "新鲜 tmp 应保留");
             assert!(!stale.exists(), "过期 tmp 应清理");
+        });
+    }
+
+    // ---- GIF 伙伴 ----
+
+    #[test]
+    fn test_validate_gif_file_accepts_gif89a_and_gif87a() {
+        run_with_temp_home(|home| {
+            let g = home.join("a.gif");
+            make_valid_gif(&g);
+            assert!(validate_gif_file(&g).is_ok());
+            std::fs::write(&g, b"GIF87a\x01\x00\x01\x00\x00").unwrap();
+            assert!(validate_gif_file(&g).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_validate_gif_file_rejects_bad_magic_and_missing() {
+        run_with_temp_home(|home| {
+            let bad = home.join("b.gif");
+            std::fs::write(&bad, b"PNG\r\n\x1a\n").unwrap();
+            assert!(validate_gif_file(&bad).is_err());
+            assert!(validate_gif_file(&home.join("none.gif")).is_err());
+        });
+    }
+
+    #[test]
+    fn test_import_gif_file_registers_and_activates() {
+        run_with_temp_home(|home| {
+            let src = home.join("跳舞.gif");
+            make_valid_gif(&src);
+            let (model, already) = import_gif_from_file(&src).unwrap();
+            assert!(!already);
+            assert_eq!(model.format, "gif");
+            assert_eq!(model.name, "跳舞");
+            assert!(model.model_file.ends_with("跳舞.gif"));
+            assert!(Path::new(&model.model_file).is_file());
+            assert!(model.model_file.starts_with(&model.model_dir));
+            // 首次导入自动 active；源文件删除后托管副本仍有效。
+            assert_eq!(
+                load_library_fast().unwrap().active_model_id.as_deref(),
+                Some(model.id.as_str())
+            );
+            std::fs::remove_file(&src).unwrap();
+            assert!(quick_valid(&model));
+        });
+    }
+
+    #[test]
+    fn test_import_gif_rejects_non_gif_extension_and_bad_content() {
+        run_with_temp_home(|home| {
+            // 内容合法但扩展名不对。
+            let png = home.join("fake.png");
+            make_valid_gif(&png);
+            let err = import_gif_from_file(&png).unwrap_err();
+            assert!(err.contains(".gif"), "{err}");
+            // 扩展名对但内容不是 GIF。
+            let bad = home.join("fake.gif");
+            std::fs::write(&bad, b"not-a-gif").unwrap();
+            let err = import_gif_from_file(&bad).unwrap_err();
+            assert!(err.contains("GIF"), "{err}");
+            // 失败不残留 tmp、不落库。
+            assert!(load_library_fast().unwrap().models.is_empty());
+            let store = crate::config::settings::get_companions_store_dir();
+            let stray = std::fs::read_dir(&store).map(|mut it| {
+                it.any(|e| {
+                    e.unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(TMP_PREFIX)
+                })
+            });
+            assert_eq!(stray.ok(), Some(false), "不应残留 tmp 目录");
+        });
+    }
+
+    #[test]
+    fn test_import_gif_same_file_dedups() {
+        run_with_temp_home(|home| {
+            let src = home.join("dup.gif");
+            make_valid_gif(&src);
+            let (first, _) = import_gif_from_file(&src).unwrap();
+            let (second, already) = import_gif_from_file(&src).unwrap();
+            assert!(already);
+            assert_eq!(first.id, second.id);
+            assert_eq!(load_library_fast().unwrap().models.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_import_source_dispatches_by_kind() {
+        run_with_temp_home(|home| {
+            // 文件 → GIF 分支
+            let gif = home.join("dancer.gif");
+            make_valid_gif(&gif);
+            let (m, _) = import_source(&gif).unwrap();
+            assert_eq!(m.format, "gif");
+            // 目录 → Live2D 分支
+            let dir = home.join("L");
+            make_valid_model(&dir, "l.model3.json");
+            let (m2, _) = import_source(&dir).unwrap();
+            assert_eq!(m2.format, "cubism3");
+        });
+    }
+
+    #[test]
+    fn test_sanitize_and_set_active_support_gif() {
+        run_with_temp_home(|home| {
+            // 混合库：Live2D + GIF。
+            let m = home.join("L");
+            make_valid_model(&m, "l.model3.json");
+            let (l2d, _) = import_from_dir(&m).unwrap();
+            let g = home.join("舞.gif");
+            make_valid_gif(&g);
+            let (gif, _) = import_gif_from_file(&g).unwrap();
+
+            // set_active(gif) 成功（校验走 GIF 文件头，不再走 validate_managed_model）。
+            set_active(&gif.id).unwrap();
+            // 删掉 Live2D 托管目录，sanitize 不应清掉 GIF active（GIF 仍有效）。
+            std::fs::remove_dir_all(&l2d.model_dir).unwrap();
+            let lib = load_library_fast().unwrap();
+            assert_eq!(lib.active_model_id.as_deref(), Some(gif.id.as_str()));
+
+            // 篡改 GIF 魔数 → set_active 报「不可用」。
+            std::fs::write(Path::new(&gif.model_file), b"xxxxxx").unwrap();
+            let err = set_active(&gif.id).unwrap_err();
+            assert!(err.contains("不可用"), "{err}");
         });
     }
 

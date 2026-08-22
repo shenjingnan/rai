@@ -8,6 +8,7 @@
 /// 等模式保持一致；进度通过回调（`FnMut(f32) -> bool`）暴露（sherpa 为合成过程
 /// 协作回调，audiocpp 为请求前后探询——HTTP 在途请求无法中断）。
 pub mod config;
+pub mod kokoro_voices;
 pub mod reaction;
 pub mod voice;
 pub mod voice_store;
@@ -98,13 +99,14 @@ pub(crate) fn build_offline_model_config(cfg: &ResolvedTtsConfig) -> OfflineTtsM
         TtsModelKind::Kokoro => {
             config.kokoro = OfflineTtsKokoroModelConfig {
                 model: path(cfg.model.as_ref()),
-                // voices.bin 需二期接入（含 speaker 名字映射）
-                voices: None,
+                voices: path(cfg.voices.as_ref()),
                 tokens: path(Some(&cfg.tokens)),
                 data_dir: path(Some(&cfg.data_dir)),
                 length_scale: 1.0,
                 dict_dir,
-                lexicon: path(Some(&cfg.lexicon)),
+                // Kokoro 包是多 lexicon（us-en/gb-en/zh），resolve 阶段按存在探测并
+                // 逗号 join 进单字段（sherpa-onnx 内部按逗号拆分）；无 lexicon.txt。
+                lexicon: cfg.kokoro_lexicons.clone(),
                 lang: None,
             };
         }
@@ -126,6 +128,28 @@ pub(crate) fn build_offline_model_config(cfg: &ResolvedTtsConfig) -> OfflineTtsM
         }
     }
     config
+}
+
+/// 按模型族探测根级 rule fsts（存在者逗号 join 全路径）。
+///
+/// - Vits：`date.fst` / `number.fst`（日期/数字规范化；缺省不影响合成）
+/// - Kokoro：`date-zh.fst` / `number-zh.fst` / `phone-zh.fst`（官方建议启用的中文
+///   数字/日期/电话规范化）
+///
+/// 传**全路径**（相对 CWD 的裸文件名在非模型目录启动时无法被 sherpa 定位）。
+fn probe_rule_fsts(kind: TtsModelKind, model_dir: &Path) -> Option<String> {
+    let names: &[&str] = match kind {
+        TtsModelKind::Vits => &["date.fst", "number.fst"],
+        TtsModelKind::Kokoro => &config::KOKORO_RULE_FSTS,
+        _ => return None,
+    };
+    let joined = names
+        .iter()
+        .filter(|f| model_dir.join(f).is_file())
+        .map(|f| model_dir.join(f).to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// 文本转语音引擎（双后端门面）。
@@ -154,22 +178,20 @@ impl TtsEngine {
         match cfg.backend {
             TtsBackendKind::Sherpa => {
                 config::preflight(&cfg)?;
+                // Kokoro 主模型名随量化变体不同（model.onnx / model.int8.onnx），不在
+                // required_files 清单里，单独按候选探测。
+                if cfg.model_type == TtsModelKind::Kokoro
+                    && config::kokoro_model_file_in(&cfg.model_dir).is_none()
+                {
+                    return Err(format!(
+                        "缺少模型文件 {} 或 {}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
+                        config::DEFAULT_KOKORO_MODEL,
+                        config::DEFAULT_KOKORO_INT8_MODEL,
+                        cfg.model_dir.display()
+                    ));
+                }
                 let model_config = build_offline_model_config(&cfg);
-                // VITS 根级 rule fsts 存在时启用（日期/数字规范化；缺省不影响合成）。
-                // 必须传绝对路径：sherpa 对 rule_fsts 按进程 CWD 解析相对路径，
-                // 传裸文件名在 GUI（CWD ≠ 模型目录）会报
-                // `Rule fst 'date.fst' does not exist` 导致引擎创建失败。
-                let rule_fsts = if cfg.model_type == TtsModelKind::Vits {
-                    let fsts = ["date.fst", "number.fst"]
-                        .iter()
-                        .filter(|f| cfg.model_dir.join(f).is_file())
-                        .map(|f| cfg.model_dir.join(f).display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    (!fsts.is_empty()).then_some(fsts)
-                } else {
-                    None
-                };
+                let rule_fsts = probe_rule_fsts(cfg.model_type, &cfg.model_dir);
                 let config = OfflineTtsConfig {
                     model: model_config,
                     rule_fsts,
@@ -178,6 +200,15 @@ impl TtsEngine {
 
                 let tts = OfflineTts::create(&config)
                     .ok_or_else(|| "无法创建 OfflineTts，请检查模型文件与配置。".to_string())?;
+
+                // Kokoro v1.1 应有 103 个音色；不一致说明 voices.bin 与预期版本不符（仅告警，
+                // sid 钳界由 kokoro_voices::normalize_sid 兜底）。
+                if cfg.model_type == TtsModelKind::Kokoro && tts.num_speakers() != 103 {
+                    tracing::warn!(
+                        "Kokoro 音色数 {} 与预期 103 不符，请检查模型包版本",
+                        tts.num_speakers()
+                    );
+                }
 
                 Ok(Self {
                     inner: TtsBackendInner::Sherpa { tts, cfg },
@@ -509,6 +540,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "需要 kokoro-int8-multi-lang-v1_1 解压在 KOKORO_E2E_DIR 指定目录"]
+    fn test_kokoro_synthesize_produces_audio() {
+        // E2E：KOKORO_E2E_DIR=/path/to/kokoro-int8-multi-lang-v1_1 cargo test -- --ignored
+        let Some(dir) = std::env::var("KOKORO_E2E_DIR").ok() else {
+            eprintln!("跳过：未设置 KOKORO_E2E_DIR");
+            return;
+        };
+        // settings 为 None → 走 detect_kind_from_dir 探测（voices.bin → Kokoro）
+        let cfg = config::resolve(None, Some(Path::new(&dir))).unwrap();
+        assert_eq!(cfg.model_type, TtsModelKind::Kokoro, "目录探测应为 Kokoro");
+        let engine = TtsEngine::new(cfg.clone()).unwrap();
+        assert_eq!(engine.sample_rate(), 24000, "Kokoro 固定 24kHz");
+        // 中文女声 zf_001（sid 3）经统一解析入口
+        let voice = crate::tts::voice::resolve_sid_voice(&cfg, Some("zf_001"), None).unwrap();
+        let started = std::time::Instant::now();
+        let samples = engine
+            .synthesize("你好，我是 ZapMomo 语音伙伴。", 1.0, &voice)
+            .unwrap();
+        let elapsed = started.elapsed().as_secs_f32();
+        assert!(!samples.is_empty(), "合成音频不应为空");
+        let duration = samples.len() as f32 / engine.sample_rate() as f32;
+        eprintln!(
+            "kokoro e2e: {:.2}s 音频 / {:.2}s 合成 (RTF {:.2})",
+            duration,
+            elapsed,
+            elapsed / duration
+        );
+    }
+
+    #[test]
     fn test_normalize_reference_identity_rate() {
         let samples = vec![0.1f32; 24000];
         let (out, rate) = normalize_reference(&samples, 24000, 24000).unwrap();
@@ -622,6 +683,59 @@ mod tests {
         assert!(c.zipvoice.decoder.is_some());
         assert!(c.vits.model.is_none());
         assert!(c.matcha.acoustic_model.is_none());
+    }
+
+    #[test]
+    fn test_build_offline_model_config_kokoro_branch() {
+        let mut cfg = config::ResolvedTtsConfig::default();
+        cfg.model_type = TtsModelKind::Kokoro;
+        cfg.model = Some(PathBuf::from("/m/kokoro/model.int8.onnx"));
+        cfg.voices = Some(PathBuf::from("/m/kokoro/voices.bin"));
+        cfg.dict_dir = Some(PathBuf::from("/m/kokoro/dict"));
+        cfg.kokoro_lexicons =
+            Some("/m/kokoro/lexicon-us-en.txt,/m/kokoro/lexicon-zh.txt".to_string());
+        let c = build_offline_model_config(&cfg);
+        assert_eq!(c.kokoro.model.as_deref(), Some("/m/kokoro/model.int8.onnx"));
+        assert_eq!(c.kokoro.voices.as_deref(), Some("/m/kokoro/voices.bin"));
+        assert_eq!(
+            c.kokoro.lexicon.as_deref(),
+            Some("/m/kokoro/lexicon-us-en.txt,/m/kokoro/lexicon-zh.txt")
+        );
+        assert_eq!(c.kokoro.dict_dir.as_deref(), Some("/m/kokoro/dict"));
+        assert_eq!(c.kokoro.length_scale, 1.0);
+        // 不污染其他分支
+        assert!(c.vits.model.is_none());
+        assert!(c.zipvoice.encoder.is_none());
+    }
+
+    #[test]
+    fn test_probe_rule_fsts_by_kind() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path();
+        // 空目录：各族都无 fst
+        assert!(probe_rule_fsts(TtsModelKind::Vits, dir).is_none());
+        assert!(probe_rule_fsts(TtsModelKind::Kokoro, dir).is_none());
+        // 未收录族恒 None（即使文件存在）
+        std::fs::write(dir.join("date.fst"), b"x").unwrap();
+        assert!(probe_rule_fsts(TtsModelKind::Zipvoice, dir).is_none());
+        // Vits：date.fst/number.fst 存在者全路径逗号 join
+        std::fs::write(dir.join("number.fst"), b"x").unwrap();
+        let vits = probe_rule_fsts(TtsModelKind::Vits, dir).unwrap();
+        let date_fst = dir.join("date.fst").to_string_lossy().to_string();
+        let number_fst = dir.join("number.fst").to_string_lossy().to_string();
+        assert!(vits.contains(&date_fst), "{vits}");
+        assert!(vits.contains(&number_fst), "{vits}");
+        // Kokoro：三个 zh fst 按存在过滤（date-zh 存在、其余缺）
+        std::fs::write(dir.join("date-zh.fst"), b"x").unwrap();
+        std::fs::write(dir.join("phone-zh.fst"), b"x").unwrap();
+        let kokoro = probe_rule_fsts(TtsModelKind::Kokoro, dir).unwrap();
+        assert!(
+            kokoro.contains("date-zh.fst") && kokoro.contains("phone-zh.fst"),
+            "{kokoro}"
+        );
+        assert!(!kokoro.contains("number-zh.fst"), "{kokoro}");
+        // Kokoro 不吃 Vits 的裸 fst
+        assert!(!kokoro.contains("number.fst"), "{kokoro}");
     }
 
     #[test]

@@ -667,7 +667,7 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
     let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
     let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
 
-    // 族感知：SenseVoice/Whisper/zipformer 各有自己的文件布局，交给 asr::is_installed 探测
+    // 族感知：SenseVoice/Whisper/Qwen3-ASR/zipformer 各有自己的文件布局，交给 asr::is_installed 探测
     let models_present = zapmomo::asr::is_installed(&cfg.model_dir);
     let punctuation_present = cfg.punctuation_model.is_file();
     tracing::info!(
@@ -756,10 +756,10 @@ fn start_asr_listen_impl(
     let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
     let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
 
-    // 离线族（SenseVoice/Whisper）不支持实时识别：前端已禁用开关，这里双保险拦截
+    // 离线族（SenseVoice/Whisper/Qwen3-ASR）不支持实时识别：前端已禁用开关，这里双保险拦截
     if !cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer/paraformer）模型，或使用「转写文件」功能离线转写。",
+            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer/paraformer）模型，或使用「转写文件」/「免提听写」离线转写。",
             cfg.model_type.as_str()
         ));
     }
@@ -854,7 +854,7 @@ fn is_asr_listening(state: State<'_, AsrListenState>) -> bool {
 
 /// 开始离线免提听写的内部实现（command 与「切换设备重启」共用）。
 ///
-/// 守卫：仅在离线模型（SenseVoice/Whisper）下可用；流式族（zipformer/paraformer）被拒（听写是离线专用）。
+/// 守卫：仅在离线模型（SenseVoice/Whisper/Qwen3-ASR）下可用；流式族（zipformer/paraformer）被拒（听写是离线专用）。
 /// 线程内先惰性下载 Silero VAD 模型，再跑 `run_dictate`（VAD 分段 → 每段整句转写）。
 fn start_asr_dictate_impl(
     app: AppHandle,
@@ -872,7 +872,7 @@ fn start_asr_dictate_impl(
     // 流式模型不支持听写（离线模型专用）：前端已切走开关，这里双保险拦截
     if cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper 离线模型。",
+            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper/Qwen3-ASR 离线模型。",
             cfg.model_type.as_str()
         ));
     }
@@ -1167,15 +1167,27 @@ fn synthesize_inner(
     Ok(())
 }
 
-/// 列出可用参考音色：模型包内置 + 用户自定义音色库。
-///
-/// sid 模型（vits/matcha/kokoro...）无参考音色克隆概念，返回空列表
-/// （前端音色下拉只剩「模型固定」占位并禁用）。
+/// 列出可用音色：ZipVoice 返回参考音色（模型包内置 + 用户自定义音色库）；
+/// Kokoro 返回 103 个预置音色（sid + 语言分组）；vits/matcha 单说话人返回空列表。
 #[tauri::command]
 fn list_tts_voices() -> Result<Vec<zapmomo::tts::TtsVoice>, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+    if cfg.model_type == zapmomo::tts::config::TtsModelKind::Kokoro {
+        return Ok(zapmomo::tts::kokoro_voices::list_voices()
+            .iter()
+            .map(|v| zapmomo::tts::TtsVoice {
+                id: v.id.to_string(),
+                name: v.name.to_string(),
+                wav_path: PathBuf::new(),
+                reference_text: String::new(),
+                custom: false,
+                sid: Some(v.sid),
+                group: Some(v.group),
+            })
+            .collect());
+    }
     if !cfg.model_type.uses_reference_audio() {
         return Ok(Vec::new());
     }
@@ -1269,7 +1281,7 @@ fn synthesize_tts(
     })?;
 
     // 合成参数：sherpa ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
-    // sid 模型走固定说话人（本期单说话人恒 0）；audiocpp（PocketTTS）走具名音色。
+    // sid 模型（Kokoro 等）按音色名/sid 解析说话人；audiocpp（PocketTTS）走具名音色。
     // 在后台线程外解析，尽早报错。
     let voice_params = if cfg.uses_reference_audio() {
         let custom_wav = reference_wav.map(std::path::PathBuf::from);
@@ -1288,7 +1300,7 @@ fn synthesize_tts(
             voice.unwrap_or_else(|| zapmomo::audiocpp::DEFAULT_VOICE.to_string()),
         )
     } else {
-        zapmomo::tts::TtsVoiceParams::Sid(sid.unwrap_or(0))
+        zapmomo::tts::voice::resolve_sid_voice(&cfg, voice.as_deref(), sid)?
     };
 
     let speed = speed.unwrap_or(cfg.speed);
@@ -1942,16 +1954,88 @@ fn collect_asr_preflight_files(
             ("ASR decoder", &cfg.decoder),
             ("ASR tokens", &cfg.tokens),
         ],
+        AsrModelKind::Qwen3Asr => {
+            let conv = cfg
+                .model
+                .as_deref()
+                .ok_or_else(|| "Qwen3-ASR 模型未解析出 conv_frontend 文件".to_string())?;
+            // tokenizer 是目录（非文件），不进 is_file 循环，单独校验
+            if !cfg.tokens.is_dir() {
+                return Err(format!("缺少 tokenizer 目录: {}", cfg.tokens.display()));
+            }
+            vec![
+                ("ASR conv_frontend", conv),
+                ("ASR encoder", &cfg.encoder),
+                ("ASR decoder", &cfg.decoder),
+            ]
+        }
     };
     Ok(files)
+}
+
+/// 按 TTS `model_type` 收集预检文件清单（族感知，对齐 `collect_asr_preflight_files`）。
+///
+/// zipvoice 五件套 / vits model+tokens+lexicon / matcha 声学模型+声码器+tokens+lexicon；
+/// 未收录的 kind（kitten/pocket/supertonic）返回空清单，交由引擎构造时报错。
+fn collect_tts_preflight_files(
+    cfg: &zapmomo::tts::config::ResolvedTtsConfig,
+) -> Result<Vec<(&'static str, &std::path::Path)>, String> {
+    use zapmomo::tts::config::TtsModelKind;
+    Ok(match cfg.model_type {
+        TtsModelKind::Zipvoice => vec![
+            ("TTS encoder", cfg.encoder.as_path()),
+            ("TTS decoder", cfg.decoder.as_path()),
+            ("TTS vocoder", cfg.vocoder.as_path()),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Vits => vec![
+            (
+                "TTS model",
+                cfg.model
+                    .as_deref()
+                    .ok_or_else(|| "VITS 主模型未解析".to_string())?,
+            ),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Matcha => vec![
+            (
+                "TTS acoustic model",
+                cfg.acoustic_model
+                    .as_deref()
+                    .ok_or_else(|| "Matcha 声学模型未解析".to_string())?,
+            ),
+            ("TTS vocoder", cfg.vocoder.as_path()),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Kokoro => vec![
+            (
+                "TTS model",
+                cfg.model
+                    .as_deref()
+                    .ok_or_else(|| "Kokoro 主模型未解析".to_string())?,
+            ),
+            (
+                "TTS voices",
+                cfg.voices
+                    .as_deref()
+                    .ok_or_else(|| "Kokoro voices.bin 未解析".to_string())?,
+            ),
+            ("TTS tokens", cfg.tokens.as_path()),
+        ],
+        _ => vec![],
+    })
 }
 
 /// 预检语音会话所需模型文件（KWS / ASR / TTS / LLM）。缺任一返回带安装提示的错误。
 ///
 /// ASR 按 `model_type` 族感知（zipformer 四件套 / paraformer encoder+decoder+tokens /
-/// SenseVoice model+tokens / Whisper encoder+decoder+tokens），不再硬编码 zipformer 专属文件名。
-/// TTS 经 `tts::config::preflight` 做 backend 感知预检（audiocpp 后端不查 sherpa
-/// 五件套；vits/matcha 不再被 zipvoice 清单误拦）。
+/// SenseVoice model+tokens / Whisper encoder+decoder+tokens / Qwen3-ASR
+/// conv_frontend+encoder+decoder，tokenizer 目录单独校验），不再硬编码 zipformer 专属文件名。
+/// TTS 按 backend 分派：sherpa 走逐文件收集（含 Kokoro 主模型/voices）；audiocpp 走
+/// `tts::config::preflight`（固定两文件，不查 sherpa 清单）。
 fn preflight_voice_models(
     cfg: &zapmomo::voice::config::ResolvedSessionConfig,
 ) -> Result<(), String> {
@@ -1962,14 +2046,24 @@ fn preflight_voice_models(
         ("KWS tokens", cfg.kws.tokens.as_path()),
         ("KWS keywords", cfg.kws.keywords_file.as_path()),
     ];
+    match cfg.tts.backend {
+        zapmomo::tts::config::TtsBackendKind::Audiocpp => {
+            zapmomo::tts::config::preflight(&cfg.tts)
+                .map_err(|e| format!("{e}\n（语音会话 TTS 预检失败）"))?;
+        }
+        zapmomo::tts::config::TtsBackendKind::Sherpa => {
+            files.extend(collect_tts_preflight_files(&cfg.tts)?);
+        }
+    }
     files.extend(collect_asr_preflight_files(&cfg.asr)?);
     for (name, path) in files {
         if !path.is_file() {
             return Err(format!("缺少模型文件 {name}: {}", path.display()));
         }
     }
-    zapmomo::tts::config::preflight(&cfg.tts)
-        .map_err(|e| format!("{e}\n（语音会话 TTS 预检失败）"))?;
+    if cfg.tts.model_type.requires_data_dir() && !cfg.tts.data_dir.is_dir() {
+        return Err(format!("缺少 TTS 数据目录: {}", cfg.tts.data_dir.display()));
+    }
     if !cfg.llm.model_path.is_file() {
         return Err(format!(
             "LLM 模型文件不存在: {}",
@@ -2734,17 +2828,38 @@ struct Live2dConfigInfo {
 ///
 /// asset 协议 scope 不跨进程持久，因此每次启动/读取都要重新
 /// `allow_directory`，否则 WebView 无法加载模型文件。
+///
+/// 模型路径优先从伙伴库 active 读取（库是唯一 Source of Truth，且 GIF 伙伴
+/// 无 `.model3.json`，`resolve()` 扫描不到）；库无 active 时回退旧版
+/// `settings.model_dir` 解析（后台旧版迁移完成前的窗口期桌宠仍可显示）。
 #[tauri::command]
 fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let settings = settings::load_settings()?;
     let live2d_settings = settings.as_ref().and_then(|s| s.live2d.clone());
-    let cfg = zapmomo::live2d::config::resolve(live2d_settings.as_ref())?;
 
-    let models_present = cfg.model_file.as_ref().is_some_and(|f| f.is_file());
-    if models_present {
-        let _ = app
-            .asset_protocol_scope()
-            .allow_directory(&cfg.model_dir, true);
+    let lib = zapmomo::companion::load_library_fast()?;
+    let active =
+        zapmomo::companion::active_model(&lib).filter(|m| zapmomo::companion::quick_valid(m));
+    let (model_dir, model_file, format, models_present) = match active {
+        Some(m) => (
+            Some(m.model_dir.clone()),
+            Some(m.model_file.clone()),
+            Some(m.format.clone()),
+            true,
+        ),
+        None => {
+            let cfg = zapmomo::live2d::config::resolve(live2d_settings.as_ref())?;
+            let present = cfg.model_file.as_ref().is_some_and(|f| f.is_file());
+            (
+                Some(cfg.model_dir.display().to_string()),
+                cfg.model_file.map(|p| p.display().to_string()),
+                cfg.format.map(|f| f.to_str().to_string()),
+                present,
+            )
+        }
+    };
+    if models_present && let Some(dir) = &model_dir {
+        let _ = app.asset_protocol_scope().allow_directory(dir, true);
     }
 
     let window_scale = live2d_settings.as_ref().and_then(|l| l.window_scale);
@@ -2755,9 +2870,9 @@ fn get_live2d_config(app: AppHandle) -> Result<Live2dConfigInfo, String> {
     let drag_mode = live2d_settings.as_ref().and_then(|l| l.drag_mode);
 
     Ok(Live2dConfigInfo {
-        model_dir: Some(cfg.model_dir.display().to_string()),
-        model_file: cfg.model_file.map(|p| p.display().to_string()),
-        format: cfg.format.map(|f| f.to_str().to_string()),
+        model_dir,
+        model_file,
+        format,
         models_present,
         window_scale,
         window_opacity,
@@ -2960,20 +3075,18 @@ async fn list_companions(app: AppHandle) -> Result<CompanionLibraryView, String>
     Ok(build_view(&lib))
 }
 
-/// 导入 Live2D 模型目录（复制到应用托管目录并登记进伙伴库）。
+/// 导入伙伴（Live2D 模型目录或 GIF 动图文件，复制到应用托管目录并登记进伙伴库）。
 ///
 /// 成功或已导入都会立即放行新模型的 asset scope，保证右侧预览无需再进页面；
 /// 若本次导入成为 active（首次导入自动 active）则 reconcile 同步桌宠。
 #[tauri::command]
-async fn import_companion(
-    app: AppHandle,
-    source_dir: String,
-) -> Result<ImportCompanionResult, String> {
-    let source = PathBuf::from(source_dir);
-    let (model, already_imported) =
-        tauri::async_runtime::spawn_blocking(move || zapmomo::companion::import_from_dir(&source))
-            .await
-            .map_err(|e| e.to_string())??;
+async fn import_companion(app: AppHandle, source: String) -> Result<ImportCompanionResult, String> {
+    let source_path = PathBuf::from(source);
+    let (model, already_imported) = tauri::async_runtime::spawn_blocking(move || {
+        zapmomo::companion::import_source(&source_path)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     app.asset_protocol_scope()
         .allow_directory(Path::new(&model.model_dir), true)
@@ -6189,5 +6302,42 @@ mod preflight_tests {
         assert!(labels.contains(&"ASR decoder"));
         assert!(labels.contains(&"ASR tokens"));
         assert!(!labels.contains(&"ASR joiner"));
+    }
+
+    #[test]
+    fn test_preflight_files_qwen3_no_joiner_tokenizer_as_dir() {
+        // 手建临时目录（src-tauri 无 tempfile 依赖）
+        let dir =
+            std::env::temp_dir().join(format!("zapmomo-preflight-qwen3-{}", std::process::id()));
+        let tokenizer = dir.join("tokenizer");
+        std::fs::create_dir_all(&tokenizer).unwrap();
+
+        // tokenizer 目录存在 → conv_frontend/encoder/decoder 三件（无 joiner/tokens 标签）
+        let cfg = ResolvedAsrConfig {
+            model_type: AsrModelKind::Qwen3Asr,
+            model_dir: dir.clone(),
+            model: Some(dir.join("conv_frontend.onnx")),
+            encoder: dir.join("encoder.int8.onnx"),
+            decoder: dir.join("decoder.int8.onnx"),
+            tokens: tokenizer.clone(),
+            ..ResolvedAsrConfig::default()
+        };
+        let files = collect_asr_preflight_files(&cfg).unwrap();
+        let labels = labels(&files);
+        assert!(labels.contains(&"ASR conv_frontend"));
+        assert!(labels.contains(&"ASR encoder"));
+        assert!(labels.contains(&"ASR decoder"));
+        assert!(!labels.contains(&"ASR joiner"));
+        assert!(!labels.contains(&"ASR tokens"));
+
+        // tokenizer 目录缺失 → 直接报错（目录级校验，不进 is_file 循环）
+        let cfg_bad = ResolvedAsrConfig {
+            tokens: dir.join("nonexistent-tokenizer"),
+            ..cfg
+        };
+        let err = collect_asr_preflight_files(&cfg_bad).err().unwrap();
+        assert!(err.contains("tokenizer"), "err: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

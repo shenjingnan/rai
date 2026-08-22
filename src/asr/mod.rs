@@ -36,10 +36,10 @@ pub struct AsrEngine {
 impl AsrEngine {
     /// 构造引擎，先校验所有模型文件存在。
     pub fn new(cfg: ResolvedAsrConfig) -> Result<Self, String> {
-        // 离线族（SenseVoice/Whisper）走 `offline::OfflineAsrEngine`，实时链路不接受
+        // 离线族（SenseVoice/Whisper/Qwen3-ASR）走 `offline::OfflineAsrEngine`，实时链路不接受
         if !cfg.model_type.is_streaming() {
             return Err(format!(
-                "当前模型类型 {} 不支持实时流式识别。请切换回流式（zipformer/paraformer）模型，或使用 `zapmomo asr test` 离线转写文件。",
+                "当前模型类型 {} 不支持实时流式识别。请切换回流式（zipformer/paraformer）模型，或使用 `zapmomo asr test` 转写文件 / `asr dictate` 免提听写。",
                 cfg.model_type.as_str()
             ));
         }
@@ -56,7 +56,9 @@ impl AsrEngine {
                 ("tokens", &cfg.tokens),
             ],
             // 上面 is_streaming 守卫已排除离线族
-            AsrModelKind::SenseVoice | AsrModelKind::Whisper => unreachable!("离线族已被拒绝"),
+            AsrModelKind::SenseVoice | AsrModelKind::Whisper | AsrModelKind::Qwen3Asr => {
+                unreachable!("离线族已被拒绝")
+            }
         };
         for (name, path) in required {
             if !path.is_file() {
@@ -246,7 +248,7 @@ pub(crate) fn build_online_recognizer_config(cfg: &ResolvedAsrConfig) -> OnlineR
             c.decoding_method = Some("greedy_search".to_string());
         }
         // 流式引擎不接受离线族（`AsrEngine::new` 入口已拒绝）
-        AsrModelKind::SenseVoice | AsrModelKind::Whisper => {
+        AsrModelKind::SenseVoice | AsrModelKind::Whisper | AsrModelKind::Qwen3Asr => {
             unreachable!("离线族不走流式引擎")
         }
     }
@@ -306,14 +308,15 @@ pub fn install_punctuation_model_to(
 /// 整段转写（不做端点断句，避免静音触发多次 reset 丢失开头文本）。
 /// 供 CLI 离线验证与「参考音频自动转写」复用。
 pub fn transcribe_wav(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<String, String> {
-    // 族感知分发：流式族（zipformer/paraformer）走在线引擎；SenseVoice/Whisper 走离线引擎
+    // 族感知分发：流式族（zipformer/paraformer）走在线引擎；
+    // 离线族（SenseVoice/Whisper/Qwen3-ASR）走离线引擎
     match cfg.model_type {
         config::AsrModelKind::Zipformer | config::AsrModelKind::Paraformer => {
             transcribe_wav_streaming(cfg, wav)
         }
-        config::AsrModelKind::SenseVoice | config::AsrModelKind::Whisper => {
-            offline::transcribe_wav_offline(cfg, wav)
-        }
+        config::AsrModelKind::SenseVoice
+        | config::AsrModelKind::Whisper
+        | config::AsrModelKind::Qwen3Asr => offline::transcribe_wav_offline(cfg, wav),
     }
 }
 
@@ -671,10 +674,19 @@ mod tests {
 
     #[test]
     fn test_engine_new_rejects_offline_kind() {
-        let mut cfg = ResolvedAsrConfig::default();
-        cfg.model_type = crate::asr::config::AsrModelKind::SenseVoice;
-        let err = AsrEngine::new(cfg).err().unwrap();
-        assert!(err.contains("流式"), "离线族应被流式引擎拒绝，实际: {err}");
+        for kind in [
+            crate::asr::config::AsrModelKind::SenseVoice,
+            crate::asr::config::AsrModelKind::Whisper,
+            crate::asr::config::AsrModelKind::Qwen3Asr,
+        ] {
+            let mut cfg = ResolvedAsrConfig::default();
+            cfg.model_type = kind;
+            let err = AsrEngine::new(cfg).err().unwrap();
+            assert!(
+                err.contains("流式"),
+                "离线族 {kind:?} 应被流式引擎拒绝，实际: {err}"
+            );
+        }
     }
 
     #[test]
@@ -689,6 +701,23 @@ mod tests {
         assert!(
             err.contains("缺少模型文件"),
             "离线路径应报模型缺失，实际: {err}"
+        );
+    }
+
+    #[test]
+    fn test_transcribe_wav_dispatches_qwen3_to_offline() {
+        // qwen3 应走 offline::transcribe_wav_offline（报「缺少 tokenizer 目录」），
+        // 而非在线引擎（会报「不支持实时流式」）——据此验证分发正确。
+        let mut cfg = ResolvedAsrConfig::default();
+        cfg.model_type = crate::asr::config::AsrModelKind::Qwen3Asr;
+        cfg.model = Some(PathBuf::from("/nonexistent/q3/conv_frontend.onnx"));
+        cfg.encoder = PathBuf::from("/nonexistent/q3/encoder.int8.onnx");
+        cfg.decoder = PathBuf::from("/nonexistent/q3/decoder.int8.onnx");
+        cfg.tokens = PathBuf::from("/nonexistent/q3/tokenizer");
+        let err = transcribe_wav(&cfg, Path::new("/nonexistent/input.wav")).unwrap_err();
+        assert!(
+            err.contains("tokenizer"),
+            "qwen3 离线路径应报缺少 tokenizer 目录，实际: {err}"
         );
     }
 

@@ -31,6 +31,22 @@ export const TTS_PRESETS = [
     sizeBytes: 75_463_442,
   },
   {
+    id: "tts-kokoro-int8-multi-lang-v1-1",
+    name: "Kokoro TTS 中英 int8",
+    kind: "kokoro",
+    languages: "中英",
+    tagline: "103 音色 · int8 量化 · 24kHz",
+    sizeBytes: 147_031_220,
+  },
+  {
+    id: "tts-kokoro-multi-lang-v1-1",
+    name: "Kokoro TTS 中英",
+    kind: "kokoro",
+    languages: "中英",
+    tagline: "103 音色 · 高音质 fp32 · 24kHz",
+    sizeBytes: 364_816_464,
+  },
+  {
     id: "tts-pocket-english-audiocpp",
     name: "PocketTTS English",
     kind: "pocket",

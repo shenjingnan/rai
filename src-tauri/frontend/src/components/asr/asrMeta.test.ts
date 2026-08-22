@@ -7,6 +7,7 @@ describe("asrModelKindLabel", () => {
     expect(asrModelKindLabel("paraformer")).toBe("流式 Paraformer");
     expect(asrModelKindLabel("sensevoice")).toBe("SenseVoice");
     expect(asrModelKindLabel("whisper")).toBe("Whisper");
+    expect(asrModelKindLabel("qwen3_asr")).toBe("Qwen3-ASR");
     expect(asrModelKindLabel("unknown")).toBe("ASR");
   });
 });
@@ -19,9 +20,10 @@ describe("isStreamingAsr", () => {
     expect(isStreamingAsr(undefined)).toBe(true);
   });
 
-  it("sensevoice / whisper → 离线（仅转写文件）", () => {
+  it("sensevoice / whisper / qwen3_asr → 离线（仅转写文件）", () => {
     expect(isStreamingAsr("sensevoice")).toBe(false);
     expect(isStreamingAsr("whisper")).toBe(false);
+    expect(isStreamingAsr("qwen3_asr")).toBe(false);
   });
 });
 

@@ -102,11 +102,22 @@ export function CurrentCompanionCard({ companion, loading, error }: CurrentCompa
     void api.setCompanionOpacity({ opacity: clamped / 100 });
   }, []);
 
-  // 预览分支：Live2D 实时渲染 > 重试耗尽回退封面/文案 > 空态 / 加载中 / 模型不可用
+  // 预览分支：GIF 原生播放 > Live2D 实时渲染 > 重试耗尽回退封面/文案 > 空态 / 加载中 / 模型不可用
+  const isGif = companion?.format === "gif";
   const stageReady =
     companion?.valid === true && !retryExhausted && previewSize.width > 0 && previewSize.height > 0;
   let preview: ReactNode;
-  if (companion == null) {
+  if (companion != null && companion.valid && isGif) {
+    // GIF 伙伴不走 PIXI，直接原生 img 循环播放。
+    preview = (
+      <img
+        src={toAssetUrl(companion.model_file)}
+        alt={companion.name}
+        draggable={false}
+        className="h-full w-full select-none object-contain drop-shadow-md"
+      />
+    );
+  } else if (companion == null) {
     preview = loading ? (
       <p className="text-sm text-text-muted">加载中…</p>
     ) : (

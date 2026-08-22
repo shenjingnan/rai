@@ -380,7 +380,8 @@ pub struct AsrSettings {
     /// 是否启用 ASR（语音会话「能识别」的前提），缺省 false
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// 模型类型（sherpa-onnx 分支：zipformer/sensevoice/whisper；缺省按模型目录内容探测）
+    /// 模型类型（sherpa-onnx 分支：zipformer/paraformer/sensevoice/whisper/qwen3_asr；
+    /// 缺省按模型目录内容探测）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_type: Option<crate::asr::config::AsrModelKind>,
     /// 转写语言（SenseVoice/Whisper；缺省自动检测）
@@ -401,7 +402,7 @@ pub struct AsrSettings {
     /// joiner onnx 文件名
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joiner: Option<String>,
-    /// tokens.txt 文件名
+    /// tokens.txt 文件名（Qwen3-ASR 为 tokenizer 目录名，缺省 "tokenizer"）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<String>,
     /// 推理后端，缺省 "cpu"
@@ -434,7 +435,8 @@ pub struct AsrSettings {
     /// 空白符惩罚，缺省 0.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blank_penalty: Option<f32>,
-    /// 热词（空格分隔，中文直接写），缺省无
+    /// 热词（空格分隔，中文直接写），缺省无（zipformer 走 context graph、
+    /// Qwen3-ASR 转逗号格式嵌提示词、paraformer 不支持）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotwords: Option<String>,
     /// 是否对最终结果自动加标点，缺省 true

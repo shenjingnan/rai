@@ -53,6 +53,22 @@
 - **许可证**: Apache-2.0（依据 sherpa-onnx 项目整体许可；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `bcb3b970e384161c4d634f0bb9e999ff1c471b34c9bc0b1049a5014065ed3cc0`
 
+## kokoro-int8-multi-lang-v1_1
+
+- **用途**: 中英双语文本转语音（TTS，Kokoro 103 音色，int8 量化）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 hexgrad/Kokoro-82M-v1.1-zh）
+- **许可证**: Apache-2.0（如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6`
+
+## kokoro-multi-lang-v1_1
+
+- **用途**: 中英双语文本转语音（TTS，Kokoro 103 音色，fp32 未量化）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 hexgrad/Kokoro-82M-v1.1-zh）
+- **许可证**: Apache-2.0（如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad`
+
 ## sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
 
 - **用途**: 离线多语言语音识别（ASR，zh/en/ja/ko/yue，含情绪/事件标签；int8 轻量版）
@@ -92,6 +108,14 @@
 - **发布方**: k2-fsa（sherpa-onnx 项目；模型源自 OpenAI Whisper）
 - **许可证**: MIT（OpenAI Whisper；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de`
+
+## sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25
+
+- **用途**: 离线多语言语音识别（ASR，29 语言 + 中文方言自动识别，LLM 自回归解码，支持热词；int8 轻量版）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自阿里 QwenLM/Qwen3-ASR）
+- **许可证**: Apache-2.0（Qwen3-ASR；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96`
 
 ## silero_vad.onnx（离线听写 VAD）
 

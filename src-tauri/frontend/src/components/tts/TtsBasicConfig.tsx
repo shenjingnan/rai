@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { useRuntime } from "@/providers/RuntimeContext";
-import { modelNameFromDir } from "./ttsMeta";
+import { groupKokoroVoices, modelNameFromDir } from "./ttsMeta";
 
 interface TtsBasicConfigProps {
   onTestOpen: () => void;
@@ -37,8 +39,12 @@ export function TtsBasicConfig({
   const enabled = config?.enabled ?? true;
   const modelPath = config?.model_dir ?? "";
   const modelName = modelNameFromDir(modelPath);
-  // sid 模型（vits/matcha/...）无参考音频克隆语义：音色固定，不提供「默认音色」选择与音色管理
-  const sidModel = !!config?.model_type && config.model_type !== "zipvoice";
+  // 音色语义按模型族三分：kokoro 选预置音色（103 个，分组下拉）；
+  // vits/matcha 单说话人固定（禁用占位）；zipvoice 走克隆（含音色管理入口）。
+  const modelKind = config?.model_type ?? "";
+  const kokoro = modelKind === "kokoro";
+  const sidFixed = !!modelKind && modelKind !== "zipvoice" && !kokoro;
+  const voiceGroups = groupKokoroVoices(voices);
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-panel-border bg-panel-background">
@@ -138,13 +144,36 @@ export function TtsBasicConfig({
         </div>
       </dl>
 
-      {/* 默认音色：zipvoice 走克隆（所有合成默认用该音色，选即持久化 [tts].voice）；
-          sid 模型音色固定，仅显示禁用占位 */}
+      {/* 默认音色：kokoro 选预置音色（分组下拉，选即持久化 [tts].voice）；
+          zipvoice 走克隆（所有合成默认用该音色）；vits/matcha 音色固定，仅显示禁用占位 */}
       <dl>
         <div className="flex items-center justify-between gap-3.5 border-t border-divider px-3.5 py-2.5">
           <dt className="shrink-0 text-sm text-text-primary">音色</dt>
           <dd className="min-w-0">
-            {sidModel ? (
+            {kokoro ? (
+              <Select
+                value={selectedVoice}
+                onValueChange={(v) => void setSelectedVoice(v)}
+                disabled={voices.length === 0}
+              >
+                <SelectTrigger id="tts-default-voice" aria-label="默认音色" className="h-8 w-48">
+                  <SelectValue placeholder="默认（zf_001 · 中文女声）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">默认（zf_001 · 中文女声）</SelectItem>
+                  {voiceGroups.map((g) => (
+                    <SelectGroup key={g.group}>
+                      <SelectLabel>{g.label}</SelectLabel>
+                      {g.items.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : sidFixed ? (
               <Select value="fixed" disabled>
                 <SelectTrigger id="tts-default-voice" aria-label="默认音色" className="h-8 w-48">
                   <SelectValue placeholder="默认音色（模型固定）" />
@@ -190,7 +219,7 @@ export function TtsBasicConfig({
           <Volume2 className="h-4 w-4" />
           测试语音
         </Button>
-        {!sidModel && (
+        {!kokoro && !sidFixed && (
           <Button variant="secondary" className="shadow-none" onClick={onManageVoices}>
             <Mic className="h-4 w-4" />
             音色管理

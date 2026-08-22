@@ -405,11 +405,13 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
             asr.use_itn = None;
         }
         ModelType::Tts => {
+            let old_kind = cfg.tts.as_ref().and_then(|t| t.model_type);
             let tts = cfg.tts.get_or_insert_with(Default::default);
             tts.model_dir = Some(path_str);
             // 切换时同步持久化模型类型与推理后端：managed 安装目录名 == registry
-            // `name`，据此推导 vits/matcha/zipvoice 与 audiocpp（runtime 字段）；
+            // `name`，据此推导 vits/matcha/kokoro/zipvoice 与 audiocpp（runtime 字段）；
             // external/local 目录探测不到时保持原值（resolve 会按目录内容兜底探测）。
+            let mut new_kind = old_kind;
             if let Some(name) = path.file_name() {
                 let base = name.to_string_lossy().to_string();
                 if let Some(entry) = crate::model_library::registry::all_models()
@@ -419,6 +421,7 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
                 {
                     if let Some(kind) = entry.tts_kind {
                         tts.model_type = Some(kind);
+                        new_kind = Some(kind);
                     }
                     // audiocpp 条目写 backend；sherpa 条目写 None 复位（保证从
                     // audiocpp 切回 sherpa 时后端归位缺省）。
@@ -431,10 +434,15 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
                     tts.engine_path = None;
                 }
             }
+            // 模型族变化时清空默认音色：zipvoice 音色 id（leijun-1 等）与 Kokoro 音色名
+            // （zf_001 等）互为无效值，残留会让切换后的首次合成报「未找到音色」。
+            if old_kind.is_some() && old_kind != new_kind {
+                tts.voice = None;
+            }
             // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
             // 会污染新模型的文件探测，交回 resolve 自动探测（与 KWS/ASR 分支同款取舍）。
             // reference_wav/text 指向旧模型目录内的参考音频，一并重置回默认音色；
-            // enabled / voice / num_steps / speed 等用户偏好不重置。
+            // enabled / num_steps / speed 等用户偏好不重置。
             tts.encoder = None;
             tts.decoder = None;
             tts.vocoder = None;
@@ -1646,6 +1654,52 @@ mod tests {
             set_selected_model(ModelType::Tts, &unknown).unwrap();
             let cfg = settings::load_settings().unwrap().unwrap();
             assert_eq!(cfg.tts.as_ref().and_then(|t| t.backend.clone()), None);
+        });
+    }
+
+    #[test]
+    fn test_set_selected_tts_kind_switch_clears_voice() {
+        run_with_temp_home(|home| {
+            // Kokoro registry 目录名 → tts_kind = kokoro
+            let kokoro = home.join("models/kokoro-int8-multi-lang-v1_1");
+            set_selected_model(ModelType::Tts, &kokoro).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(
+                cfg.tts.as_ref().and_then(|t| t.model_type),
+                Some(crate::tts::config::TtsModelKind::Kokoro)
+            );
+            // 设置一个 Kokoro 音色后切回 zipvoice：音色 id 互为无效，应被清空
+            update_settings(|c| {
+                c.tts.get_or_insert_with(Default::default).voice = Some("zf_001".to_string());
+            })
+            .unwrap();
+            let zip = home.join("models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia");
+            set_selected_model(ModelType::Tts, &zip).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let tts = cfg.tts.as_ref().unwrap();
+            assert_eq!(
+                tts.model_type,
+                Some(crate::tts::config::TtsModelKind::Zipvoice)
+            );
+            assert!(
+                tts.voice.is_none(),
+                "模型族变化时应清空默认音色（旧族音色 id 在新族无效）"
+            );
+            // 同族内切换（kokoro int8 → fp32）：音色保留
+            set_selected_model(ModelType::Tts, &kokoro).unwrap();
+            update_settings(|c| {
+                c.tts.get_or_insert_with(Default::default).voice = Some("zf_050".to_string());
+            })
+            .unwrap();
+            let kokoro_fp32 = home.join("models/kokoro-multi-lang-v1_1");
+            set_selected_model(ModelType::Tts, &kokoro_fp32).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let tts = cfg.tts.as_ref().unwrap();
+            assert_eq!(
+                tts.model_type,
+                Some(crate::tts::config::TtsModelKind::Kokoro)
+            );
+            assert_eq!(tts.voice.as_deref(), Some("zf_050"), "同族切换应保留音色");
         });
     }
 

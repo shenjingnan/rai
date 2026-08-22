@@ -17,6 +17,8 @@ function asrLanguagesLabel(modelType: string | null | undefined, modelDir: strin
       return "中文、English、日本語、한국어、粤语";
     case "whisper":
       return "多语言（自动检测）";
+    case "qwen3_asr":
+      return "29 语言 + 中文方言（自动识别）";
     // zipformer 族按目录细分：双语 / 纯中文（zh-14M、multi-zh-hans）/ 纯英文（streaming-zipformer-en-*）
     default: {
       if (dir.includes("zh-14m") || dir.includes("multi-zh-hans")) return "中文";

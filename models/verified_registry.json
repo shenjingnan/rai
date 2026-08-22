@@ -175,6 +175,14 @@
       "compatibility_notes": "内置离线 ASR（SenseVoice int8），多语言+情绪标签，sherpa-onnx OfflineRecognizer 验证可用。"
     },
     {
+      "model_id": "asr-qwen3-0.6b",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-offline-qwen3",
+      "compatibility_notes": "离线 ASR（Qwen3-ASR 0.6B int8），29 语言+中文方言自动识别、热词（提示词嵌入）验证可用；CPU 实测约 0.4× 实时（20s 音频推理约 9s）、峰值内存约 960MB。已知限制：整段转写超过约 30s 的音频因 max_total_len=512 输出崩坏，长音频走 VAD 分段（听写/会话路径分段上限 20s 不受影响）。"
+    },
+    {
       "model_id": "asr-whisper-tiny",
       "provider": null,
       "repo_id": null,

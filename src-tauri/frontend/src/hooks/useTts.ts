@@ -131,20 +131,25 @@ export function useTts(): TtsState {
       setResult(null);
       setProgress(null);
       setSynthesizing(true);
-      // sid 模型（vits/matcha/...）无参考音频克隆概念：固定 speaker id（本期单说话人恒 0），
-      // 不传 voice/reference；zipvoice 走克隆（自定义音色 → 直接传其 wav+转写；否则内置/默认）。
-      const sidModel = !!config?.model_type && config.model_type !== "zipvoice";
-      const savedVoice = !sidModel
-        ? voices.find((v) => v.custom && v.id === selectedVoice)
-        : undefined;
+      // 音色语义按模型族三分：
+      // - zipvoice：参考音频克隆（自定义音色 → 直接传其 wav+转写；否则内置/默认）
+      // - kokoro：预置音色 id（如 zf_001）持久化在 [tts].voice，后端查表得 sid
+      // - vits/matcha：单说话人，固定 sid 0，不传 voice/reference
+      const kind = config?.model_type ?? "";
+      const kokoro = kind === "kokoro";
+      const sidFixed = !!kind && kind !== "zipvoice" && !kokoro;
+      const savedVoice =
+        !kokoro && !sidFixed
+          ? voices.find((v) => v.custom && v.id === selectedVoice)
+          : undefined;
       try {
         await api.synthesizeTts({
           text: trimmed,
           speed: opts?.speed ?? null,
-          sid: sidModel ? 0 : null,
-          voice: sidModel ? null : savedVoice ? null : selectedVoice || null,
-          referenceWav: sidModel ? null : savedVoice ? savedVoice.wav_path : null,
-          referenceText: sidModel ? null : savedVoice ? savedVoice.reference_text : null,
+          sid: sidFixed ? 0 : null,
+          voice: kokoro ? selectedVoice || null : savedVoice ? null : selectedVoice || null,
+          referenceWav: kokoro || sidFixed ? null : savedVoice ? savedVoice.wav_path : null,
+          referenceText: kokoro || sidFixed ? null : savedVoice ? savedVoice.reference_text : null,
         });
       } catch (e) {
         setError(String(e));

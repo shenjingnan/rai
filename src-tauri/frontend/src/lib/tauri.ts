@@ -100,8 +100,9 @@ export const api = {
     invoke<TranscribeResult>("transcribe_audio", args),
   getLive2dConfig: () => invoke<Live2dConfigInfo>("get_live2d_config"),
   listCompanions: () => invoke<CompanionLibraryView>("list_companions"),
-  // Tauri v2 命令参数默认 camelCase（`sourceDir` 映射 Rust 的 `source_dir`）。
-  importCompanion: (args: { sourceDir: string }) =>
+  // Tauri v2 命令参数默认 camelCase（`source` 单字段名两端一致，无映射）。
+  // 源可以是 Live2D 模型目录或 GIF 动图文件（后端 import_source 分派）。
+  importCompanion: (args: { source: string }) =>
     invoke<ImportCompanionResult>("import_companion", args),
   setActiveCompanion: (args: { id: string }) =>
     invoke<CompanionLibraryView>("set_active_companion", args),

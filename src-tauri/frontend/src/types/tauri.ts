@@ -151,6 +151,7 @@ export interface PerformanceKeyInfo {
 export interface Live2dConfigInfo {
   model_dir: string | null;
   model_file: string | null;
+  /** 模型格式："cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string | null;
   models_present: boolean;
   window_scale: number | null;
@@ -170,6 +171,7 @@ export interface Live2dConfigInfo {
 export interface Live2dModelInfo {
   model_dir: string | null;
   model_file: string | null;
+  /** "cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string | null;
   /** BongoCat 道具资源（非 BongoCat 模型为 null） */
   props: PerformancePropsInfo | null;
@@ -204,8 +206,9 @@ export interface CompanionModelInfo {
   source_path: string | null;
   /** 应用托管目录 `~/.zapmomo/companions/{id}` */
   model_dir: string;
-  /** 托管目录内的 .model3.json 绝对路径 */
+  /** 托管目录内的 .model3.json（Live2D）或 .gif（GIF 伙伴）绝对路径 */
   model_file: string;
+  /** "cubism3"（Live2D）或 "gif"（GIF 伙伴） */
   format: string;
   imported_at: string;
   /** 快速有效判定：托管目录与清单文件是否都还在磁盘上 */
@@ -278,6 +281,10 @@ export interface TtsVoice {
   reference_text: string;
   /** 是否为用户自定义音色（true = 来自音色库，false = 模型包内置） */
   custom: boolean;
+  /** sid 模型（Kokoro）音色的 speaker id；参考音色（zipvoice）为 null */
+  sid?: number | null;
+  /** Kokoro 音色分组（前端分组下拉）；参考音色为 null */
+  group?: "english_female" | "chinese_female" | "chinese_male" | null;
 }
 
 /** `save_tts_voice` 载荷：把源 wav 拷贝进音色库并登记。 */

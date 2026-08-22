@@ -1,12 +1,12 @@
-/// 离线语音识别（SenseVoice / Whisper）。
+/// 离线语音识别（SenseVoice / Whisper / Qwen3-ASR）。
 ///
 /// 与流式 `AsrEngine`（`OnlineRecognizer`）相对，使用 sherpa-onnx 的 `OfflineRecognizer`
-/// 一次性整段转写 wav。仅用于文件转写入口（CLI `asr test` / Tauri `transcribe_audio` /
-/// `transcribe_reference_audio`），不参与实时语音会话。
+/// 一次性整段转写 wav。用于文件转写入口（CLI `asr test` / Tauri `transcribe_audio` /
+/// `transcribe_reference_audio`）与 VAD 分段听写/语音会话离线态。
 use crate::asr::config::{AsrModelKind, ResolvedAsrConfig};
 use sherpa_onnx::{
-    OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
-    OfflineWhisperModelConfig, Wave,
+    OfflineModelConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    OfflineSenseVoiceModelConfig, OfflineWhisperModelConfig, Wave,
 };
 use std::path::Path;
 
@@ -47,6 +47,21 @@ impl OfflineAsrEngine {
                 ("decoder", &cfg.decoder),
                 ("tokens", &cfg.tokens),
             ],
+            AsrModelKind::Qwen3Asr => {
+                let conv = cfg
+                    .model
+                    .as_deref()
+                    .ok_or_else(|| "Qwen3-ASR 模型未解析出 conv_frontend 文件".to_string())?;
+                // tokenizer 是目录（非文件），不进下面的 is_file 循环，单独校验
+                if !cfg.tokens.is_dir() {
+                    return Err(format!("缺少 tokenizer 目录: {}", cfg.tokens.display()));
+                }
+                vec![
+                    ("conv_frontend", conv),
+                    ("encoder", &cfg.encoder),
+                    ("decoder", &cfg.decoder),
+                ]
+            }
             AsrModelKind::Zipformer | AsrModelKind::Paraformer => {
                 return Err(format!(
                     "当前模型类型 {} 应走流式引擎，离线引擎不适用",
@@ -126,11 +141,39 @@ pub(crate) fn build_offline_model_config(cfg: &ResolvedAsrConfig) -> OfflineMode
                 enable_segment_timestamps: false,
             };
         }
+        AsrModelKind::Qwen3Asr => {
+            // qwen3 无 tokens.txt（tokenizer 从目录加载）：tokens 置空串绕过 C++
+            // Validate 的通用 tokens 检查；model_type 不设（Validate 以 conv_frontend
+            // 非空为准，官方 Rust 示例同款——与 sensevoice/whisper 显式设
+            // model_type 的做法相反）。生成参数透传 crate 默认
+            // （max_total_len=512 / max_new_tokens=128 / temperature=1e-6 / top_p=0.8 / seed=42）
+            config.tokens = Some(String::new());
+            config.qwen3_asr = OfflineQwen3ASRModelConfig {
+                conv_frontend: cfg.model.as_ref().map(|p| p.to_string_lossy().to_string()),
+                encoder: Some(cfg.encoder.to_string_lossy().to_string()),
+                decoder: Some(cfg.decoder.to_string_lossy().to_string()),
+                tokenizer: Some(cfg.tokens.to_string_lossy().to_string()),
+                hotwords: cfg
+                    .hotwords
+                    .as_deref()
+                    .filter(|h| !h.trim().is_empty())
+                    .map(qwen3_hotwords),
+                ..Default::default()
+            };
+        }
         AsrModelKind::Zipformer | AsrModelKind::Paraformer => {
             unreachable!("离线引擎不处理流式族")
         }
     }
     config
+}
+
+/// 项目热词语义「空格分隔」→ Qwen3-ASR 期望「逗号分隔」的格式转换。
+///
+/// sherpa C++ 端按逗号切分去空格后拼入 chat 模板 system 段（prompt 上下文偏置，
+/// 不支持热词文件路径）；配置存储格式保持空格分隔不变，仅构造层转换。
+fn qwen3_hotwords(h: &str) -> String {
+    h.split_whitespace().collect::<Vec<_>>().join(",")
 }
 
 /// 剥离 SenseVoice 输出中的 `<|...|>` 语言/情绪/事件标签，并折叠空白。
@@ -226,6 +269,76 @@ mod tests {
                 kind
             );
         }
+    }
+
+    #[test]
+    fn test_build_offline_model_config_qwen3_branch() {
+        let mut cfg = cfg_with(AsrModelKind::Qwen3Asr);
+        cfg.model = Some(PathBuf::from("/m/q3/conv_frontend.onnx"));
+        cfg.encoder = PathBuf::from("/m/q3/encoder.int8.onnx");
+        cfg.decoder = PathBuf::from("/m/q3/decoder.int8.onnx");
+        cfg.tokens = PathBuf::from("/m/q3/tokenizer");
+        cfg.hotwords = Some("尼日尔河 ZapMomo".to_string());
+        let c = build_offline_model_config(&cfg);
+        // qwen3 不设 model_type、tokens 置空串（官方示例模式）
+        assert_eq!(c.model_type, None);
+        assert_eq!(c.tokens.as_deref(), Some(""));
+        assert_eq!(
+            c.qwen3_asr.conv_frontend.as_deref(),
+            Some("/m/q3/conv_frontend.onnx")
+        );
+        assert_eq!(
+            c.qwen3_asr.encoder.as_deref(),
+            Some("/m/q3/encoder.int8.onnx")
+        );
+        assert_eq!(
+            c.qwen3_asr.decoder.as_deref(),
+            Some("/m/q3/decoder.int8.onnx")
+        );
+        assert_eq!(c.qwen3_asr.tokenizer.as_deref(), Some("/m/q3/tokenizer"));
+        // 热词空格分隔 → 逗号分隔（C++ 端按逗号切分嵌 prompt）
+        assert_eq!(c.qwen3_asr.hotwords.as_deref(), Some("尼日尔河,ZapMomo"));
+        // 生成参数透传 crate 默认
+        assert_eq!(c.qwen3_asr.max_total_len, 512);
+        assert_eq!(c.qwen3_asr.max_new_tokens, 128);
+        // 不污染其它族字段
+        assert!(c.sense_voice.model.is_none());
+        assert!(c.whisper.encoder.is_none());
+
+        // hotwords None / 纯空白 → None（不拼空 prompt）
+        cfg.hotwords = None;
+        assert_eq!(build_offline_model_config(&cfg).qwen3_asr.hotwords, None);
+        cfg.hotwords = Some("   ".to_string());
+        assert_eq!(build_offline_model_config(&cfg).qwen3_asr.hotwords, None);
+    }
+
+    #[test]
+    fn test_offline_engine_qwen3_missing_files_and_tokenizer_dir() {
+        // 路径不存在 → 先报缺少 tokenizer 目录（目录级校验先于 is_file 循环）
+        let mut cfg = cfg_with(AsrModelKind::Qwen3Asr);
+        cfg.model = Some(PathBuf::from("/nonexistent/conv_frontend.onnx"));
+        cfg.encoder = PathBuf::from("/nonexistent/encoder.int8.onnx");
+        cfg.decoder = PathBuf::from("/nonexistent/decoder.int8.onnx");
+        cfg.tokens = PathBuf::from("/nonexistent/tokenizer");
+        let err = OfflineAsrEngine::new(cfg).err().unwrap();
+        assert!(
+            err.contains("tokenizer"),
+            "应报缺少 tokenizer 目录，实际: {err}"
+        );
+
+        // tokenizer 目录存在但 onnx 缺失 → 报「缺少模型文件」
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with(AsrModelKind::Qwen3Asr);
+        cfg.model = Some(PathBuf::from("/nonexistent/conv_frontend.onnx"));
+        cfg.encoder = PathBuf::from("/nonexistent/encoder.int8.onnx");
+        cfg.decoder = PathBuf::from("/nonexistent/decoder.int8.onnx");
+        cfg.tokens = dir.path().join("tokenizer");
+        std::fs::create_dir_all(&cfg.tokens).unwrap();
+        let err = OfflineAsrEngine::new(cfg).err().unwrap();
+        assert!(
+            err.contains("缺少模型文件"),
+            "应报缺少模型文件，实际: {err}"
+        );
     }
 
     #[test]

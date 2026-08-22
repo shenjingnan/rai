@@ -172,9 +172,13 @@ export function AsrAdvancedParams() {
   const punctAvailable = params?.punctuation_present ?? false;
   // 离线模型（SenseVoice/Whisper）无流式语义：隐藏 chunk_size/断句/空白惩罚/热词/端点检测
   const streaming = isStreamingAsr(params?.model_type);
-  const numericKeys: NumericKey[] = streaming
+  // 热词/空白惩罚为 transducer（zipformer）专属：paraformer 隐藏（后端也会忽略）
+  const zipformerOnly = params?.model_type === "zipformer" || !params?.model_type;
+  const numericKeys: NumericKey[] = zipformerOnly
     ? NUMERIC_KEYS
-    : NUMERIC_KEYS.filter((k) => k === "num_threads");
+    : streaming
+      ? NUMERIC_KEYS.filter((k) => k !== "blank_penalty")
+      : NUMERIC_KEYS.filter((k) => k === "num_threads");
 
   // hydrate：config 就绪时填充草稿；数字草稿在 dirty 时保留用户编辑，开关/热词仅首次填充
   useEffect(() => {
@@ -230,8 +234,8 @@ export function AsrAdvancedParams() {
     }
     const patch: AsrParamsPatch = {
       ...numeric,
-      // 离线模型无流式语义：热词/端点不随保存下发（后端缺省不修改）
-      hotwords: streaming ? (hotwordsDraft ?? "") : undefined,
+      // 热词仅 zipformer 生效、端点检测属流式语义：不适用时不随保存下发（后端缺省不修改）
+      hotwords: zipformerOnly ? (hotwordsDraft ?? "") : undefined,
       enable_endpoint: streaming ? (endpointDraft ?? params.enable_endpoint) : undefined,
       enable_punctuation: punctDraft ?? params.enable_punctuation,
       debug: debugDraft ?? params.debug,
@@ -281,45 +285,45 @@ export function AsrAdvancedParams() {
               />
             ))}
 
-            {streaming && (
-              <>
-                <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
-                  <div className="min-w-0">
-                    <p className="text-sm text-text-primary">热词增强</p>
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。
-                    </p>
-                  </div>
-                  <Input
-                    className="w-64 shrink-0"
-                    value={hotwordsDraft ?? ""}
-                    onChange={(e) => {
-                      setSaveError(null);
-                      setHotwordsDraft(e.target.value);
-                    }}
-                    placeholder="如：文森特卡索 ZapMomo"
-                    aria-label="热词增强"
-                  />
+            {zipformerOnly && (
+              <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-sm text-text-primary">热词增强</p>
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    空格分隔（中文直接写），提升专有名词/人名识别；设置后引擎自动启用束搜索。
+                  </p>
                 </div>
+                <Input
+                  className="w-64 shrink-0"
+                  value={hotwordsDraft ?? ""}
+                  onChange={(e) => {
+                    setSaveError(null);
+                    setHotwordsDraft(e.target.value);
+                  }}
+                  placeholder="如：文森特卡索 ZapMomo"
+                  aria-label="热词增强"
+                />
+              </div>
+            )}
 
-                <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
-                  <div className="min-w-0">
-                    <p className="text-sm text-text-primary">端点检测</p>
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      静音自动断句，开启后说一句话自动出最终结果。
-                    </p>
-                  </div>
-                  <Switch
-                    aria-label="端点检测"
-                    checked={endpointDraft ?? params?.enable_endpoint ?? true}
-                    onCheckedChange={(v) => {
-                      setSaveError(null);
-                      setEndpointDraft(v);
-                    }}
-                    trackClass="bg-emerald-500"
-                  />
+            {streaming && (
+              <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-sm text-text-primary">端点检测</p>
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    静音自动断句，开启后说一句话自动出最终结果。
+                  </p>
                 </div>
-              </>
+                <Switch
+                  aria-label="端点检测"
+                  checked={endpointDraft ?? params?.enable_endpoint ?? true}
+                  onCheckedChange={(v) => {
+                    setSaveError(null);
+                    setEndpointDraft(v);
+                  }}
+                  trackClass="bg-emerald-500"
+                />
+              </div>
             )}
 
             <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">

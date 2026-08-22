@@ -4,6 +4,7 @@ import { asrDictateStatus, asrModelKindLabel, isStreamingAsr } from "./asrMeta";
 describe("asrModelKindLabel", () => {
   it("族徽标文案", () => {
     expect(asrModelKindLabel("zipformer")).toBe("流式 Zipformer");
+    expect(asrModelKindLabel("paraformer")).toBe("流式 Paraformer");
     expect(asrModelKindLabel("sensevoice")).toBe("SenseVoice");
     expect(asrModelKindLabel("whisper")).toBe("Whisper");
     expect(asrModelKindLabel("unknown")).toBe("ASR");
@@ -11,8 +12,9 @@ describe("asrModelKindLabel", () => {
 });
 
 describe("isStreamingAsr", () => {
-  it("zipformer 或缺省（老配置）→ 流式", () => {
+  it("zipformer / paraformer 或缺省（老配置）→ 流式", () => {
     expect(isStreamingAsr("zipformer")).toBe(true);
+    expect(isStreamingAsr("paraformer")).toBe(true);
     expect(isStreamingAsr(null)).toBe(true);
     expect(isStreamingAsr(undefined)).toBe(true);
   });

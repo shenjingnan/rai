@@ -47,8 +47,11 @@ impl OfflineAsrEngine {
                 ("decoder", &cfg.decoder),
                 ("tokens", &cfg.tokens),
             ],
-            AsrModelKind::Zipformer => {
-                return Err("当前模型类型 zipformer 应走流式引擎，离线引擎不适用".to_string());
+            AsrModelKind::Zipformer | AsrModelKind::Paraformer => {
+                return Err(format!(
+                    "当前模型类型 {} 应走流式引擎，离线引擎不适用",
+                    cfg.model_type.as_str()
+                ));
             }
         };
         for (name, path) in files {
@@ -123,7 +126,9 @@ pub(crate) fn build_offline_model_config(cfg: &ResolvedAsrConfig) -> OfflineMode
                 enable_segment_timestamps: false,
             };
         }
-        AsrModelKind::Zipformer => unreachable!("离线引擎不处理 zipformer"),
+        AsrModelKind::Zipformer | AsrModelKind::Paraformer => {
+            unreachable!("离线引擎不处理流式族")
+        }
     }
     config
 }
@@ -208,6 +213,19 @@ mod tests {
         assert_eq!(c.whisper.task.as_deref(), Some("transcribe"));
         assert_eq!(c.tokens.as_deref(), Some("/m/w/tiny-tokens.txt"));
         assert!(c.sense_voice.model.is_none());
+    }
+
+    #[test]
+    fn test_offline_engine_rejects_streaming_kinds() {
+        // zipformer / paraformer 均应被离线引擎拒绝（走流式引擎）
+        for kind in [AsrModelKind::Zipformer, AsrModelKind::Paraformer] {
+            let err = OfflineAsrEngine::new(cfg_with(kind)).err().unwrap();
+            assert!(
+                err.contains("流式引擎"),
+                "kind={:?} 应报「应走流式引擎」，实际: {err}",
+                kind
+            );
+        }
     }
 
     #[test]

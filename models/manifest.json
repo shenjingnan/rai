@@ -286,6 +286,26 @@
       "license": "MIT"
     },
     {
+      "name": "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+      "role": "asr-paraformer-bilingual-zh-en",
+      "version": "bilingual-zh-en",
+      "archive": "sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2",
+      "sha256": "5462a1fce42693deae572af1e8c4687124b12aa85fe61ff4d3168bb5280e205f",
+      "size_bytes": 1047319737,
+      "license": "FunASR-1.1"
+    },
+    {
+      "name": "sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en",
+      "role": "asr-paraformer-trilingual-zh-cantonese-en",
+      "version": "trilingual-zh-cantonese-en",
+      "archive": "sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en.tar.bz2",
+      "sha256": "d479167d8752628d9032d29de1060493865389d1e295a1c2e8e011e7062f1932",
+      "size_bytes": 1047671211,
+      "license": "FunASR-1.1"
+    },
+    {
       "name": "silero-vad",
       "role": "asr-vad",
       "version": "v5",

@@ -49,6 +49,20 @@ export const ASR_PRESETS = [
     kind: "zipformer",
   },
   {
+    id: "asr-paraformer-bilingual-zh-en",
+    name: "Streaming Paraformer ASR zh-en",
+    tagline: "中英双语 · 流式 · 高准确率 · 包体约 1GB",
+    sizeBytes: 1_047_319_737,
+    kind: "paraformer",
+  },
+  {
+    id: "asr-paraformer-trilingual-zh-cantonese-en",
+    name: "Streaming Paraformer ASR zh-yue-en",
+    tagline: "中粤英三语 · 流式 · 包体约 1GB",
+    sizeBytes: 1_047_671_211,
+    kind: "paraformer",
+  },
+  {
     id: "asr-sensevoice-zh-en-ja-ko-yue",
     name: "SenseVoice ASR (int8)",
     tagline: "中英日韩粤 · 离线整段转写 · 情绪/事件标签",

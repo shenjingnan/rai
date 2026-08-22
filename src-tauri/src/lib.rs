@@ -632,7 +632,7 @@ impl AsrReaction for TauriAsrDictateReaction {
 #[derive(Serialize)]
 struct AsrConfigInfo {
     enabled: bool,
-    /// 模型类型（zipformer/sensevoice/whisper），前端据此隐藏流式专属参数
+    /// 模型类型（zipformer/paraformer/sensevoice/whisper），前端据此隐藏流式专属参数
     model_type: String,
     model_dir: String,
     provider: String,
@@ -755,14 +755,15 @@ fn start_asr_listen_impl(
     // 离线族（SenseVoice/Whisper）不支持实时识别：前端已禁用开关，这里双保险拦截
     if !cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer）模型，或使用「转写文件」功能离线转写。",
+            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer/paraformer）模型，或使用「转写文件」功能离线转写。",
             cfg.model_type.as_str()
         ));
     }
 
-    // 预检模型文件，失败同步返回清晰错误（避免在后台线程里才报错）
-    let files = [&cfg.encoder, &cfg.decoder, &cfg.joiner, &cfg.tokens];
-    if let Some(missing) = files.iter().find(|p| !p.is_file()) {
+    // 预检模型文件（族感知：zipformer 四件 / paraformer 三件），
+    // 失败同步返回清晰错误（避免在后台线程里才报错）
+    let preflight = collect_asr_preflight_files(&cfg)?;
+    if let Some((_, missing)) = preflight.iter().find(|(_, p)| !p.is_file()) {
         return Err(format!(
             "缺少模型文件: {}\n\n请在「配置」面板点击「下载模型」，或运行 `zapmomo asr install-model` 下载模型。",
             missing.display()
@@ -849,7 +850,7 @@ fn is_asr_listening(state: State<'_, AsrListenState>) -> bool {
 
 /// 开始离线免提听写的内部实现（command 与「切换设备重启」共用）。
 ///
-/// 守卫：仅在离线模型（SenseVoice/Whisper）下可用；流式 zipformer 被拒（听写是离线专用）。
+/// 守卫：仅在离线模型（SenseVoice/Whisper）下可用；流式族（zipformer/paraformer）被拒（听写是离线专用）。
 /// 线程内先惰性下载 Silero VAD 模型，再跑 `run_dictate`（VAD 分段 → 每段整句转写）。
 fn start_asr_dictate_impl(
     app: AppHandle,
@@ -867,7 +868,7 @@ fn start_asr_dictate_impl(
     // 流式模型不支持听写（离线模型专用）：前端已切走开关，这里双保险拦截
     if cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper 模型。",
+            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper 离线模型。",
             cfg.model_type.as_str()
         ));
     }
@@ -1923,6 +1924,11 @@ fn collect_asr_preflight_files(
             ("ASR joiner", &cfg.joiner),
             ("ASR tokens", &cfg.tokens),
         ],
+        AsrModelKind::Paraformer => vec![
+            ("ASR encoder", &cfg.encoder),
+            ("ASR decoder", &cfg.decoder),
+            ("ASR tokens", &cfg.tokens),
+        ],
         AsrModelKind::SenseVoice => {
             let model = cfg
                 .model
@@ -1941,8 +1947,8 @@ fn collect_asr_preflight_files(
 
 /// 预检语音会话所需模型文件（KWS / ASR / TTS / LLM）。缺任一返回带安装提示的错误。
 ///
-/// ASR 按 `model_type` 族感知（zipformer 四件套 / SenseVoice model+tokens / Whisper
-/// encoder+decoder+tokens），不再硬编码 zipformer 专属文件名。
+/// ASR 按 `model_type` 族感知（zipformer 四件套 / paraformer encoder+decoder+tokens /
+/// SenseVoice model+tokens / Whisper encoder+decoder+tokens），不再硬编码 zipformer 专属文件名。
 fn preflight_voice_models(
     cfg: &zapmomo::voice::config::ResolvedSessionConfig,
 ) -> Result<(), String> {

@@ -147,6 +147,10 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "asr-sensevoice" => &crate::asr::config::SENSEVOICE_REQUIRED_FILES,
         "asr-whisper-tiny" => &crate::asr::config::WHISPER_TINY_REQUIRED_FILES,
         "asr-whisper-base" => &crate::asr::config::WHISPER_BASE_REQUIRED_FILES,
+        // 流式 Paraformer：裸名三件套（int8），同样先于 asr-* 通配
+        "asr-paraformer-bilingual-zh-en" | "asr-paraformer-trilingual-zh-cantonese-en" => {
+            &crate::asr::config::PARAFORMER_REQUIRED_FILES
+        }
         // 所有 streaming zipformer ASR（含每个 ASR 的唯一 role）共用同一组 4 文件
         r if r == "asr" || r.starts_with("asr-") => &crate::asr::config::REQUIRED_FILES,
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
@@ -179,8 +183,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            23,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR"
+            25,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer"
         );
         assert!(
             models
@@ -265,6 +269,19 @@ mod tests {
         assert!(required_files_for_role("asr-whisper-tiny").contains(&"tiny-tokens.txt"));
         assert_eq!(required_files_for_role("asr-whisper-base").len(), 3);
         assert!(required_files_for_role("asr-whisper-base").contains(&"base-encoder.onnx"));
+        // 流式 Paraformer：裸名三件套（int8），先于 asr-* 通配
+        assert_eq!(
+            required_files_for_role("asr-paraformer-bilingual-zh-en").len(),
+            3
+        );
+        assert!(
+            required_files_for_role("asr-paraformer-bilingual-zh-en")
+                .contains(&"encoder.int8.onnx")
+        );
+        assert_eq!(
+            required_files_for_role("asr-paraformer-trilingual-zh-cantonese-en").len(),
+            3
+        );
         // 回归：既有 streaming zipformer role 仍为 4 件套（不被新精确 arm 吞掉）
         assert_eq!(required_files_for_role("asr-zh-14m").len(), 4);
         assert!(required_files_for_role("unknown").is_empty());
@@ -303,6 +320,14 @@ mod tests {
         assert_eq!(
             registry_asr_kind("asr-whisper-base"),
             Some(AsrModelKind::Whisper)
+        );
+        assert_eq!(
+            registry_asr_kind("asr-paraformer-bilingual-zh-en"),
+            Some(AsrModelKind::Paraformer)
+        );
+        assert_eq!(
+            registry_asr_kind("asr-paraformer-trilingual-zh-cantonese-en"),
+            Some(AsrModelKind::Paraformer)
         );
         // 既有 streaming zipformer：asr_kind 缺省 → None（老行为）
         assert_eq!(registry_asr_kind("asr-streaming-bilingual-zh-en"), None);

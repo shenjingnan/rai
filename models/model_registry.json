@@ -278,6 +278,86 @@
       }
     },
     {
+      "id": "asr-paraformer-bilingual-zh-en",
+      "name": "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+      "display_name": "Streaming Paraformer ASR zh-en",
+      "model_type": "asr",
+      "asr_kind": "paraformer",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "流式 Paraformer 识别（FunASR paraformer-large），中英双语，准确率高于同尺寸 zipformer；包体较大（约 1GB，含 fp32+int8 双份），运行时默认加载 int8。",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "multilingual",
+        "paraformer",
+        "high-accuracy"
+      ],
+      "parameter_count": null,
+      "quantization": "int8",
+      "version": "bilingual-zh-en",
+      "size_bytes": 1047319737,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-paraformer-bilingual-zh-en"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-paraformer-bilingual-zh-en",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
+      "id": "asr-paraformer-trilingual-zh-cantonese-en",
+      "name": "sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en",
+      "display_name": "Streaming Paraformer ASR zh-yue-en",
+      "model_type": "asr",
+      "asr_kind": "paraformer",
+      "runtime": "sherpa-onnx",
+      "format": "ONNX",
+      "description": "流式 Paraformer 识别（FunASR paraformer-large），普通话/粤语/英语三语；包体较大（约 1GB，含 fp32+int8 双份），运行时默认加载 int8。",
+      "languages": [
+        "zh",
+        "yue",
+        "en"
+      ],
+      "tags": [
+        "asr",
+        "streaming",
+        "multilingual",
+        "paraformer",
+        "cantonese",
+        "high-accuracy"
+      ],
+      "parameter_count": null,
+      "quantization": "int8",
+      "version": "trilingual-zh-cantonese-en",
+      "size_bytes": 1047671211,
+      "homepage": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+      "required_assets": [
+        "asr-paraformer-trilingual-zh-cantonese-en"
+      ],
+      "optional_assets": [
+        "punctuation"
+      ],
+      "download": {
+        "manifest_role": "asr-paraformer-trilingual-zh-cantonese-en",
+        "extra_roles": [
+          "punctuation"
+        ],
+        "kind": "archive"
+      }
+    },
+    {
       "id": "asr-sensevoice-zh-en-ja-ko-yue",
       "name": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
       "display_name": "SenseVoice ASR (int8)",

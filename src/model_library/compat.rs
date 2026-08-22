@@ -203,13 +203,40 @@ static WHISPER_SPEC: CompatibilitySpec = CompatibilitySpec {
     ],
     absent: &[],
 };
+// 流式 Paraformer：裸名 encoder/decoder（int8|fp32）+ tokens，无 joiner。
+// `equals` 精确名与 zipformer 的 `contains`+joiner 必需、whisper 的 `-encoder.onnx`
+// 连字符后缀互斥；paraformer 目录在 zipformer ASR_SPEC 下只有 3/4（缺 joiner）。
+static SHERPA_PARAFORMER_ENCODER: FileSpec = FileSpec {
+    contains: &[],
+    equals: &["encoder.onnx", "encoder.int8.onnx"],
+    ends_with: &[],
+};
+static SHERPA_PARAFORMER_DECODER: FileSpec = FileSpec {
+    contains: &[],
+    equals: &["decoder.onnx", "decoder.int8.onnx"],
+    ends_with: &[],
+};
+static PARAFORMER_SPEC: CompatibilitySpec = CompatibilitySpec {
+    architecture: "sherpa-asr-streaming-paraformer",
+    runtime: "sherpa-onnx",
+    format: "ONNX",
+    model_type: ModelCategory::Asr,
+    display_name: "流式识别（Paraformer）",
+    required: &[
+        &SHERPA_PARAFORMER_ENCODER,
+        &SHERPA_PARAFORMER_DECODER,
+        &SHERPA_TOKENS,
+    ],
+    absent: &[],
+};
 
-const SHERPA_SPECS: [&CompatibilitySpec; 5] = [
+const SHERPA_SPECS: [&CompatibilitySpec; 6] = [
     &KWS_SPEC,
     &ASR_SPEC,
     &TTS_SPEC,
     &SENSEVOICE_SPEC,
     &WHISPER_SPEC,
+    &PARAFORMER_SPEC,
 ];
 
 // ---------------------------------------------------------------------------
@@ -751,6 +778,63 @@ mod tests {
     }
 
     #[test]
+    fn test_paraformer_compatible_file_group() {
+        let r = CompatibilityResolver::new();
+        // 官方包布局：裸名 int8 + fp32 双份 + tokens（无 joiner）
+        let files = files_of(&[
+            "encoder.int8.onnx",
+            "encoder.onnx",
+            "decoder.int8.onnx",
+            "decoder.onnx",
+            "tokens.txt",
+            "test_wavs/0.wav",
+        ]);
+        let c = r.from_files("x/paraformer", &files);
+        assert_eq!(c.level, CompatibilityLevel::Compatible);
+        assert_eq!(c.model_type, Some(ModelCategory::Asr));
+        assert_eq!(
+            c.architecture.as_deref(),
+            Some("sherpa-asr-streaming-paraformer")
+        );
+        assert_eq!(c.artifacts.len(), 1);
+        assert!(c.artifacts[0].installable);
+
+        // fp32-only 目录同样识别
+        let files_fp32 = files_of(&["encoder.onnx", "decoder.onnx", "tokens.txt"]);
+        let c2 = r.from_files("x/paraformer-fp32", &files_fp32);
+        assert_eq!(c2.level, CompatibilityLevel::Compatible);
+        assert_eq!(
+            c2.architecture.as_deref(),
+            Some("sherpa-asr-streaming-paraformer")
+        );
+    }
+
+    #[test]
+    fn test_paraformer_not_misclassified_as_zipformer() {
+        // paraformer 三件在 zipformer ASR_SPEC 下只有 3/4（缺 joiner）；
+        // PARAFORMER_SPEC 精确名全满足 → 必须归 streaming-paraformer
+        let r = CompatibilityResolver::new();
+        let files = files_of(&["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"]);
+        let c = r.from_files("x/paraformer", &files);
+        assert_ne!(
+            c.architecture.as_deref(),
+            Some("sherpa-asr-streaming-zipformer")
+        );
+        // 反向：zipformer 前缀命名不落 paraformer（equals 精确名不命中）
+        let zip_files = files_of(&[
+            "encoder-epoch-99-avg-1.int8.onnx",
+            "decoder-epoch-99-avg-1.onnx",
+            "joiner-epoch-99-avg-1.int8.onnx",
+            "tokens.txt",
+        ]);
+        let cz = r.from_files("x/zipformer", &zip_files);
+        assert_ne!(
+            cz.architecture.as_deref(),
+            Some("sherpa-asr-streaming-paraformer")
+        );
+    }
+
+    #[test]
     fn test_vits_not_misclassified_as_sensevoice() {
         // VITS 目录（model.onnx + lexicon + tokens）不得被 SENSEVOICE_SPEC 判为 ASR
         let r = CompatibilityResolver::new();
@@ -771,12 +855,22 @@ mod tests {
     #[test]
     fn test_partial_sherpa_is_possible() {
         let r = CompatibilityResolver::new();
-        let files = files_of(&["encoder.onnx", "decoder.onnx", "tokens.txt"]);
+        // 裸名 encoder/decoder + tokens 现在是完整的流式 Paraformer 文件组（Compatible），
+        // 「部分」场景改用缺 tokens 的集合：paraformer 缺 tokens、zipformer 缺 joiner+tokens
+        let complete = files_of(&["encoder.onnx", "decoder.onnx", "tokens.txt"]);
+        let c = r.from_files("x/y", &complete);
+        assert_eq!(
+            c.level,
+            CompatibilityLevel::Compatible,
+            "裸名三件套应判完整 Paraformer"
+        );
+
+        let files = files_of(&["encoder.onnx", "decoder.onnx"]);
         let c = r.from_files("x/y", &files);
         assert_eq!(
             c.level,
             CompatibilityLevel::Possible,
-            "缺 joiner → Possible 而非 Unsupported"
+            "缺 tokens → Possible 而非 Unsupported"
         );
     }
 

@@ -13,6 +13,8 @@ export function asrModelKindLabel(kind: string): string {
   switch (kind) {
     case "zipformer":
       return "流式 Zipformer";
+    case "paraformer":
+      return "流式 Paraformer";
     case "sensevoice":
       return "SenseVoice";
     case "whisper":
@@ -22,9 +24,9 @@ export function asrModelKindLabel(kind: string): string {
   }
 }
 
-/** 是否流式模型（zipformer 走实时识别；其余为离线，仅支持转写文件）。 */
+/** 是否流式模型（zipformer/paraformer 走实时识别；其余为离线，仅支持转写文件）。 */
 export function isStreamingAsr(kind: string | null | undefined): boolean {
-  return kind === "zipformer" || !kind; // 缺省视为 zipformer（老配置无 model_type）
+  return kind === "zipformer" || kind === "paraformer" || !kind; // 缺省视为 zipformer（老配置无 model_type）
 }
 
 /** 离线听写状态机（判断顺序：错误 > 启动中 > 听写中 > 未听写）。 */

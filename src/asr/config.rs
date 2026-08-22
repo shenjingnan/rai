@@ -40,6 +40,9 @@ pub enum AsrModelKind {
     /// 流式 zipformer transducer（encoder/decoder/joiner/tokens 四件套）
     #[default]
     Zipformer,
+    /// 流式 Paraformer：`encoder.onnx|int8` + `decoder.onnx|int8` + `tokens.txt`
+    /// （仅 greedy_search；热词为 transducer 专属，本族忽略）
+    Paraformer,
     /// 离线 SenseVoice：单 `model.onnx` + `tokens.txt`（多语言 + 情绪/事件标签）
     #[serde(rename = "sensevoice")]
     SenseVoice,
@@ -52,6 +55,7 @@ impl AsrModelKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Zipformer => "zipformer",
+            Self::Paraformer => "paraformer",
             Self::SenseVoice => "sensevoice",
             Self::Whisper => "whisper",
         }
@@ -61,6 +65,7 @@ impl AsrModelKind {
     pub fn parse_str(s: &str) -> Option<Self> {
         match s {
             "zipformer" => Some(Self::Zipformer),
+            "paraformer" => Some(Self::Paraformer),
             "sensevoice" => Some(Self::SenseVoice),
             "whisper" => Some(Self::Whisper),
             _ => None,
@@ -69,7 +74,7 @@ impl AsrModelKind {
 
     /// 是否流式（可走实时语音会话 / `AsrEngine`）。
     pub fn is_streaming(&self) -> bool {
-        matches!(self, Self::Zipformer)
+        matches!(self, Self::Zipformer | Self::Paraformer)
     }
 
     /// 是否离线（仅整段文件转写，走 `offline::OfflineAsrEngine`）。
@@ -105,6 +110,17 @@ pub const WHISPER_BASE_REQUIRED_FILES: [&str; 3] = [
     WHISPER_BASE_TOKENS,
 ];
 
+/// 流式 Paraformer 默认文件名（官方包 int8 变体；fp32 包内同在，运行时不默认消费）。
+pub const PARAFORMER_ENCODER: &str = "encoder.int8.onnx";
+pub const PARAFORMER_DECODER: &str = "decoder.int8.onnx";
+
+/// 流式 Paraformer 模型安装完成所需的文件（相对模型目录）。
+///
+/// 与 zipformer 的 `{prefix}-epoch-99-...` 命名不同，官方 paraformer 包是裸名
+/// `encoder/decoder`（int8 与 fp32 各一份）；完整性按默认消费的 int8 三件判。
+pub const PARAFORMER_REQUIRED_FILES: [&str; 3] =
+    [PARAFORMER_ENCODER, PARAFORMER_DECODER, DEFAULT_TOKENS];
+
 /// 各模型类型安装完成所需的文件（相对模型目录）。
 ///
 /// Whisper 因 tiny/base 尺寸前缀不同返回空，运行时由目录探测
@@ -112,6 +128,7 @@ pub const WHISPER_BASE_REQUIRED_FILES: [&str; 3] = [
 pub fn required_files(kind: AsrModelKind) -> &'static [&'static str] {
     match kind {
         AsrModelKind::Zipformer => &REQUIRED_FILES,
+        AsrModelKind::Paraformer => &PARAFORMER_REQUIRED_FILES,
         AsrModelKind::SenseVoice => &SENSEVOICE_REQUIRED_FILES,
         AsrModelKind::Whisper => &[],
     }
@@ -359,9 +376,37 @@ fn detect_whisper_prefix(model_dir: &Path) -> Option<String> {
     prefixes.into_iter().next()
 }
 
+/// Paraformer 组件默认文件探测：`<component>.int8.onnx` 存在取 int8，否则回退
+/// `<component>.onnx`（fp32-only 目录可运行；两文件均缺时回退 int8 名，
+/// 后续预检报「缺少模型文件」，错误路径清晰）。
+///
+/// 与 zipformer 的 `{prefix}-` 前缀探测、SenseVoice 的 `model*.onnx` 探测不同：
+/// 官方 paraformer 包是裸名 `encoder.onnx`/`decoder.onnx`，用精确名二选一。
+fn detect_paraformer_onnx(model_dir: &Path, component: &str) -> String {
+    let int8 = format!("{component}.int8.onnx");
+    if model_dir.join(&int8).is_file() {
+        int8
+    } else {
+        format!("{component}.onnx")
+    }
+}
+
+/// 目录是否含一套流式 Paraformer 文件（encoder/decoder 各 int8|fp32 之一 + tokens）。
+///
+/// 裸名与其它族的文件名形状互斥：whisper 探针需 `-encoder.onnx` 连字符前缀，
+/// zipformer 官方包均为 `encoder-epoch-99-...` 前缀命名。
+fn paraformer_files_detected(model_dir: &Path) -> bool {
+    let encoder =
+        model_dir.join("encoder.int8.onnx").is_file() || model_dir.join("encoder.onnx").is_file();
+    let decoder =
+        model_dir.join("decoder.int8.onnx").is_file() || model_dir.join("decoder.onnx").is_file();
+    encoder && decoder && model_dir.join(DEFAULT_TOKENS).is_file()
+}
+
 /// 目录内容探测模型类型（settings 未配置 `model_type` 时的兜底）。
 ///
 /// 文件探针：`model.onnx`+tokens → SenseVoice；`*-encoder.onnx` 系 → Whisper；
+/// 裸名 `encoder/decoder.onnx`+tokens → Paraformer；
 /// 否则 Zipformer（含空目录/不存在）。managed 安装目录名 == registry name 的
 /// 权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
 pub fn detect_kind_from_dir(model_dir: &Path) -> AsrModelKind {
@@ -373,6 +418,9 @@ pub fn detect_kind_from_dir(model_dir: &Path) -> AsrModelKind {
         && model_dir.join(format!("{prefix}-tokens.txt")).is_file()
     {
         return AsrModelKind::Whisper;
+    }
+    if paraformer_files_detected(model_dir) {
+        return AsrModelKind::Paraformer;
     }
     AsrModelKind::Zipformer
 }
@@ -389,6 +437,7 @@ pub fn asr_files_present_for_kind(model_dir: &Path, kind: AsrModelKind) -> bool 
             ];
             files.iter().all(|f| model_dir.join(f).is_file())
         }
+        AsrModelKind::Paraformer => paraformer_files_detected(model_dir),
         AsrModelKind::SenseVoice => {
             detect_model_onnx(model_dir).is_some() && model_dir.join(DEFAULT_TOKENS).is_file()
         }
@@ -468,6 +517,15 @@ pub fn resolve(
             cfg.encoder = file("encoder", DEFAULT_ENCODER)?;
             cfg.decoder = file("decoder", DEFAULT_DECODER)?;
             cfg.joiner = file("joiner", DEFAULT_JOINER)?;
+            cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
+        }
+        AsrModelKind::Paraformer => {
+            // 裸名探测（int8 偏好）；不能用 `file()` 闭包——其内部走 `{prefix}-` 前缀
+            // 探测，对裸名不命中。joiner 不消费，保留默认常量。
+            let enc = detect_paraformer_onnx(&cfg.model_dir, "encoder");
+            let dec = detect_paraformer_onnx(&cfg.model_dir, "decoder");
+            cfg.encoder = resolve_file(s.and_then(|s| s.encoder.as_deref()), &enc, &cfg.model_dir)?;
+            cfg.decoder = resolve_file(s.and_then(|s| s.decoder.as_deref()), &dec, &cfg.model_dir)?;
             cfg.tokens = file("tokens", DEFAULT_TOKENS)?;
         }
         AsrModelKind::SenseVoice => {
@@ -578,6 +636,10 @@ impl AsrParamsPatch {
             return Err(format!("空白符惩罚需在 0~2，当前 {v}"));
         }
 
+        // Paraformer 仅 greedy_search：热词与空白符惩罚为 transducer 专属，
+        // 此族下不落盘（防止 zipformer 切换后残留无意义配置；引擎层另有一级忽略）
+        let paraformer = asr.model_type == Some(AsrModelKind::Paraformer);
+
         if let Some(v) = self.num_threads {
             asr.num_threads = Some(v);
         }
@@ -596,10 +658,14 @@ impl AsrParamsPatch {
         if let Some(v) = self.rule3_min_utterance_length {
             asr.rule3_min_utterance_length = Some(v);
         }
-        if let Some(v) = self.blank_penalty {
+        if let Some(v) = self.blank_penalty
+            && !paraformer
+        {
             asr.blank_penalty = Some(v);
         }
-        if let Some(v) = &self.hotwords {
+        if let Some(v) = &self.hotwords
+            && !paraformer
+        {
             asr.hotwords = if v.trim().is_empty() {
                 None
             } else {
@@ -1183,6 +1249,7 @@ mod tests {
     fn test_model_kind_str_and_semantics() {
         for (kind, s) in [
             (AsrModelKind::Zipformer, "zipformer"),
+            (AsrModelKind::Paraformer, "paraformer"),
             (AsrModelKind::SenseVoice, "sensevoice"),
             (AsrModelKind::Whisper, "whisper"),
         ] {
@@ -1192,6 +1259,8 @@ mod tests {
         assert_eq!(AsrModelKind::parse_str("unknown"), None);
         assert!(AsrModelKind::Zipformer.is_streaming());
         assert!(!AsrModelKind::Zipformer.is_offline());
+        assert!(AsrModelKind::Paraformer.is_streaming());
+        assert!(!AsrModelKind::Paraformer.is_offline());
         assert!(!AsrModelKind::SenseVoice.is_streaming());
         assert!(AsrModelKind::SenseVoice.is_offline());
         assert!(!AsrModelKind::Whisper.is_streaming());
@@ -1202,6 +1271,10 @@ mod tests {
             AsrModelKind::SenseVoice
         );
         assert_eq!(
+            serde_json::from_str::<AsrModelKind>("\"paraformer\"").unwrap(),
+            AsrModelKind::Paraformer
+        );
+        assert_eq!(
             serde_json::to_string(&AsrModelKind::Whisper).unwrap(),
             "\"whisper\""
         );
@@ -1210,6 +1283,10 @@ mod tests {
     #[test]
     fn test_required_files_by_kind() {
         assert_eq!(required_files(AsrModelKind::Zipformer).len(), 4);
+        assert_eq!(
+            required_files(AsrModelKind::Paraformer),
+            &[PARAFORMER_ENCODER, PARAFORMER_DECODER, DEFAULT_TOKENS]
+        );
         assert_eq!(
             required_files(AsrModelKind::SenseVoice),
             &[SENSEVOICE_MODEL, DEFAULT_TOKENS]
@@ -1232,6 +1309,26 @@ mod tests {
             std::fs::write(whisper.path().join(name), b"x").unwrap();
         }
         assert_eq!(detect_kind_from_dir(whisper.path()), AsrModelKind::Whisper);
+
+        // Paraformer：裸名 encoder/decoder（int8）+ tokens
+        let para_int8 = tempfile::tempdir().unwrap();
+        for name in [PARAFORMER_ENCODER, PARAFORMER_DECODER, DEFAULT_TOKENS] {
+            std::fs::write(para_int8.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(
+            detect_kind_from_dir(para_int8.path()),
+            AsrModelKind::Paraformer
+        );
+
+        // Paraformer：fp32-only 目录同样可判（外部导出场景）
+        let para_fp32 = tempfile::tempdir().unwrap();
+        for name in ["encoder.onnx", "decoder.onnx", DEFAULT_TOKENS] {
+            std::fs::write(para_fp32.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(
+            detect_kind_from_dir(para_fp32.path()),
+            AsrModelKind::Paraformer
+        );
 
         // Zipformer：四件套
         let zip = tempfile::tempdir().unwrap();
@@ -1307,6 +1404,94 @@ mod tests {
         assert_eq!(cfg.encoder.file_name().unwrap(), "tiny-encoder.onnx");
         assert_eq!(cfg.decoder.file_name().unwrap(), "tiny-decoder.onnx");
         assert_eq!(cfg.tokens.file_name().unwrap(), "tiny-tokens.txt");
+    }
+
+    #[test]
+    fn test_resolve_paraformer_sets_encoder_decoder_tokens() {
+        // int8 文件齐 → 默认消费 int8；joiner 不消费（保留默认常量）
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "encoder.onnx",
+            PARAFORMER_ENCODER,
+            "decoder.onnx",
+            PARAFORMER_DECODER,
+            DEFAULT_TOKENS,
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let settings = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Paraformer),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(cfg.model_type, AsrModelKind::Paraformer);
+        assert_eq!(cfg.encoder.file_name().unwrap(), PARAFORMER_ENCODER);
+        assert_eq!(cfg.decoder.file_name().unwrap(), PARAFORMER_DECODER);
+        assert_eq!(cfg.tokens.file_name().unwrap(), DEFAULT_TOKENS);
+        assert_eq!(cfg.joiner.file_name().unwrap(), DEFAULT_JOINER);
+        assert_eq!(cfg.model, None);
+
+        // 显式 settings 覆盖优先（fp32 文件名）
+        let settings_fp32 = AsrSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            model_type: Some(AsrModelKind::Paraformer),
+            encoder: Some("encoder.onnx".to_string()),
+            decoder: Some("decoder.onnx".to_string()),
+            ..AsrSettings::default()
+        };
+        let cfg = resolve(Some(&settings_fp32), None).unwrap();
+        assert_eq!(cfg.encoder.file_name().unwrap(), "encoder.onnx");
+        assert_eq!(cfg.decoder.file_name().unwrap(), "decoder.onnx");
+    }
+
+    #[test]
+    fn test_asr_files_present_family_aware_paraformer() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [PARAFORMER_ENCODER, PARAFORMER_DECODER, DEFAULT_TOKENS] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert!(asr_files_present_for_kind(
+            dir.path(),
+            AsrModelKind::Paraformer
+        ));
+        assert!(asr_files_present(dir.path()), "探测应归到 Paraformer");
+        std::fs::remove_file(dir.path().join(PARAFORMER_DECODER)).unwrap();
+        assert!(!asr_files_present_for_kind(
+            dir.path(),
+            AsrModelKind::Paraformer
+        ));
+        // 缺 decoder 后不再像 paraformer → 探测落 Zipformer 兜底，四件套也不齐
+        assert!(!asr_files_present(dir.path()));
+    }
+
+    #[test]
+    fn test_asr_params_patch_skips_transducer_only_fields_for_paraformer() {
+        // paraformer 下热词/空白惩罚不落盘；num_threads 等通用项正常写入
+        let mut asr = AsrSettings {
+            model_type: Some(AsrModelKind::Paraformer),
+            hotwords: Some("旧热词".to_string()),
+            ..AsrSettings::default()
+        };
+        let patch = AsrParamsPatch {
+            num_threads: Some(4),
+            blank_penalty: Some(1.5),
+            hotwords: Some("新热词".to_string()),
+            ..AsrParamsPatch::default()
+        };
+        patch.apply_to(&mut asr).unwrap();
+        assert_eq!(asr.num_threads, Some(4));
+        assert_eq!(asr.hotwords.as_deref(), Some("旧热词"), "热词不应被改写");
+        assert_eq!(asr.blank_penalty, None, "空白惩罚不应落盘");
+
+        // zipformer 下行为不变（回归）
+        let mut zip = AsrSettings {
+            model_type: Some(AsrModelKind::Zipformer),
+            ..AsrSettings::default()
+        };
+        patch.apply_to(&mut zip).unwrap();
+        assert_eq!(zip.hotwords.as_deref(), Some("新热词"));
+        assert_eq!(zip.blank_penalty, Some(1.5));
     }
 
     #[test]

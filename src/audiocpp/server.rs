@@ -502,6 +502,89 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
         });
     }
 
+    /// TtsEngine 门面 audiocpp 臂：音色参数三态 / 进度回调取消 / 落盘。
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn test_engine_facade_audiocpp_arm() {
+        crate::test_util::run_with_temp_home(|home| {
+            setup_stub_engine();
+            let cfg = stub_ready_cfg(home);
+            let engine = crate::tts::TtsEngine::new(cfg.clone())
+                .expect("门面 audiocpp 构造（内部 lease stub）");
+            assert_eq!(engine.sample_rate(), 24_000, "初值 PocketTTS 固定采样率");
+
+            // Named 音色合成成功（请求体 voice=alba）
+            let out = engine
+                .synthesize(
+                    "hello",
+                    1.0,
+                    &crate::tts::TtsVoiceParams::Named("alba".into()),
+                )
+                .unwrap();
+            assert_eq!(out.len(), 2400);
+
+            // Reference 在 audiocpp 臂报错（连接前拦截）
+            let err = engine
+                .synthesize(
+                    "x",
+                    1.0,
+                    &crate::tts::TtsVoiceParams::Reference {
+                        wav_path: std::path::PathBuf::from("/r.wav"),
+                        reference_text: "t".into(),
+                    },
+                )
+                .unwrap_err();
+            assert!(err.contains("固定音色"), "err: {err}");
+
+            // 进度回调返回 false → 请求前取消（不发请求）
+            let err = engine
+                .synthesize_with_progress("x", 1.0, &crate::tts::TtsVoiceParams::Sid(0), |_| false)
+                .unwrap_err();
+            assert_eq!(err, "已取消");
+
+            // 落盘 + 进度全流程
+            let wav = home.join("out.wav");
+            let n = engine
+                .synthesize_to_wav_with_progress(
+                    "hello",
+                    1.0,
+                    &crate::tts::TtsVoiceParams::Sid(0),
+                    &wav,
+                    |p| p < 0.5,
+                )
+                .unwrap();
+            assert_eq!(n, 2400);
+            assert!(wav.is_file());
+            shutdown_blocking();
+        });
+    }
+
+    /// 坏 stub（立即退出）→ SpawnFailed「启动后立即退出」错误分支。
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn test_lease_fails_when_engine_exits_immediately() {
+        crate::test_util::run_with_temp_home(|home| {
+            // 覆盖 setup_stub_engine 已注入的搜索目录：直接换掉脚本内容为退出脚本。
+            // SEARCH_DIRS 指向固定目录，覆盖同名文件即生效。
+            let dir = std::env::temp_dir().join("zapmomo-audiocpp-stub-test");
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join(super::super::locator::engine_file_name());
+            std::fs::write(&exe, "#!/bin/sh\nexit 3\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            super::super::locator::set_search_dirs(vec![dir]);
+
+            let cfg = stub_ready_cfg(home);
+            let err = lease(&cfg).unwrap_err();
+            let msg = err.to_user_message();
+            assert!(msg.contains("启动后立即退出"), "msg: {msg}");
+            shutdown_blocking();
+
+            // 恢复好 stub（供后续测试使用）
+            setup_stub_engine();
+        });
+    }
+
     #[test]
     fn test_config_hash_distinguishes_model_dir() {
         let mut cfg = ResolvedTtsConfig::default();

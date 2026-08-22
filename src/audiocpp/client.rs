@@ -308,4 +308,27 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("无法连接 audiocpp_server"), "err: {err}");
     }
+
+    #[test]
+    fn test_error_variants_user_messages() {
+        // 各错误分支的用户文案锚点（HttpStatus/DecodeWav/ModelNotListed 等）
+        let e = AudiocppError::HttpStatus {
+            status: 500,
+            body: "boom".to_string(),
+        };
+        assert!(e.to_user_message().contains("HTTP 500"));
+        assert!(e.to_user_message().contains("boom"));
+        let e = AudiocppError::ModelNotListed {
+            model_id: "m".to_string(),
+        };
+        assert!(e.to_user_message().contains("未加载模型 m"));
+        let e = AudiocppError::SpawnFailed("x".to_string());
+        assert!(e.to_user_message().contains("启动 audiocpp_server 失败"));
+        let e = AudiocppError::StartupTimeout {
+            timeout_secs: 3,
+            stderr_tail: "tail".to_string(),
+        };
+        assert!(e.to_user_message().contains("启动超时（3s）"));
+        assert!(e.to_user_message().contains("tail"));
+    }
 }

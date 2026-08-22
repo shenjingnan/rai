@@ -152,6 +152,9 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "asr-paraformer-bilingual-zh-en" | "asr-paraformer-trilingual-zh-cantonese-en" => {
             &crate::asr::config::PARAFORMER_REQUIRED_FILES
         }
+        // 离线 Qwen3-ASR：conv_frontend + 裸名 int8 二件 + tokenizer 三文件
+        // （has_required_files 是 is_file 语义，tokenizer 目录不能作条目），先于通配
+        "asr-qwen3" => &crate::asr::config::QWEN3_REQUIRED_FILES,
         // 所有 streaming zipformer ASR（含每个 ASR 的唯一 role）共用同一组 4 文件
         r if r == "asr" || r.starts_with("asr-") => &crate::asr::config::REQUIRED_FILES,
         "punctuation" => &crate::asr::config::PUNCT_REQUIRED_FILES,
@@ -188,8 +191,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            28,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro TTS"
+            29,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro TTS + 1 个 Qwen3-ASR"
         );
         assert!(
             models
@@ -300,6 +303,12 @@ mod tests {
             required_files_for_role("asr-paraformer-trilingual-zh-cantonese-en").len(),
             3
         );
+        // 离线 Qwen3-ASR：6 件（含 tokenizer 目录内三文件，目录不能作 is_file 条目）
+        let q3 = required_files_for_role("asr-qwen3");
+        assert_eq!(q3.len(), 6, "不应被 asr-* 通配吞成 4 件套");
+        assert!(q3.contains(&"conv_frontend.onnx"));
+        assert!(q3.contains(&"tokenizer/vocab.json"));
+        assert!(!q3.contains(&"tokenizer"), "目录不能作完整性条目");
         // 回归：既有 streaming zipformer role 仍为 4 件套（不被新精确 arm 吞掉）
         assert_eq!(required_files_for_role("asr-zh-14m").len(), 4);
         assert!(required_files_for_role("unknown").is_empty());
@@ -354,6 +363,10 @@ mod tests {
         assert_eq!(
             registry_asr_kind("asr-paraformer-trilingual-zh-cantonese-en"),
             Some(AsrModelKind::Paraformer)
+        );
+        assert_eq!(
+            registry_asr_kind("asr-qwen3-0.6b"),
+            Some(AsrModelKind::Qwen3Asr)
         );
         // 既有 streaming zipformer：asr_kind 缺省 → None（老行为）
         assert_eq!(registry_asr_kind("asr-streaming-bilingual-zh-en"), None);

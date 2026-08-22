@@ -836,7 +836,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(curated2.len(), 2, "应为 2 个 whisper 模型");
-        // 搜 Qwen：注入匹配的 Verified（Qwen 系列 + 描述提及 Qwen 的 llama 条目），不注入无关 KWS
+        // 搜 Qwen：注入匹配的 Verified（Qwen 系列 + 描述提及 Qwen 的 llama 条目）与
+        // Qwen3-ASR 离线模型，不注入无关 KWS
         let q3 = CatalogQuery {
             search: Some("qwen".into()),
             ..Default::default()
@@ -849,10 +850,15 @@ mod tests {
             "应注入 Qwen 系列 HF repo"
         );
         assert!(
+            curated3.iter().any(|i| i.model_id == "asr-qwen3-0.6b"),
+            "应注入 Qwen3-ASR 离线模型"
+        );
+        assert!(
             curated3
                 .iter()
-                .all(|i| i.model_type.as_deref() == Some("llm")),
-            "搜索 qwen 只注入 LLM"
+                .all(|i| i.model_type.as_deref() == Some("llm")
+                    || i.model_id == "asr-qwen3-0.6b"),
+            "搜索 qwen 只注入 LLM 与 Qwen3-ASR"
         );
     }
 }

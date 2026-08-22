@@ -109,6 +109,14 @@
 - **许可证**: MIT（OpenAI Whisper；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de`
 
+## sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25
+
+- **用途**: 离线多语言语音识别（ASR，29 语言 + 中文方言自动识别，LLM 自回归解码，支持热词；int8 轻量版）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自阿里 QwenLM/Qwen3-ASR）
+- **许可证**: Apache-2.0（Qwen3-ASR；如需商用请以官方模型发布页的许可说明为准）
+- **sha256**: `393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96`
+
 ## silero_vad.onnx（离线听写 VAD）
 
 - **用途**: 离线免提听写的语音活动检测（VAD，说/静音分段）

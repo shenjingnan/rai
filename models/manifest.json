@@ -337,6 +337,16 @@
       "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
       "size_bytes": 643854,
       "license": "MIT"
+    },
+    {
+      "name": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+      "role": "asr-qwen3",
+      "version": "2026-03-25",
+      "archive": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+      "sha256": "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
+      "size_bytes": 878702423,
+      "license": "Apache-2.0"
     }
   ]
 }

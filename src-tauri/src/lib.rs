@@ -1074,6 +1074,8 @@ impl Default for TtsDownloadState {
 struct TtsConfigInfo {
     /// 模型类型（zipvoice/vits/matcha/...），前端据此切换音色语义
     model_type: String,
+    /// 推理后端（sherpa/audiocpp），前端据此显示引擎徽标
+    backend: String,
     model_dir: String,
     provider: String,
     num_threads: i32,
@@ -1106,12 +1108,11 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
 
-    let files = zapmomo::tts::config::required_files(cfg.model_type);
-    let models_present = files.iter().all(|f| cfg.model_dir.join(f).is_file())
-        && (!cfg.model_type.requires_data_dir() || cfg.data_dir.is_dir());
+    let models_present = zapmomo::tts::config::models_present(&cfg);
 
     Ok(TtsConfigInfo {
         model_type: cfg.model_type.as_str().to_string(),
+        backend: cfg.backend.as_str().to_string(),
         model_dir: cfg.model_dir.display().to_string(),
         provider: cfg.provider.clone(),
         num_threads: cfg.num_threads,
@@ -1261,24 +1262,16 @@ fn synthesize_tts(
         return Err("语音合成已禁用，请在「模型与能力」中开启语音合成。".to_string());
     }
 
-    // 预检模型文件（按模型类型所需文件清单），失败同步返回清晰错误（避免在后台线程里才报错）
-    let files = zapmomo::tts::config::required_files(cfg.model_type);
-    if let Some(missing) = files.iter().find(|f| !cfg.model_dir.join(f).is_file()) {
-        return Err(format!(
-            "缺少模型文件: {}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。",
-            cfg.model_dir.join(missing).display()
-        ));
-    }
-    if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
-        return Err(format!(
-            "缺少数据目录: {}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。",
-            cfg.data_dir.display()
-        ));
-    }
+    // 预检模型文件（backend 感知：sherpa 按模型类型清单、audiocpp 按固定两文件），
+    // 失败同步返回清晰错误（避免在后台线程里才报错）
+    zapmomo::tts::config::preflight(&cfg).map_err(|e| {
+        format!("{e}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。")
+    })?;
 
-    // 合成参数：ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
-    // sid 模型走固定说话人（本期单说话人恒 0）。在后台线程外解析，尽早报错。
-    let voice_params = if cfg.model_type.uses_reference_audio() {
+    // 合成参数：sherpa ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
+    // sid 模型走固定说话人（本期单说话人恒 0）；audiocpp（PocketTTS）走具名音色。
+    // 在后台线程外解析，尽早报错。
+    let voice_params = if cfg.uses_reference_audio() {
         let custom_wav = reference_wav.map(std::path::PathBuf::from);
         let (ref_wav, ref_text) = zapmomo::tts::voice::resolve_reference(
             &cfg,
@@ -1290,6 +1283,10 @@ fn synthesize_tts(
             wav_path: ref_wav,
             reference_text: ref_text,
         }
+    } else if cfg.backend == zapmomo::tts::config::TtsBackendKind::Audiocpp {
+        zapmomo::tts::TtsVoiceParams::Named(
+            voice.unwrap_or_else(|| zapmomo::audiocpp::DEFAULT_VOICE.to_string()),
+        )
     } else {
         zapmomo::tts::TtsVoiceParams::Sid(sid.unwrap_or(0))
     };
@@ -1953,6 +1950,8 @@ fn collect_asr_preflight_files(
 ///
 /// ASR 按 `model_type` 族感知（zipformer 四件套 / paraformer encoder+decoder+tokens /
 /// SenseVoice model+tokens / Whisper encoder+decoder+tokens），不再硬编码 zipformer 专属文件名。
+/// TTS 经 `tts::config::preflight` 做 backend 感知预检（audiocpp 后端不查 sherpa
+/// 五件套；vits/matcha 不再被 zipvoice 清单误拦）。
 fn preflight_voice_models(
     cfg: &zapmomo::voice::config::ResolvedSessionConfig,
 ) -> Result<(), String> {
@@ -1962,11 +1961,6 @@ fn preflight_voice_models(
         ("KWS joiner", cfg.kws.joiner.as_path()),
         ("KWS tokens", cfg.kws.tokens.as_path()),
         ("KWS keywords", cfg.kws.keywords_file.as_path()),
-        ("TTS encoder", cfg.tts.encoder.as_path()),
-        ("TTS decoder", cfg.tts.decoder.as_path()),
-        ("TTS vocoder", cfg.tts.vocoder.as_path()),
-        ("TTS tokens", cfg.tts.tokens.as_path()),
-        ("TTS lexicon", cfg.tts.lexicon.as_path()),
     ];
     files.extend(collect_asr_preflight_files(&cfg.asr)?);
     for (name, path) in files {
@@ -1974,9 +1968,8 @@ fn preflight_voice_models(
             return Err(format!("缺少模型文件 {name}: {}", path.display()));
         }
     }
-    if !cfg.tts.data_dir.is_dir() {
-        return Err(format!("缺少 TTS 数据目录: {}", cfg.tts.data_dir.display()));
-    }
+    zapmomo::tts::config::preflight(&cfg.tts)
+        .map_err(|e| format!("{e}\n（语音会话 TTS 预检失败）"))?;
     if !cfg.llm.model_path.is_file() {
         return Err(format!(
             "LLM 模型文件不存在: {}",
@@ -2527,6 +2520,23 @@ fn set_tts_voice(voice: Option<String>) -> Result<(), String> {
     let mut settings = settings::load_settings()?.unwrap_or_default();
     let tts = settings.tts.get_or_insert_with(TtsSettings::default);
     tts.voice = voice;
+    settings::save_settings(&settings)
+}
+
+/// 切换 TTS 推理后端（写入 `[tts].backend`）。高级/测试入口：常规入口是模型库
+/// 「设为当前」（`set_selected_model` 按 registry runtime 同步写入）。
+///
+/// 切后端时同步重置 `model_type` 交回 resolve 目录探测（旧 kind 属于另一后端的
+/// 模型），并在切回 sherpa 时复位 backend 覆盖。保存后下一次合成即生效。
+#[tauri::command]
+fn set_tts_backend(backend: String) -> Result<(), String> {
+    let kind = zapmomo::tts::config::TtsBackendKind::parse_str(&backend)
+        .ok_or_else(|| format!("未知 TTS 后端: {backend}（支持 sherpa / audiocpp）"))?;
+    let mut settings = settings::load_settings()?.unwrap_or_default();
+    let tts = settings.tts.get_or_insert_with(TtsSettings::default);
+    tts.backend = Some(kind.as_str().to_string());
+    // 旧 model_type 属于另一后端的模型，交回 resolve 按目录探测
+    tts.model_type = None;
     settings::save_settings(&settings)
 }
 
@@ -3655,10 +3665,12 @@ fn handle_menu(app: &AppHandle, id: &str) {
         // 不清理会残留指向死端口的文件（崩溃残留仍由下次启动兜底清理）
         "restart" => {
             zapmomo::dsh::remove_discovery();
+            zapmomo::audiocpp::server::shutdown_blocking();
             app.request_restart();
         }
         "quit" => {
             zapmomo::dsh::remove_discovery();
+            zapmomo::audiocpp::server::shutdown_blocking();
             app.exit(0);
         }
         // 点击穿透：菜单按当前状态显示「启用/禁用」项，点击后应用固定值（幂等，
@@ -4258,17 +4270,21 @@ fn hide_companion(app: AppHandle) {
     hide_companion_window(&app);
 }
 
-/// 退出应用（供角色窗口右键菜单调用）。退出前清理 dsh 桥发现文件（防死端口残留）。
+/// 退出应用（供角色窗口右键菜单调用）。退出前清理 dsh 桥发现文件（防死端口残留）
+/// 与 audio.cpp sidecar 进程。
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     zapmomo::dsh::remove_discovery();
+    zapmomo::audiocpp::server::shutdown_blocking();
     app.exit(0);
 }
 
-/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。退出前清理 dsh 桥发现文件。
+/// 重启应用（退出后自动重新拉起，供设置页按钮调用）。退出前清理 dsh 桥发现文件
+/// 与 audio.cpp sidecar 进程。
 #[tauri::command]
 fn restart_app(app: AppHandle) {
     zapmomo::dsh::remove_discovery();
+    zapmomo::audiocpp::server::shutdown_blocking();
     app.request_restart();
 }
 
@@ -5488,6 +5504,7 @@ pub fn run() {
             set_tts_enabled,
             set_tts_params,
             set_tts_voice,
+            set_tts_backend,
             start_voice_session,
             stop_voice_session,
             is_voice_session_running,
@@ -5630,6 +5647,29 @@ pub fn run() {
                 if let Err(e) = start_dsh_bridge_impl(handle, state.inner()) {
                     tracing::warn!("自动启动 dsh 桥失败: {e}");
                 }
+            }
+
+            // audio.cpp sidecar 环境：注入引擎搜索目录（externalBin 落位点 = 主程序
+            // 同目录 + resource 目录），并启用 45s 空闲保活（GUI 测试语音/会话在窗口
+            // 内复用热 server，热请求 0.1s 级）。不在此预热：backend 缺省 sherpa 的
+            // 用户不触发进程；首次 audiocpp 合成时按需 spawn。
+            {
+                let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
+                if let Some(exe_dir) = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                {
+                    search_dirs.push(exe_dir);
+                }
+                if let Ok(resource_dir) = app.path().resource_dir()
+                    && !search_dirs.contains(&resource_dir)
+                {
+                    search_dirs.push(resource_dir);
+                }
+                zapmomo::audiocpp::locator::set_search_dirs(search_dirs);
+                zapmomo::audiocpp::server::set_idle_keepalive(Some(std::time::Duration::from_secs(
+                    45,
+                )));
             }
 
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。
@@ -5856,8 +5896,15 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // RunEvent::Exit 兜底回收 audio.cpp sidecar：覆盖全部退出路径（含未来新增
+        // 出口与系统强退前的钩子），与三处显式 shutdown_blocking（幂等）双保险。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                zapmomo::audiocpp::server::shutdown_blocking();
+            }
+        });
 }
 
 #[cfg(test)]

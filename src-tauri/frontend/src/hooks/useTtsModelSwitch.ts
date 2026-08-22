@@ -30,6 +30,14 @@ export const TTS_PRESETS = [
     tagline: "中文女声 · 22.05kHz",
     sizeBytes: 75_463_442,
   },
+  {
+    id: "tts-pocket-english-audiocpp",
+    name: "PocketTTS English",
+    kind: "pocket",
+    languages: "英文",
+    tagline: "audio.cpp 引擎 · 固定音色 alba · 24kHz",
+    sizeBytes: 127_856_704,
+  },
 ] as const;
 
 export interface TtsModelSwitchState {

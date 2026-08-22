@@ -907,6 +907,30 @@
         "extra_roles": [],
         "kind": "raw"
       }
+    },
+    {
+      "id": "tts-pocket-english-audiocpp",
+      "name": "pocket-tts-english-audiocpp",
+      "display_name": "PocketTTS English (audio.cpp)",
+      "model_type": "tts",
+      "tts_kind": "pocket",
+      "runtime": "audiocpp",
+      "format": "GGUF",
+      "description": "PocketTTS-100M 英文语音合成，q8_0 量化，固定音色 alba；由 audio.cpp 引擎驱动。",
+      "languages": ["en"],
+      "tags": ["tts", "audiocpp", "english"],
+      "parameter_count": "100M",
+      "quantization": "q8_0",
+      "version": "q8_0",
+      "size_bytes": 127856704,
+      "homepage": "https://github.com/0xShug0/audio.cpp",
+      "required_assets": ["tts-audiocpp-pocket", "tts-audiocpp-pocket-embeddings"],
+      "optional_assets": [],
+      "download": {
+        "manifest_role": "tts-audiocpp-pocket",
+        "extra_roles": ["tts-audiocpp-pocket-embeddings"],
+        "kind": "raw"
+      }
     }
   ]
 }

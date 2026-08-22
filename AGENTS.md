@@ -51,6 +51,7 @@ pnpm tauri dev                      # 开发模式（KWS 控制面板）
 pnpm tauri build                    # 构建当前平台安装包（macOS: .app/.dmg）
 cargo check -p zapmomo-app              # 仅检查 tauri crate（Linux 需 webkit 依赖）
 cargo clippy -p zapmomo-app -- -D warnings   # tauri crate Lint
+scripts/fetch-audiocpp-dev.sh       # 首次跑 tauri dev 前：放置 audio.cpp sidecar（externalBin）
 
 # 构建
 cargo build                         # 调试构建（默认只构建根 CLI crate）

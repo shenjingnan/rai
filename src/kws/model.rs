@@ -375,7 +375,13 @@ pub fn install_raw_file_to_cancellable(
     }
 
     std::fs::create_dir_all(parent)?;
-    let tmp = parent.join(format!(".{}.tmp", asset.archive));
+    // tmp 名只取 archive 的文件名部分：archive 可能含子目录相对路径
+    // （如 `embeddings/alba.safetensors`），直接拼接会落到未创建的子目录里
+    let file_stem = std::path::Path::new(&asset.archive)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| asset.archive.clone());
+    let tmp = parent.join(format!(".{file_stem}.tmp"));
 
     download_to(&asset.source, &tmp, asset.size_bytes, on_progress, cancel)?;
     if cancelled(cancel) {

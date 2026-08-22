@@ -131,6 +131,8 @@ export const api = {
   setTtsEnabled: (args: { enabled: boolean }) => invoke<void>("set_tts_enabled", args),
   setTtsParams: (args: { params: TtsParamsPatch }) => invoke<void>("set_tts_params", args),
   setTtsVoice: (voice: string | null) => invoke<void>("set_tts_voice", { voice }),
+  /** 切换 TTS 推理后端（sherpa/audiocpp）；常规入口是模型库「设为当前」 */
+  setTtsBackend: (backend: string) => invoke<void>("set_tts_backend", { backend }),
   getLlmConfig: () => invoke<LlmConfigInfo>("get_llm_config"),
   loadLlmModel: () => invoke<void>("load_llm_model"),
   unloadLlmModel: () => invoke<void>("unload_llm_model"),

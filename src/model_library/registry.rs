@@ -160,6 +160,9 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
         "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
         "tts-vocoder-22khz" => &[crate::tts::config::DEFAULT_MATCHA_VOCODER],
+        // audiocpp（PocketTTS）：主 GGUF + speaker embeddings 子目录文件
+        "tts-audiocpp-pocket" => &[crate::audiocpp::POCKET_GGUF_FILE],
+        "tts-audiocpp-pocket-embeddings" => &[crate::tts::config::AUDIOCPP_REQUIRED_FILES[1]],
         // LLM：必需文件由 `RegistryModel.file_name` 推导（见 install_managed_model），这里不维护静态表
         _ => &[],
     }
@@ -184,8 +187,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            26,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）"
+            27,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 1 个 audiocpp PocketTTS"
         );
         assert!(
             models

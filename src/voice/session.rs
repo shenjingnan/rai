@@ -146,9 +146,9 @@ impl VoiceSession {
         };
         let llm_rx = llm.subscribe();
         let tts = TtsEngine::new(cfg.tts.clone())?;
-        // 合成参数：ZipVoice 走参考音频克隆（自定义音色 > 内置音色 > 配置默认）；
-        // sid 模型走固定说话人（本期单说话人恒 0）
-        let voice = if cfg.tts.model_type.uses_reference_audio() {
+        // 合成参数：sherpa ZipVoice 走参考音频克隆（自定义音色 > 内置音色 > 配置默认）；
+        // sid 模型走固定说话人（本期单说话人恒 0）；audiocpp（PocketTTS）走具名音色
+        let voice = if cfg.tts.uses_reference_audio() {
             let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
                 &cfg.tts,
                 cfg.voice_id.as_deref(),
@@ -159,6 +159,12 @@ impl VoiceSession {
                 wav_path: ref_wav,
                 reference_text: ref_text,
             }
+        } else if cfg.tts.backend == crate::tts::config::TtsBackendKind::Audiocpp {
+            crate::tts::TtsVoiceParams::Named(
+                cfg.voice_id
+                    .clone()
+                    .unwrap_or_else(|| crate::audiocpp::DEFAULT_VOICE.to_string()),
+            )
         } else {
             crate::tts::TtsVoiceParams::Sid(0)
         };

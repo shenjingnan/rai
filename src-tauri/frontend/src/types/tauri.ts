@@ -231,6 +231,8 @@ export interface ImportCompanionResult {
 export interface TtsConfigInfo {
   /** 模型类型（zipvoice/vits/matcha/...），前端据此切换音色语义 */
   model_type: string;
+  /** 推理后端（sherpa/audiocpp），前端据此显示引擎徽标 */
+  backend: string;
   model_dir: string;
   provider: string;
   num_threads: number;

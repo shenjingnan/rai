@@ -58,3 +58,8 @@ docs/out/
 !/models/THIRD_PARTY_NOTICES.md
 tmp
 .claude/worktrees
+
+# audio.cpp sidecar 二进制（externalBin，CI/dev 脚本产出，不入库）
+src-tauri/binaries/
+.audiocpp-src/
+.audiocpp-build/

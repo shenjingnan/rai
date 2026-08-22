@@ -407,18 +407,28 @@ pub fn set_selected_model(mt: ModelType, path: &Path) -> Result<(), String> {
         ModelType::Tts => {
             let tts = cfg.tts.get_or_insert_with(Default::default);
             tts.model_dir = Some(path_str);
-            // 切换时同步持久化模型类型：managed 安装目录名 == registry `name`，据此
-            // 推导 vits/matcha/zipvoice；external/local 目录探测不到时保持原值
-            // （resolve 会按目录内容兜底探测）。
+            // 切换时同步持久化模型类型与推理后端：managed 安装目录名 == registry
+            // `name`，据此推导 vits/matcha/zipvoice 与 audiocpp（runtime 字段）；
+            // external/local 目录探测不到时保持原值（resolve 会按目录内容兜底探测）。
             if let Some(name) = path.file_name() {
                 let base = name.to_string_lossy().to_string();
-                if let Some(kind) = crate::model_library::registry::all_models()
+                if let Some(entry) = crate::model_library::registry::all_models()
                     .iter()
                     .filter(|m| m.model_type == ModelType::Tts)
                     .find(|m| m.name == base)
-                    .and_then(|m| m.tts_kind)
                 {
-                    tts.model_type = Some(kind);
+                    if let Some(kind) = entry.tts_kind {
+                        tts.model_type = Some(kind);
+                    }
+                    // audiocpp 条目写 backend；sherpa 条目写 None 复位（保证从
+                    // audiocpp 切回 sherpa 时后端归位缺省）。
+                    tts.backend = (entry.runtime == "audiocpp").then(|| "audiocpp".to_string());
+                    tts.engine_path = None;
+                } else {
+                    // external/local 目录（registry 未收录）：复位缺省后端——
+                    // 外部目录当前只可能是 sherpa 模型，残留 audiocpp 会拦住合成。
+                    tts.backend = None;
+                    tts.engine_path = None;
                 }
             }
             // 切换模型目录时重置文件级覆盖：旧模型的手写覆盖（encoder/vocoder 等）
@@ -1607,6 +1617,35 @@ mod tests {
                 Some(crate::tts::config::TtsModelKind::Zipvoice),
                 "未知目录不应覆盖已推导的 kind"
             );
+        });
+    }
+
+    #[test]
+    fn test_set_selected_tts_persists_backend_from_registry_runtime() {
+        run_with_temp_home(|home| {
+            // audiocpp managed 目录 → backend = audiocpp + model_type = pocket
+            let pocket = home.join("models/pocket-tts-english-audiocpp");
+            set_selected_model(ModelType::Tts, &pocket).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            let tts = cfg.tts.as_ref().expect("tts 段应存在");
+            assert_eq!(tts.backend.as_deref(), Some("audiocpp"));
+            assert_eq!(
+                tts.model_type,
+                Some(crate::tts::config::TtsModelKind::Pocket)
+            );
+
+            // 切回 sherpa zipvoice → backend 复位缺省（None）
+            let zip = home.join("models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia");
+            set_selected_model(ModelType::Tts, &zip).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(cfg.tts.as_ref().and_then(|t| t.backend.clone()), None);
+
+            // audiocpp → external/local 目录 → backend 同样复位（不残留 audiocpp 拦合成）
+            set_selected_model(ModelType::Tts, &pocket).unwrap();
+            let unknown = home.join("models/my-local-model");
+            set_selected_model(ModelType::Tts, &unknown).unwrap();
+            let cfg = settings::load_settings().unwrap().unwrap();
+            assert_eq!(cfg.tts.as_ref().and_then(|t| t.backend.clone()), None);
         });
     }
 

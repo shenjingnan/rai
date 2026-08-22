@@ -187,6 +187,12 @@ pub enum TtsCmd {
         /// 模型目录（覆盖 settings.toml 的 tts.model_dir）
         #[arg(long)]
         model_dir: Option<PathBuf>,
+        /// 推理后端（sherpa | audiocpp；覆盖 settings.toml 的 tts.backend）
+        #[arg(long)]
+        backend: Option<String>,
+        /// audiocpp 引擎二进制路径（覆盖 locator 自动定位）
+        #[arg(long)]
+        engine_path: Option<PathBuf>,
         /// 语速，缺省 1.0
         #[arg(long)]
         speed: Option<f32>,
@@ -208,6 +214,9 @@ pub enum TtsCmd {
         /// 模型目录（覆盖 settings.toml 的 tts.model_dir）
         #[arg(long)]
         model_dir: Option<PathBuf>,
+        /// 推理后端（sherpa | audiocpp；覆盖 settings.toml 的 tts.backend）
+        #[arg(long)]
+        backend: Option<String>,
     },
     /// 下载并安装 TTS 模型（主包 + 声码器，默认 ~/.zapmomo/models/<模型名>）
     InstallModel {
@@ -217,6 +226,10 @@ pub enum TtsCmd {
         /// 已安装也强制重新下载
         #[arg(long)]
         force: bool,
+        /// 按模型库 registry id 安装（如 tts-pocket-english-audiocpp）；
+        /// 缺省时维持旧的 zipvoice 主包 + 声码器行为
+        #[arg(long)]
+        registry_id: Option<String>,
     },
 }
 
@@ -326,7 +339,9 @@ pub async fn run(cli: Cli) -> Result<(), String> {
         }
         Some(Commands::Kws { cmd }) => cmd_kws(cmd).await,
         Some(Commands::Asr { cmd }) => cmd_asr(cmd).await,
-        Some(Commands::Tts { cmd }) => cmd_tts(cmd).await,
+        // TTS 含 audio.cpp 后端：reqwest blocking client 的 Drop 需在允许阻塞的
+        // 上下文（否则 tokio panic），故 block_in_place 包住同步执行
+        Some(Commands::Tts { cmd }) => tokio::task::block_in_place(|| cmd_tts(cmd)),
         Some(Commands::Llm { cmd }) => cmd_llm(cmd).await,
         Some(Commands::Voice { cmd }) => cmd_voice(cmd).await,
         None => unreachable!(),
@@ -551,23 +566,27 @@ fn asr_config(
     crate::asr::config::resolve(asr_settings.as_ref(), cli_model_dir.map(|p| p.as_path()))
 }
 
-/// TTS 命令入口
-async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
+/// TTS 命令入口（同步：内部无 await；经 `block_in_place` 调用，见 dispatch 注释）
+fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
     match cmd {
         TtsCmd::Run {
             text,
             model_dir,
+            backend,
+            engine_path,
             speed,
             output,
             voice,
             reference_wav,
             reference_text,
         } => {
-            let cfg = tts_config(model_dir.as_ref())?;
+            let mut cfg = tts_config(model_dir.as_ref())?;
+            apply_backend_override(&mut cfg, backend, engine_path)?;
             let engine = crate::tts::TtsEngine::new(cfg.clone())?;
             let speed = speed.unwrap_or(1.0);
-            // 合成参数：ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）
-            let voice_params = if cfg.model_type.uses_reference_audio() {
+            // 合成参数：sherpa ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）；
+            // audiocpp（PocketTTS）走具名音色 alba
+            let voice_params = if cfg.uses_reference_audio() {
                 let (ref_wav, ref_text) = crate::tts::voice::resolve_reference(
                     &cfg,
                     voice.as_deref(),
@@ -578,6 +597,10 @@ async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
                     wav_path: ref_wav,
                     reference_text: ref_text,
                 }
+            } else if cfg.backend == crate::tts::config::TtsBackendKind::Audiocpp {
+                crate::tts::TtsVoiceParams::Named(
+                    voice.unwrap_or_else(|| crate::audiocpp::DEFAULT_VOICE.to_string()),
+                )
             } else {
                 crate::tts::TtsVoiceParams::Sid(0)
             };
@@ -589,8 +612,16 @@ async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             println!("已合成: {}", out_path.display());
             Ok(())
         }
-        TtsCmd::Voices { model_dir } => {
-            let cfg = tts_config(model_dir.as_ref())?;
+        TtsCmd::Voices { model_dir, backend } => {
+            let mut cfg = tts_config(model_dir.as_ref())?;
+            apply_backend_override(&mut cfg, backend, None)?;
+            if cfg.backend == crate::tts::config::TtsBackendKind::Audiocpp {
+                println!(
+                    "audiocpp 后端（PocketTTS English）固定音色:\n  {}  内置音色",
+                    crate::audiocpp::DEFAULT_VOICE
+                );
+                return Ok(());
+            }
             let voices = crate::tts::voice::list_builtin_voices(&cfg.model_dir);
             if voices.is_empty() {
                 println!("未找到内置音色（请先运行 `zapmomo tts install-model` 下载模型）。");
@@ -602,11 +633,37 @@ async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             }
             Ok(())
         }
-        TtsCmd::InstallModel { model_dir, force } => {
-            use crate::tts::{
-                DownloadProgress, DownloadStage, install_model_to, install_vocoder_to,
-                user_model_dir,
+        TtsCmd::InstallModel {
+            model_dir,
+            force,
+            registry_id,
+        } => {
+            use crate::tts::{DownloadProgress, DownloadStage};
+            let mut progress = |p: DownloadProgress| {
+                let stage = match p.stage {
+                    DownloadStage::Downloading => "下载",
+                    DownloadStage::Verifying => "校验",
+                    DownloadStage::Extracting => "解压",
+                    DownloadStage::Done => "完成",
+                };
+                println!("[{stage}] {}", p.message);
             };
+            if let Some(id) = registry_id.as_deref() {
+                // registry 通道：staged 安装（多资产 → 整体校验 → 原子 commit）
+                let model = crate::model_library::registry::model_by_id(id)
+                    .ok_or_else(|| format!("未知的模型库 id: {id}"))?;
+                let dest = crate::model_library::install_managed_model(model, &mut progress, None)
+                    .map_err(|e| e.to_string())?;
+                println!("模型已就绪: {}", dest.display());
+                // 安装后写 selection（model_dir + model_type + backend）
+                crate::model_library::set_selected_model(
+                    crate::model_library::registry::ModelType::Tts,
+                    &dest,
+                )?;
+                println!("已设为当前 TTS 模型: {}", dest.display());
+                return Ok(());
+            }
+            use crate::tts::{install_model_to, install_vocoder_to, user_model_dir};
             let dest = model_dir.unwrap_or_else(user_model_dir);
             let mut progress = |p: DownloadProgress| {
                 let stage = match p.stage {
@@ -624,6 +681,27 @@ async fn cmd_tts(cmd: TtsCmd) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// CLI `--backend` / `--engine-path` 覆盖：校验合法后写入解析后的配置。
+///
+/// 显式切后端时把 `model_type` 交回目录探测——settings 里持久化的 kind 属于
+/// 另一后端的模型（如从 audiocpp pocket 切回 sherpa 目录时残留 `pocket` 会让
+/// `build_offline_model_config` 走空分支报「Errors in config」）。
+fn apply_backend_override(
+    cfg: &mut crate::tts::config::ResolvedTtsConfig,
+    backend: Option<String>,
+    engine_path: Option<PathBuf>,
+) -> Result<(), String> {
+    if let Some(v) = backend.as_deref() {
+        cfg.backend = crate::tts::config::TtsBackendKind::parse_str(v)
+            .ok_or_else(|| format!("未知 TTS 后端: {v}（支持 sherpa / audiocpp）"))?;
+        cfg.model_type = crate::tts::config::detect_kind_from_dir(&cfg.model_dir);
+    }
+    if let Some(p) = engine_path {
+        cfg.engine_path = Some(p);
+    }
+    Ok(())
 }
 
 /// 读取 settings 并解析 TTS 配置
@@ -1143,8 +1221,31 @@ mod tests {
                 cmd,
                 TtsCmd::InstallModel {
                     force: true,
-                    model_dir: None
+                    model_dir: None,
+                    registry_id: None
                 }
+            )),
+            _ => panic!("Expected InstallModel command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tts_install_model_registry_id() {
+        let cli = Cli::try_parse_from(&[
+            "test",
+            "tts",
+            "install-model",
+            "--registry-id",
+            "tts-pocket-english-audiocpp",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Tts { cmd } => assert!(matches!(
+                cmd,
+                TtsCmd::InstallModel {
+                    registry_id: Some(ref id),
+                    ..
+                } if id == "tts-pocket-english-audiocpp"
             )),
             _ => panic!("Expected InstallModel command"),
         }

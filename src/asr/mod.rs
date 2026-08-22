@@ -1,6 +1,6 @@
 /// 流式语音识别（ASR）。
 ///
-/// 使用 sherpa-onnx 的 `OnlineRecognizer`（streaming zipformer 中英双语模型）实现：
+/// 使用 sherpa-onnx 的 `OnlineRecognizer`（流式 zipformer / Paraformer 模型）实现：
 /// 离线转写 wav（`run_offline`）与实时麦克风转写（`run_realtime`）。
 ///
 /// 设计上独立于 KWS，`run_realtime_with` 暴露 `should_stop` 供将来「KWS 唤醒后
@@ -11,7 +11,7 @@ pub mod offline;
 pub mod reaction;
 
 use crate::audio::Resampler;
-use config::ResolvedAsrConfig;
+use config::{AsrModelKind, ResolvedAsrConfig};
 use sherpa_onnx::{
     OfflinePunctuation, OfflinePunctuationConfig, OnlineRecognizer, OnlineRecognizerConfig,
     OnlineStream, Wave,
@@ -39,16 +39,25 @@ impl AsrEngine {
         // 离线族（SenseVoice/Whisper）走 `offline::OfflineAsrEngine`，实时链路不接受
         if !cfg.model_type.is_streaming() {
             return Err(format!(
-                "当前模型类型 {} 不支持实时流式识别。请切换回流式（zipformer）模型，或使用 `zapmomo asr test` 离线转写文件。",
+                "当前模型类型 {} 不支持实时流式识别。请切换回流式（zipformer/paraformer）模型，或使用 `zapmomo asr test` 离线转写文件。",
                 cfg.model_type.as_str()
             ));
         }
-        let required = [
-            ("encoder", &cfg.encoder),
-            ("decoder", &cfg.decoder),
-            ("joiner", &cfg.joiner),
-            ("tokens", &cfg.tokens),
-        ];
+        let required: Vec<(&str, &Path)> = match cfg.model_type {
+            AsrModelKind::Zipformer => vec![
+                ("encoder", &cfg.encoder),
+                ("decoder", &cfg.decoder),
+                ("joiner", &cfg.joiner),
+                ("tokens", &cfg.tokens),
+            ],
+            AsrModelKind::Paraformer => vec![
+                ("encoder", &cfg.encoder),
+                ("decoder", &cfg.decoder),
+                ("tokens", &cfg.tokens),
+            ],
+            // 上面 is_streaming 守卫已排除离线族
+            AsrModelKind::SenseVoice | AsrModelKind::Whisper => unreachable!("离线族已被拒绝"),
+        };
         for (name, path) in required {
             if !path.is_file() {
                 return Err(format!(
@@ -58,35 +67,19 @@ impl AsrEngine {
             }
         }
 
-        let mut c = OnlineRecognizerConfig::default();
-        c.feat_config.sample_rate = cfg.sample_rate;
-        c.model_config.transducer.encoder = Some(cfg.encoder.to_string_lossy().to_string());
-        c.model_config.transducer.decoder = Some(cfg.decoder.to_string_lossy().to_string());
-        c.model_config.transducer.joiner = Some(cfg.joiner.to_string_lossy().to_string());
-        c.model_config.tokens = Some(cfg.tokens.to_string_lossy().to_string());
-        c.model_config.provider = Some(cfg.provider.clone());
-        c.model_config.num_threads = cfg.num_threads;
-        c.model_config.debug = cfg.debug;
-        // 热词（context graph）仅 modified_beam_search 支持；greedy 下会崩溃。
-        // 配置了热词时自动切换解码方式。
-        let use_hotwords = cfg
-            .hotwords
-            .as_deref()
-            .is_some_and(|h| !h.trim().is_empty());
-        c.decoding_method = Some(if use_hotwords {
-            "modified_beam_search".to_string()
-        } else {
-            cfg.decoding_method.clone()
-        });
-        if use_hotwords {
-            c.max_active_paths = 4;
+        // 热词仅流式 zipformer（transducer）支持；paraformer 提前提示（引擎侧再兜底忽略）
+        if cfg.model_type == AsrModelKind::Paraformer
+            && cfg
+                .hotwords
+                .as_deref()
+                .is_some_and(|h| !h.trim().is_empty())
+        {
+            tracing::warn!(
+                "热词仅流式 zipformer（transducer）支持，当前 paraformer 模型已忽略热词配置"
+            );
         }
-        c.enable_endpoint = cfg.enable_endpoint;
-        c.rule1_min_trailing_silence = cfg.rule1_min_trailing_silence;
-        c.rule2_min_trailing_silence = cfg.rule2_min_trailing_silence;
-        c.rule3_min_utterance_length = cfg.rule3_min_utterance_length;
-        c.blank_penalty = cfg.blank_penalty;
 
+        let c = build_online_recognizer_config(&cfg);
         let recognizer = OnlineRecognizer::create(&c)
             .ok_or_else(|| "无法创建 OnlineRecognizer，请检查模型文件与配置。".to_string())?;
 
@@ -113,10 +106,13 @@ impl AsrEngine {
         &self.cfg
     }
 
-    /// 创建一条识别流。`hotwords` 非空时对指定词提权。
+    /// 创建一条识别流。`hotwords` 非空时对指定词提权（仅流式 zipformer；
+    /// paraformer 不支持热词，忽略入参走普通流）。
     pub fn create_stream(&self, hotwords: Option<&str>) -> OnlineStream {
-        match hotwords {
-            Some(h) if !h.trim().is_empty() => self.recognizer.create_stream_with_hotwords(h),
+        match (self.cfg.model_type, hotwords) {
+            (AsrModelKind::Zipformer, Some(h)) if !h.trim().is_empty() => {
+                self.recognizer.create_stream_with_hotwords(h)
+            }
             _ => self.recognizer.create_stream(),
         }
     }
@@ -204,6 +200,59 @@ impl AsrEngine {
     }
 }
 
+/// 按模型族填 sherpa `OnlineRecognizerConfig`（纯函数，可单测；对称 offline 的
+/// `build_offline_model_config`）。
+///
+/// - Zipformer：transducer 四件套；热词（context graph）仅 modified_beam_search
+///   支持（greedy 下会崩溃），配置了热词时自动切换解码方式。
+/// - Paraformer：encoder/decoder 二件；仅支持 greedy_search，热词与空白符惩罚
+///   为 transducer 专属概念，不下发。
+///
+/// `model_config.model_type` 保持 `None`（与官方示例一致，C++ 端按已填子配置自动探测）。
+pub(crate) fn build_online_recognizer_config(cfg: &ResolvedAsrConfig) -> OnlineRecognizerConfig {
+    let mut c = OnlineRecognizerConfig::default();
+    c.feat_config.sample_rate = cfg.sample_rate;
+    c.model_config.tokens = Some(cfg.tokens.to_string_lossy().to_string());
+    c.model_config.provider = Some(cfg.provider.clone());
+    c.model_config.num_threads = cfg.num_threads;
+    c.model_config.debug = cfg.debug;
+    c.enable_endpoint = cfg.enable_endpoint;
+    c.rule1_min_trailing_silence = cfg.rule1_min_trailing_silence;
+    c.rule2_min_trailing_silence = cfg.rule2_min_trailing_silence;
+    c.rule3_min_utterance_length = cfg.rule3_min_utterance_length;
+    match cfg.model_type {
+        AsrModelKind::Zipformer => {
+            c.model_config.transducer.encoder = Some(cfg.encoder.to_string_lossy().to_string());
+            c.model_config.transducer.decoder = Some(cfg.decoder.to_string_lossy().to_string());
+            c.model_config.transducer.joiner = Some(cfg.joiner.to_string_lossy().to_string());
+            let use_hotwords = cfg
+                .hotwords
+                .as_deref()
+                .is_some_and(|h| !h.trim().is_empty());
+            c.decoding_method = Some(if use_hotwords {
+                "modified_beam_search".to_string()
+            } else {
+                cfg.decoding_method.clone()
+            });
+            if use_hotwords {
+                c.max_active_paths = 4;
+            }
+            c.blank_penalty = cfg.blank_penalty;
+        }
+        AsrModelKind::Paraformer => {
+            c.model_config.paraformer.encoder = Some(cfg.encoder.to_string_lossy().to_string());
+            c.model_config.paraformer.decoder = Some(cfg.decoder.to_string_lossy().to_string());
+            // 仅 greedy_search；热词/blank_penalty 为 transducer 概念，不下发
+            c.decoding_method = Some("greedy_search".to_string());
+        }
+        // 流式引擎不接受离线族（`AsrEngine::new` 入口已拒绝）
+        AsrModelKind::SenseVoice | AsrModelKind::Whisper => {
+            unreachable!("离线族不走流式引擎")
+        }
+    }
+    c
+}
+
 /// ASR 模型安装目录：`~/.zapmomo/models/<name>`。
 pub fn user_model_dir() -> PathBuf {
     crate::kws::model::asr_user_model_dir()
@@ -257,10 +306,14 @@ pub fn install_punctuation_model_to(
 /// 整段转写（不做端点断句，避免静音触发多次 reset 丢失开头文本）。
 /// 供 CLI 离线验证与「参考音频自动转写」复用。
 pub fn transcribe_wav(cfg: &ResolvedAsrConfig, wav: &Path) -> Result<String, String> {
-    // 族感知分发：流式 zipformer 走在线引擎；SenseVoice/Whisper 走离线引擎
+    // 族感知分发：流式族（zipformer/paraformer）走在线引擎；SenseVoice/Whisper 走离线引擎
     match cfg.model_type {
-        config::AsrModelKind::Zipformer => transcribe_wav_streaming(cfg, wav),
-        _ => offline::transcribe_wav_offline(cfg, wav),
+        config::AsrModelKind::Zipformer | config::AsrModelKind::Paraformer => {
+            transcribe_wav_streaming(cfg, wav)
+        }
+        config::AsrModelKind::SenseVoice | config::AsrModelKind::Whisper => {
+            offline::transcribe_wav_offline(cfg, wav)
+        }
     }
 }
 
@@ -438,6 +491,119 @@ mod tests {
         cfg.encoder = cfg.model_dir.join("encoder.onnx");
         let err = AsrEngine::new(cfg.clone()).err().unwrap();
         assert!(err.contains("install-model"), "err: {err}");
+    }
+
+    #[test]
+    fn test_build_online_recognizer_config_zipformer_hotwords_switch() {
+        // zipformer + 热词 → 自动切 modified_beam_search + max_active_paths=4（原逻辑钉住）
+        let cfg = ResolvedAsrConfig {
+            hotwords: Some("尼日尔河".to_string()),
+            ..ResolvedAsrConfig::default()
+        };
+        let c = build_online_recognizer_config(&cfg);
+        assert_eq!(
+            c.model_config.transducer.encoder.as_deref(),
+            Some(cfg.encoder.to_string_lossy().as_ref())
+        );
+        assert_eq!(c.decoding_method.as_deref(), Some("modified_beam_search"));
+        assert_eq!(c.max_active_paths, 4);
+        assert_eq!(c.blank_penalty, cfg.blank_penalty);
+        assert!(c.model_config.paraformer.encoder.is_none());
+
+        // 无热词 → 沿用配置的解码方式
+        let c = build_online_recognizer_config(&ResolvedAsrConfig::default());
+        assert_eq!(c.decoding_method.as_deref(), Some("greedy_search"));
+    }
+
+    #[test]
+    fn test_build_online_recognizer_config_paraformer_branch() {
+        // 即使配置了热词与非 greedy 解码方式，paraformer 分支也应忽略
+        let cfg = ResolvedAsrConfig {
+            model_type: AsrModelKind::Paraformer,
+            encoder: PathBuf::from("/m/pf/encoder.int8.onnx"),
+            decoder: PathBuf::from("/m/pf/decoder.int8.onnx"),
+            hotwords: Some("尼日尔河".to_string()),
+            decoding_method: "modified_beam_search".to_string(),
+            blank_penalty: 1.5,
+            ..ResolvedAsrConfig::default()
+        };
+        let c = build_online_recognizer_config(&cfg);
+        assert_eq!(
+            c.model_config.paraformer.encoder.as_deref(),
+            Some("/m/pf/encoder.int8.onnx")
+        );
+        assert_eq!(
+            c.model_config.paraformer.decoder.as_deref(),
+            Some("/m/pf/decoder.int8.onnx")
+        );
+        assert_eq!(c.decoding_method.as_deref(), Some("greedy_search"));
+        assert_eq!(c.blank_penalty, 0.0, "transducer 专属参数不下发");
+        assert!(c.model_config.transducer.encoder.is_none());
+        assert!(c.model_config.transducer.joiner.is_none());
+        // 通用项照填
+        assert_eq!(c.feat_config.sample_rate, cfg.sample_rate);
+        assert_eq!(c.enable_endpoint, cfg.enable_endpoint);
+    }
+
+    #[test]
+    fn test_engine_new_paraformer_missing_files() {
+        let model_dir = PathBuf::from("/nonexistent/pf");
+        let cfg = ResolvedAsrConfig {
+            model_type: AsrModelKind::Paraformer,
+            encoder: model_dir.join("encoder.int8.onnx"),
+            model_dir,
+            ..ResolvedAsrConfig::default()
+        };
+        let err = AsrEngine::new(cfg).err().unwrap();
+        assert!(err.contains("install-model"), "err: {err}");
+    }
+
+    #[test]
+    fn test_transcribe_wav_dispatches_streaming_paraformer() {
+        // paraformer 应走流式路径（报「缺少模型文件 …install-model」），而非离线分支
+        let mut cfg = ResolvedAsrConfig::default();
+        cfg.model_type = AsrModelKind::Paraformer;
+        cfg.model_dir = PathBuf::from("/nonexistent/pf");
+        cfg.encoder = cfg.model_dir.join("encoder.int8.onnx");
+        cfg.decoder = cfg.model_dir.join("decoder.int8.onnx");
+        let err = transcribe_wav(&cfg, Path::new("/nonexistent/input.wav")).unwrap_err();
+        assert!(
+            err.contains("install-model"),
+            "流式路径应报模型缺失，实际: {err}"
+        );
+    }
+
+    #[test]
+    #[ignore = "需要先运行 cargo run -- asr install-model --model asr-paraformer-bilingual-zh-en 下载模型"]
+    fn test_paraformer_transcribes_test_wav() {
+        let cfg = config::resolve(None, None).unwrap();
+        if cfg.model_type != AsrModelKind::Paraformer {
+            eprintln!("跳过：当前模型不是 Paraformer");
+            return;
+        }
+        // 带热词构造：钉住「paraformer 忽略热词、正常出文本」的运行时行为
+        let cfg = ResolvedAsrConfig {
+            hotwords: Some("尼日尔河 测试".to_string()),
+            ..cfg
+        };
+        let engine = AsrEngine::new(cfg.clone()).unwrap();
+        let stream = engine.create_stream(cfg.hotwords.as_deref());
+        let wav = default_test_wav(&cfg.model_dir).expect("模型自带示例音频");
+        let wave = Wave::read(&wav.to_string_lossy()).unwrap();
+        engine.feed(&stream, wave.samples());
+        engine.feed(&stream, &vec![0.0; (cfg.sample_rate as usize) / 2]);
+        engine.finish(&stream);
+        let mut collect = CollectAsrReaction::new();
+        engine.decode_loop(&stream, &mut collect);
+        assert!(
+            collect.results.iter().any(|r| !r.text.trim().is_empty()),
+            "应转写出非空文本，实际: {:?}",
+            collect
+                .results
+                .iter()
+                .map(|r| r.text.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

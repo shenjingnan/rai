@@ -59,6 +59,22 @@
 - **许可证**: MIT（OpenAI Whisper；如需商用请以官方模型发布页的许可说明为准）
 - **sha256**: `c46116994e539aa165266d96b325252728429c12535eb9d8b6a2b10f129e66b1`
 
+## sherpa-onnx-streaming-paraformer-bilingual-zh-en
+
+- **用途**: 流式语音识别（ASR，中英双语；包内含 fp32+int8 双份，运行时默认加载 int8）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自阿里 FunASR/ModelScope paraformer-large）
+- **许可证**: FunASR Model License v1.1（阿里）；如需商用请以官方模型发布页的许可说明为准
+- **sha256**: `5462a1fce42693deae572af1e8c4687124b12aa85fe61ff4d3168bb5280e205f`
+
+## sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en
+
+- **用途**: 流式语音识别（ASR，普通话/粤语/英语三语；包内含 fp32+int8 双份，运行时默认加载 int8）
+- **来源**: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en.tar.bz2
+- **发布方**: k2-fsa（sherpa-onnx 项目；模型源自阿里 FunASR/ModelScope paraformer-large）
+- **许可证**: FunASR Model License v1.1（阿里）；如需商用请以官方模型发布页的许可说明为准
+- **sha256**: `d479167d8752628d9032d29de1060493865389d1e295a1c2e8e011e7062f1932`
+
 ## sherpa-onnx-whisper-base
 
 - **用途**: 离线多语言语音识别（ASR，OpenAI Whisper base）

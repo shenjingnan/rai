@@ -1,4 +1,4 @@
-/// 语音会话 ASR 后端：按 `model_type` 分派流式（zipformer）/ 离线（SenseVoice/Whisper）。
+/// 语音会话 ASR 后端：按 `model_type` 分派流式（zipformer/paraformer）/ 离线（SenseVoice/Whisper）。
 ///
 /// Streaming variant 严格透传 `AsrEngine` 现有调用（feed/decode_loop/create_stream/尾静音 flush），
 /// 保证流式路径行为零变化；Offline variant 累积 16k PCM 整段，复用 RMS 说完判定后整句转写。
@@ -9,7 +9,7 @@ use sherpa_onnx::OnlineStream;
 
 /// ASR 后端（会话持有单一字段，非法状态不可表示）。
 pub(crate) enum AsrBackend {
-    /// 流式 zipformer：逐块 feed + decode_loop（边说边出）。
+    /// 流式 zipformer/paraformer：逐块 feed + decode_loop（边说边出）。
     Streaming {
         engine: AsrEngine,
         stream: OnlineStream,
@@ -167,6 +167,14 @@ mod tests {
     #[test]
     fn test_asr_backend_new_streaming_zipformer() {
         let cfg = cfg_with(AsrModelKind::Zipformer);
+        let err = AsrBackend::new(&cfg).err().unwrap();
+        assert!(err.contains("install-model"), "err: {err}");
+    }
+
+    /// 流式族（Paraformer）：同 Zipformer 走 AsrEngine 流式分支。
+    #[test]
+    fn test_asr_backend_new_streaming_paraformer() {
+        let cfg = cfg_with(AsrModelKind::Paraformer);
         let err = AsrBackend::new(&cfg).err().unwrap();
         assert!(err.contains("install-model"), "err: {err}");
     }

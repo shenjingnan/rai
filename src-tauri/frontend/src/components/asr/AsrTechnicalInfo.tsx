@@ -1,8 +1,30 @@
 import { AudioWaveform, ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { isStreamingAsr } from "@/components/asr/asrMeta";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/RuntimeContext";
+
+/** 按 model_type（+模型目录名）映射支持语言展示文案。 */
+function asrLanguagesLabel(modelType: string | null | undefined, modelDir: string | null): string {
+  const dir = modelDir ?? "";
+  switch (modelType) {
+    case "paraformer":
+      return dir.includes("trilingual")
+        ? "中文、粤语、English"
+        : "中文、English";
+    case "sensevoice":
+      return "中文、English、日本語、한국어、粤语";
+    case "whisper":
+      return "多语言（自动检测）";
+    // zipformer 族按目录细分：双语 / 纯中文（zh-14M、multi-zh-hans）/ 纯英文（streaming-zipformer-en-*）
+    default: {
+      if (dir.includes("zh-14m") || dir.includes("multi-zh-hans")) return "中文";
+      if (dir.includes("streaming-zipformer-en-")) return "English";
+      return "中文、English";
+    }
+  }
+}
 
 /**
  * 模型信息（默认展开）：运行时 / 执行 Provider / 线程数 / 采样率 / 识别模式 /
@@ -53,15 +75,19 @@ export function AsrTechnicalInfo() {
                 <dt className="text-sm text-text-primary">采样率</dt>
                 <dd className="truncate text-sm text-text-secondary">{config.sample_rate}</dd>
               </div>
-              {/* 固定模型：streaming-zipformer 为流式架构，不可动态切换 */}
+              {/* 按模型族显示：流式（zipformer/paraformer）/ 离线（sensevoice/whisper） */}
               <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
                 <dt className="text-sm text-text-primary">识别模式</dt>
-                <dd className="truncate text-sm text-text-secondary">流式</dd>
+                <dd className="truncate text-sm text-text-secondary">
+                  {isStreamingAsr(config.model_type) ? "流式" : "离线"}
+                </dd>
               </div>
-              {/* 固定模型：中英双语，引擎自动识别，无语言选择 */}
+              {/* 按模型族 + 目录名映射，引擎自动识别，无语言选择 */}
               <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">
                 <dt className="text-sm text-text-primary">支持语言</dt>
-                <dd className="truncate text-sm text-text-secondary">中文、English</dd>
+                <dd className="truncate text-sm text-text-secondary">
+                  {asrLanguagesLabel(config.model_type, config.model_dir)}
+                </dd>
               </div>
               {/* 仅表示标点模型文件存在/可用；引擎对最终结果自动加标点，无用户可控开关 */}
               <div className="flex items-center justify-between gap-3.5 px-3.5 py-2.5">

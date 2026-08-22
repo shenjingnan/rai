@@ -66,6 +66,22 @@
       "compatibility_notes": "内置流式 ASR（英文），sherpa-onnx 验证可用。"
     },
     {
+      "model_id": "asr-paraformer-bilingual-zh-en",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-paraformer",
+      "compatibility_notes": "内置流式 ASR（Paraformer 中英），sherpa-onnx OnlineRecognizer 验证可用；仅 greedy_search，不支持热词。"
+    },
+    {
+      "model_id": "asr-paraformer-trilingual-zh-cantonese-en",
+      "provider": null,
+      "repo_id": null,
+      "model_type": "asr",
+      "architecture": "sherpa-asr-streaming-paraformer",
+      "compatibility_notes": "内置流式 ASR（Paraformer 中粤英），sherpa-onnx OnlineRecognizer 验证可用；仅 greedy_search，不支持热词。"
+    },
+    {
       "model_id": "tts-zipvoice-distill-int8",
       "provider": null,
       "repo_id": null,

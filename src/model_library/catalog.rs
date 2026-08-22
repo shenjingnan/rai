@@ -856,8 +856,7 @@ mod tests {
         assert!(
             curated3
                 .iter()
-                .all(|i| i.model_type.as_deref() == Some("llm")
-                    || i.model_id == "asr-qwen3-0.6b"),
+                .all(|i| i.model_type.as_deref() == Some("llm") || i.model_id == "asr-qwen3-0.6b"),
             "搜索 qwen 只注入 LLM 与 Qwen3-ASR"
         );
     }

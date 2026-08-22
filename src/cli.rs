@@ -124,7 +124,7 @@ pub enum AsrCmd {
         #[arg(long)]
         hotwords: Option<String>,
     },
-    /// 离线转写 wav 文件（不需要麦克风；流式 zipformer / 离线 SenseVoice / Whisper 均可用）
+    /// 离线转写 wav 文件（不需要麦克风；流式 zipformer/paraformer / 离线 SenseVoice/Whisper/Qwen3-ASR 均可用）
     Test {
         /// wav 路径；默认 <model_dir>/test_wavs/0.wav
         #[arg(long)]
@@ -134,10 +134,10 @@ pub enum AsrCmd {
         /// 热词（空格分隔，中文直接写），提升专有名词识别
         #[arg(long)]
         hotwords: Option<String>,
-        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        /// 转写语言（SenseVoice/Whisper；Qwen3-ASR 自动识别、忽略此参数），如 zh / en / ja
         #[arg(long)]
         language: Option<String>,
-        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启；Qwen3-ASR 忽略此参数
         #[arg(long)]
         use_itn: Option<bool>,
     },
@@ -151,12 +151,12 @@ pub enum AsrCmd {
         /// 已安装也强制重新下载
         #[arg(long)]
         force: bool,
-        /// 指定 registry 模型 id（如 asr-sensevoice-zh-en-ja-ko-yue / asr-whisper-tiny）；
+        /// 指定 registry 模型 id（如 asr-sensevoice-zh-en-ja-ko-yue / asr-qwen3-0.6b）；
         /// 缺省安装默认双语 + 标点（legacy 一键下载）。
         #[arg(long)]
         model: Option<String>,
     },
-    /// 免提连续听写（离线 SenseVoice/Whisper + Silero VAD 分段，每段整句转写）
+    /// 免提连续听写（离线 SenseVoice/Whisper/Qwen3-ASR + Silero VAD 分段，每段整句转写）
     Dictate {
         /// 模型目录（覆盖 settings.toml 的 asr.model_dir）
         #[arg(long)]
@@ -167,10 +167,10 @@ pub enum AsrCmd {
         /// 听写时长（秒），默认无限
         #[arg(long)]
         duration: Option<u64>,
-        /// 转写语言（SenseVoice/Whisper；缺省自动检测），如 zh / en / ja
+        /// 转写语言（SenseVoice/Whisper；Qwen3-ASR 自动识别、忽略此参数），如 zh / en / ja
         #[arg(long)]
         language: Option<String>,
-        /// SenseVoice 反向文本正则化（数字/标点），缺省开启
+        /// SenseVoice 反向文本正则化（数字/标点），缺省开启；Qwen3-ASR 忽略此参数
         #[arg(long)]
         use_itn: Option<bool>,
     },
@@ -425,6 +425,13 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             if hotwords.is_some() {
                 cfg.hotwords = hotwords;
             }
+            if cfg.model_type == crate::asr::config::AsrModelKind::Qwen3Asr
+                && (language.is_some() || use_itn.is_some())
+            {
+                eprintln!(
+                    "提示：Qwen3-ASR 自动识别语种并原生输出标点，--language/--use-itn 已忽略。"
+                );
+            }
             if language.is_some() {
                 cfg.language = language;
             }
@@ -511,9 +518,16 @@ async fn cmd_asr(cmd: AsrCmd) -> Result<(), String> {
             let mut cfg = asr_config(model_dir.as_ref())?;
             if cfg.model_type.is_streaming() {
                 return Err(format!(
-                    "当前模型类型 {} 不支持免提听写（离线模型专用）。请先安装并设为当前 SenseVoice/Whisper 模型。",
+                    "当前模型类型 {} 不支持免提听写（离线模型专用）。请先安装并设为当前 SenseVoice/Whisper/Qwen3-ASR 模型。",
                     cfg.model_type.as_str()
                 ));
+            }
+            if cfg.model_type == crate::asr::config::AsrModelKind::Qwen3Asr
+                && (language.is_some() || use_itn.is_some())
+            {
+                eprintln!(
+                    "提示：Qwen3-ASR 自动识别语种并原生输出标点，--language/--use-itn 已忽略。"
+                );
             }
             if language.is_some() {
                 cfg.language = language;
@@ -1025,7 +1039,8 @@ mod tests {
 
     #[test]
     fn test_cli_parse_asr_test_flags() {
-        // 离线模型（SenseVoice/Whisper）转写语言与 ITN 开关
+        // 离线模型（SenseVoice/Whisper/Qwen3-ASR）转写语言与 ITN 开关
+        // （Qwen3-ASR 自动识别语种，运行时提示忽略）
         let cli = Cli::try_parse_from(&[
             "test",
             "asr",

@@ -9,10 +9,12 @@ const { invokeMock, startDraggingMock, setSizeMock, configState, listenHandlers 
     startDraggingMock: vi.fn(),
     /** resizeTo 的 setSize 是 config 完全应用（含 setLocked）后的最后一步，作等待信号。 */
     setSizeMock: vi.fn(async () => undefined),
-    /** get_live2d_config 的 locked / drag_mode 覆盖值（null = 后端未返回该字段）。 */
+    /** get_live2d_config 的 locked / drag_mode / 模型字段覆盖值（null = 后端未返回该字段）。 */
     configState: {
       locked: null as boolean | null,
       dragMode: null as CompanionDragMode | null,
+      modelFile: null as string | null,
+      format: null as string | null,
     },
     /** 按事件名捕获 listen 回调，供测试主动推送后端事件。 */
     listenHandlers: {} as Record<string, (payload: unknown) => void>,
@@ -73,6 +75,8 @@ beforeEach(() => {
   setSizeMock.mockReset();
   configState.locked = null;
   configState.dragMode = null;
+  configState.modelFile = null;
+  configState.format = null;
   for (const key of Object.keys(listenHandlers)) delete listenHandlers[key];
 
   invokeMock.mockImplementation((cmd: string) => {
@@ -80,9 +84,9 @@ beforeEach(() => {
       case "get_live2d_config":
         return Promise.resolve({
           model_dir: null,
-          model_file: null,
-          format: null,
-          models_present: false,
+          model_file: configState.modelFile,
+          format: configState.format,
+          models_present: configState.modelFile != null,
           window_scale: 1.0,
           window_opacity: 1.0,
           click_through: null,
@@ -227,5 +231,80 @@ describe("CompanionRoot（拖拽模式）", () => {
     act(() => listenHandlers["companion-drag-mode-changed"]("direct"));
     fireEvent.mouseDown(container);
     expect(startDraggingMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("CompanionRoot（GIF 伙伴分发）", () => {
+  it("config format=gif 时渲染 GifStage 而非 Live2dStage", async () => {
+    configState.modelFile = "/zap/companions/x/dance.gif";
+    configState.format = "gif";
+    render(<CompanionRoot />);
+    await waitForConfigApplied();
+
+    expect(screen.getByTestId("gif-stage")).toBeInTheDocument();
+    expect(screen.queryByTestId("live2d-stage")).not.toBeInTheDocument();
+    // GIF 的 img 渲染在 GifStage 内。
+    const img = screen.getByRole("img");
+    expect(img).toHaveAttribute("src", expect.stringContaining("dance.gif"));
+  });
+
+  it("config format=cubism3 时仍渲染 Live2dStage", async () => {
+    configState.modelFile = "/zap/companions/x/x.model3.json";
+    configState.format = "cubism3";
+    render(<CompanionRoot />);
+    await waitForConfigApplied();
+
+    expect(screen.getByTestId("live2d-stage")).toBeInTheDocument();
+    expect(screen.queryByTestId("gif-stage")).not.toBeInTheDocument();
+  });
+
+  it("live2d-model-changed 事件可在 Live2D 与 GIF 之间切换", async () => {
+    configState.modelFile = "/zap/companions/x/x.model3.json";
+    configState.format = "cubism3";
+    render(<CompanionRoot />);
+    await waitForConfigApplied();
+    expect(screen.getByTestId("live2d-stage")).toBeInTheDocument();
+
+    // 后端事件：切到 GIF 伙伴。
+    act(() =>
+      listenHandlers["live2d-model-changed"]({
+        model_dir: "/zap/companions/g",
+        model_file: "/zap/companions/g/dance.gif",
+        format: "gif",
+        props: null,
+      }),
+    );
+    expect(screen.getByTestId("gif-stage")).toBeInTheDocument();
+    expect(screen.queryByTestId("live2d-stage")).not.toBeInTheDocument();
+
+    // 再切回 Live2D。
+    act(() =>
+      listenHandlers["live2d-model-changed"]({
+        model_dir: "/zap/companions/x",
+        model_file: "/zap/companions/x/x.model3.json",
+        format: "cubism3",
+        props: null,
+      }),
+    );
+    expect(screen.getByTestId("live2d-stage")).toBeInTheDocument();
+    expect(screen.queryByTestId("gif-stage")).not.toBeInTheDocument();
+  });
+
+  it("清屏事件（空 model_file）移除 GIF 展示", async () => {
+    configState.modelFile = "/zap/companions/g/dance.gif";
+    configState.format = "gif";
+    render(<CompanionRoot />);
+    await waitForConfigApplied();
+    expect(screen.getByTestId("gif-stage")).toBeInTheDocument();
+
+    act(() =>
+      listenHandlers["live2d-model-changed"]({
+        model_dir: null,
+        model_file: null,
+        format: null,
+        props: null,
+      }),
+    );
+    expect(screen.queryByTestId("gif-stage")).not.toBeInTheDocument();
   });
 });

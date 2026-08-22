@@ -10,8 +10,8 @@ export interface CompanionLibraryState {
   error: string | null;
   refreshing: boolean;
   refresh: () => Promise<void>;
-  /** 导入模型目录；返回导入（或已存在）的伙伴，供页面选中。 */
-  importModel: (sourceDir: string) => Promise<CompanionModelInfo | null>;
+  /** 导入模型目录或 GIF 动图文件；返回导入（或已存在）的伙伴，供页面选中。 */
+  importModel: (source: string) => Promise<CompanionModelInfo | null>;
   /** 设为当前使用。 */
   setActive: (id: string) => Promise<void>;
   /** 重命名伙伴（只改展示名）。 */
@@ -65,9 +65,9 @@ export function useCompanionLibrary(): CompanionLibraryState {
   }, [refresh]);
 
   const importModel = useCallback(
-    async (sourceDir: string): Promise<CompanionModelInfo | null> => {
+    async (source: string): Promise<CompanionModelInfo | null> => {
       try {
-        const result = await api.importCompanion({ sourceDir });
+        const result = await api.importCompanion({ source });
         setLibrary(result.library);
         const model = result.library.models.find((m) => m.id === result.model_id) ?? null;
         if (result.already_imported) {

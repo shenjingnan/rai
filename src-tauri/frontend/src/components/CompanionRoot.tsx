@@ -2,6 +2,7 @@ import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/
 import type { Live2DModel } from "pixi-live2d-display/cubism4";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventBubble } from "@/components/companion/EventBubble";
+import { GifStage } from "@/components/gif/GifStage";
 import {
   Live2dStage,
   type Live2dStageHandle,
@@ -48,7 +49,8 @@ const WHEEL_SCALE_STEP = 1.1;
 const BUBBLE_STRIP = 72;
 
 /**
- * 常驻角色窗口：静态展示 Live2D 模型（仅呼吸/眨眼等自动动画，不跟随鼠标）。
+ * 常驻角色窗口：展示当前伙伴（Live2D 模型或 GIF 动图，按 format 分发渲染）。
+ * Live2D 仅呼吸/眨眼等自动动画，不跟随鼠标；GIF 由 WebView 原生循环播放。
  *
  * - 启动时读 `get_live2d_config` 恢复持久化的模型、缩放比例与透明度；
  * - 订阅 `live2d-model-changed` / `companion-scale-changed` / `companion-opacity-changed`，
@@ -63,7 +65,11 @@ export function CompanionRoot() {
   const { config } = useLive2dConfig();
   // 桌宠窗口无 RuntimeContext：hook 自包含，与设置窗口订阅同一批后端 voice 事件。
   const voice = useVoiceSession();
-  const [modelUrl, setModelUrl] = useState<string | null>(null);
+  // 展示目标（GIF 伙伴渲染 GifStage，Live2D 伙伴渲染 Live2dStage；url null = 清屏）。
+  const [stage, setStage] = useState<{ url: string | null; isGif: boolean }>({
+    url: null,
+    isGif: false,
+  });
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [scale, setScale] = useState(1.0);
   const [opacity, setOpacity] = useState(1.0);
@@ -153,7 +159,7 @@ export function CompanionRoot() {
   // 启动时恢复持久化的模型（顺带重放行 asset 协议 scope）与 BongoCat 道具资源。
   useEffect(() => {
     if (config?.models_present && config.model_file) {
-      setModelUrl(toAssetUrl(config.model_file));
+      setStage({ url: toAssetUrl(config.model_file), isGif: config.format === "gif" });
     }
     setProps(config?.props ?? null);
   }, [config]);
@@ -174,7 +180,11 @@ export function CompanionRoot() {
   useEffect(() => {
     const unlisten = onLive2dModelChanged((info) => {
       // 空 model_file = 清屏（active 伙伴被移除等场景）。
-      setModelUrl(info.model_file ? toAssetUrl(info.model_file) : null);
+      setStage(
+        info.model_file && info.format
+          ? { url: toAssetUrl(info.model_file), isGif: info.format === "gif" }
+          : { url: null, isGif: false },
+      );
       setProps(info.props ?? null);
     });
     return () => {
@@ -248,6 +258,11 @@ export function CompanionRoot() {
     },
     [resizeTo],
   );
+
+  // GIF 伙伴无 Live2D 句柄；切到 GIF 时清空，防 dsh 动作触发已卸载的模型。
+  useEffect(() => {
+    if (stage.isGif) modelRef.current = null;
+  }, [stage.isGif]);
 
   // dsh 任务事件：气泡由 EventBubble 渲染，这里联动触发模型动作。
   useEffect(() => {
@@ -337,17 +352,26 @@ export function CompanionRoot() {
         {/* 顶部预留 BUBBLE_STRIP 给事件 deck；内层 relative 让 PropsLayer 的画布
             坐标映射（absolute left/top = layout.x/y）锚定到下移后的舞台原点。 */}
         <div className="relative" style={{ marginTop: BUBBLE_STRIP }}>
-          <Live2dStage
-            ref={stageRef}
-            modelUrl={modelUrl}
-            width={size.width}
-            height={size.height - BUBBLE_STRIP}
-            onModelMetrics={handleModelMetrics}
-            onLayout={setModelLayout}
-            onModelLoaded={(m) => {
-              modelRef.current = m;
-            }}
-          />
+          {stage.isGif ? (
+            <GifStage
+              url={stage.url}
+              width={size.width}
+              height={size.height - BUBBLE_STRIP}
+              onModelMetrics={handleModelMetrics}
+            />
+          ) : (
+            <Live2dStage
+              ref={stageRef}
+              modelUrl={stage.url}
+              width={size.width}
+              height={size.height - BUBBLE_STRIP}
+              onModelMetrics={handleModelMetrics}
+              onLayout={setModelLayout}
+              onModelLoaded={(m) => {
+                modelRef.current = m;
+              }}
+            />
+          )}
           {/* BongoCat 道具层：键盘背景 + 爪子按键贴图（仅 BongoCat 伙伴有 props） */}
           <PropsLayer
             layout={modelLayout}

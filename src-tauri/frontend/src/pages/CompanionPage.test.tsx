@@ -94,7 +94,7 @@ beforeEach(() => {
   importSeq = 0;
 
   invokeMock.mockImplementation(
-    (cmd: string, args?: { sourceDir?: string; id?: string; name?: string }) => {
+    (cmd: string, args?: { source?: string; id?: string; name?: string }) => {
       switch (cmd) {
         case "list_companions":
           return Promise.resolve(library);
@@ -113,15 +113,25 @@ beforeEach(() => {
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
-          const sourceDir = args?.sourceDir ?? "";
-          const name = sourceDir.split("/").pop() ?? "模型";
-          const existing = library.models.find((m) => m.source_path === sourceDir);
+          const source = args?.source ?? "";
+          const isGif = source.endsWith(".gif");
+          const base = source.split("/").pop() ?? "模型";
+          const name = isGif ? base.replace(/\.gif$/i, "") : base;
+          const existing = library.models.find((m) => m.source_path === source);
           if (existing) {
             return Promise.resolve({ library, model_id: existing.id, already_imported: true });
           }
           const id = `companion-import-${++importSeq}`;
           const first = library.models.length === 0;
-          const imported = { ...model(id, name), source_path: sourceDir };
+          // GIF 源生成 format=gif 伙伴（与后端 import_gif_from_file 语义一致）。
+          const imported: CompanionModelInfo = {
+            ...model(id, name),
+            source_path: source,
+            format: isGif ? "gif" : "cubism3",
+            model_file: isGif
+              ? `/zap/.zapmomo/companions/${id}/${base}`
+              : `/zap/.zapmomo/companions/${id}/${name}.model3.json`,
+          };
           library = {
             models: [...library.models, imported],
             // 首次导入自动 active（与后端 import_from_dir 语义一致）。
@@ -273,7 +283,7 @@ describe("CompanionPage 伙伴模型管理器", () => {
     expect(await screen.findByText("还没有伙伴")).toBeInTheDocument();
     expect(screen.getAllByText("暂无伙伴").length).toBeGreaterThanOrEqual(1);
     // 顶部有主导入入口（左侧底部按钮已移除）
-    expect(screen.getByRole("button", { name: "添加伙伴" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入模型" })).toBeInTheDocument();
   });
 
   it("列出伙伴；默认选中 active；点击其他伙伴仅切换预览不切换 active", async () => {
@@ -318,11 +328,11 @@ describe("CompanionPage 伙伴模型管理器", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "添加伙伴" }));
+    await user.click(await screen.findByRole("button", { name: "导入模型" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("import_companion", {
-        sourceDir: "/Downloads/星语",
+        source: "/Downloads/星语",
       });
     });
     expect(await screen.findByText("✓ 已导入「星语」")).toBeInTheDocument();
@@ -331,13 +341,37 @@ describe("CompanionPage 伙伴模型管理器", () => {
     expect(screen.queryByRole("button", { name: "设为当前使用" })).not.toBeInTheDocument();
   });
 
+  it("导入 GIF：gif 过滤器文件选择器 + format=gif 伙伴以 img 预览（无动作面板）", async () => {
+    openMock.mockResolvedValue("/Downloads/舞.gif");
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "导入 GIF" }));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filters: [{ name: "GIF 动图", extensions: ["gif"] }],
+        }),
+      );
+      expect(invokeMock).toHaveBeenCalledWith("import_companion", {
+        source: "/Downloads/舞.gif",
+      });
+    });
+    // GIF 伙伴选中（首次导入自动选中）：预览为 img 而非 Live2D 舞台。
+    expect(await screen.findByAltText("舞")).toBeInTheDocument();
+    expect(screen.queryByTestId("live2d-stage")).not.toBeInTheDocument();
+    // 动作/表情目录面板不渲染（GIF 无动作概念）。
+    expect(screen.queryByTestId("motion-catalog")).not.toBeInTheDocument();
+  });
+
   it("第二次导入（已有 active）：selected 变新模型，active 不变", async () => {
     library = { models: [MODEL_A], active_model_id: MODEL_A.id };
     openMock.mockResolvedValue("/Downloads/星语");
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "添加伙伴" }));
+    await user.click(await screen.findByRole("button", { name: "导入模型" }));
 
     // selected = 新模型（星语），active 仍是大月下 → 预览显示「设为当前使用」。
     expect(await screen.findByRole("button", { name: "设为当前使用" })).toBeEnabled();
@@ -351,10 +385,10 @@ describe("CompanionPage 伙伴模型管理器", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "添加伙伴" }));
+    await user.click(await screen.findByRole("button", { name: "导入模型" }));
     await screen.findByText("✓ 已导入「星语」");
 
-    await user.click(screen.getByRole("button", { name: "添加伙伴" }));
+    await user.click(screen.getByRole("button", { name: "导入模型" }));
     expect(await screen.findByText("该伙伴已经导入")).toBeInTheDocument();
     expect(library.models).toHaveLength(1);
   });
@@ -378,7 +412,7 @@ describe("CompanionPage 伙伴模型管理器", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "添加伙伴" }));
+    await user.click(await screen.findByRole("button", { name: "导入模型" }));
     await waitFor(() => {
       expect(openMock).toHaveBeenCalled();
     });

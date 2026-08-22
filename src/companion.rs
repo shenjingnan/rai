@@ -1845,6 +1845,31 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_and_set_active_support_gif() {
+        run_with_temp_home(|home| {
+            // 混合库：Live2D + GIF。
+            let m = home.join("L");
+            make_valid_model(&m, "l.model3.json");
+            let (l2d, _) = import_from_dir(&m).unwrap();
+            let g = home.join("舞.gif");
+            make_valid_gif(&g);
+            let (gif, _) = import_gif_from_file(&g).unwrap();
+
+            // set_active(gif) 成功（校验走 GIF 文件头，不再走 validate_managed_model）。
+            set_active(&gif.id).unwrap();
+            // 删掉 Live2D 托管目录，sanitize 不应清掉 GIF active（GIF 仍有效）。
+            std::fs::remove_dir_all(&l2d.model_dir).unwrap();
+            let lib = load_library_fast().unwrap();
+            assert_eq!(lib.active_model_id.as_deref(), Some(gif.id.as_str()));
+
+            // 篡改 GIF 魔数 → set_active 报「不可用」。
+            std::fs::write(Path::new(&gif.model_file), b"xxxxxx").unwrap();
+            let err = set_active(&gif.id).unwrap_err();
+            assert!(err.contains("不可用"), "{err}");
+        });
+    }
+
+    #[test]
     fn test_concurrent_import_same_source_yields_single_companion() {
         run_with_temp_home(|home| {
             let src = home.join("同款并发");

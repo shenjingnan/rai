@@ -2950,20 +2950,18 @@ async fn list_companions(app: AppHandle) -> Result<CompanionLibraryView, String>
     Ok(build_view(&lib))
 }
 
-/// 导入 Live2D 模型目录（复制到应用托管目录并登记进伙伴库）。
+/// 导入伙伴（Live2D 模型目录或 GIF 动图文件，复制到应用托管目录并登记进伙伴库）。
 ///
 /// 成功或已导入都会立即放行新模型的 asset scope，保证右侧预览无需再进页面；
 /// 若本次导入成为 active（首次导入自动 active）则 reconcile 同步桌宠。
 #[tauri::command]
-async fn import_companion(
-    app: AppHandle,
-    source_dir: String,
-) -> Result<ImportCompanionResult, String> {
-    let source = PathBuf::from(source_dir);
-    let (model, already_imported) =
-        tauri::async_runtime::spawn_blocking(move || zapmomo::companion::import_from_dir(&source))
-            .await
-            .map_err(|e| e.to_string())??;
+async fn import_companion(app: AppHandle, source: String) -> Result<ImportCompanionResult, String> {
+    let source_path = PathBuf::from(source);
+    let (model, already_imported) = tauri::async_runtime::spawn_blocking(move || {
+        zapmomo::companion::import_source(&source_path)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     app.asset_protocol_scope()
         .allow_directory(Path::new(&model.model_dir), true)

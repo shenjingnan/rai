@@ -94,7 +94,7 @@ beforeEach(() => {
   importSeq = 0;
 
   invokeMock.mockImplementation(
-    (cmd: string, args?: { sourceDir?: string; id?: string; name?: string }) => {
+    (cmd: string, args?: { source?: string; id?: string; name?: string }) => {
       switch (cmd) {
         case "list_companions":
           return Promise.resolve(library);
@@ -113,15 +113,15 @@ beforeEach(() => {
             settings_path: "/zap/.zapmomo/settings.toml",
           });
         case "import_companion": {
-          const sourceDir = args?.sourceDir ?? "";
-          const name = sourceDir.split("/").pop() ?? "模型";
-          const existing = library.models.find((m) => m.source_path === sourceDir);
+          const source = args?.source ?? "";
+          const name = source.split("/").pop() ?? "模型";
+          const existing = library.models.find((m) => m.source_path === source);
           if (existing) {
             return Promise.resolve({ library, model_id: existing.id, already_imported: true });
           }
           const id = `companion-import-${++importSeq}`;
           const first = library.models.length === 0;
-          const imported = { ...model(id, name), source_path: sourceDir };
+          const imported = { ...model(id, name), source_path: source };
           library = {
             models: [...library.models, imported],
             // 首次导入自动 active（与后端 import_from_dir 语义一致）。
@@ -322,7 +322,7 @@ describe("CompanionPage 伙伴模型管理器", () => {
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("import_companion", {
-        sourceDir: "/Downloads/星语",
+        source: "/Downloads/星语",
       });
     });
     expect(await screen.findByText("✓ 已导入「星语」")).toBeInTheDocument();

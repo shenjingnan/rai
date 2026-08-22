@@ -194,6 +194,21 @@ pub const KWS_WENETSPEECH_REQUIRED_FILES: [&str; 5] = [
     WENETSPEECH_KEYWORDS_REL,
 ];
 
+/// gigaspeech 模型安装完成所需的文件。
+///
+/// 三件套与 wenetspeech 同名（官方包实况，已核实），默认关键词同样取
+/// `test_wavs/test_keywords.txt`（包根旧格式 `keywords.txt` 含不在 tokens.txt 的
+/// piece，为旧脚本残留，不采用）。`bpe.model` 是自定义英文唤醒词的 BPE 编码依据，
+/// 纳入安装完整性校验。
+pub const KWS_GIGASPEECH_REQUIRED_FILES: [&str; 6] = [
+    WENETSPEECH_ENCODER,
+    WENETSPEECH_DECODER,
+    WENETSPEECH_JOINER,
+    DEFAULT_TOKENS,
+    WENETSPEECH_KEYWORDS_REL,
+    "bpe.model",
+];
+
 /// 目标目录是否已包含给定的一组文件。
 pub fn has_required_files(dest_dir: &Path, required: &[&str]) -> bool {
     required.iter().all(|f| dest_dir.join(f).is_file())

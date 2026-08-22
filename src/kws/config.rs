@@ -593,6 +593,44 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_detects_gigaspeech_layout() {
+        // gigaspeech：与 wenetspeech 同款 epoch-12 三件套 + test_wavs/test_keywords.txt，
+        // 额外含 bpe.model（探测规则零改动即命中，bpe.model 不参与文件探测）
+        let dir = fake_model_dir(
+            "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+            "test_wavs/test_keywords.txt",
+            &["bpe.model"],
+        );
+        let settings = KwsSettings {
+            model_dir: Some(dir.path().to_string_lossy().to_string()),
+            ..KwsSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert_eq!(
+            cfg.encoder,
+            dir.path()
+                .join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.decoder,
+            dir.path()
+                .join("decoder-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.joiner,
+            dir.path()
+                .join("joiner-epoch-12-avg-2-chunk-16-left-64.onnx")
+        );
+        assert_eq!(
+            cfg.keywords_file,
+            dir.path().join("test_wavs/test_keywords.txt")
+        );
+        assert!(kws_files_present(dir.path()));
+    }
+
+    #[test]
     fn test_resolve_default_layout_prefers_constant_names() {
         // zh-en 布局：默认常量名存在 → 全部命中常量（既有用户零行为变化）
         let dir = fake_model_dir(

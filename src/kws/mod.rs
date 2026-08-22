@@ -2,6 +2,7 @@
 ///
 /// 使用 sherpa-onnx 的 `KeywordSpotter`（zipformer 唤醒词模型）实现：
 /// 离线对 wav 检测（`run_offline`）与实时麦克风监听（`run_realtime`）。
+pub mod bpe;
 pub mod config;
 pub mod english;
 pub mod model;

@@ -21,5 +21,6 @@ description: 模型不随代码分发，按 manifest.json 清单下载并校验
 | --- | --- | --- |
 | `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` | 中英混合 | 默认模型，支持中英文唤醒词（中文转拼音、英文转音素） |
 | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01` | 纯中文 | WenetSpeech 1 万小时训练的轻量模型；英文唤醒词不可用 |
+| `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01` | 纯英文 | GigaSpeech 1 万小时训练的轻量模型（17MB）；英文唤醒词经包内 `bpe.model` 切分子词，中文唤醒词不可用 |
 
-两个模型的包内文件名不同（zh-en 为 `encoder-epoch-13-...` 系列、自带 `test_wavs/keywords.txt`；wenetspeech 为 `encoder-epoch-12-...` 系列、自带 `test_wavs/test_keywords.txt`）。**未在 `[kws]` 段显式配置文件名时，程序会按模型目录内容自动探测**，切换模型无需手改 `encoder` / `keywords_file` 等配置。
+三个模型的包内文件名不同（zh-en 为 `encoder-epoch-13-...` 系列、自带 `test_wavs/keywords.txt`；wenetspeech 与 gigaspeech 为 `encoder-epoch-12-...` 系列、自带 `test_wavs/test_keywords.txt`，gigaspeech 另含 `bpe.model`）。**未在 `[kws]` 段显式配置文件名时，程序会按模型目录内容自动探测**，切换模型无需手改 `encoder` / `keywords_file` 等配置。

@@ -143,6 +143,7 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
     match role {
         "wake-word" => &crate::kws::model::KWS_REQUIRED_FILES,
         "wake-word-wenetspeech" => &crate::kws::model::KWS_WENETSPEECH_REQUIRED_FILES,
+        "wake-word-gigaspeech" => &crate::kws::model::KWS_GIGASPEECH_REQUIRED_FILES,
         // 离线 ASR：精确 role 必须在 asr-* 通配之前，否则被通配吞掉返回错误 4 件套
         "asr-sensevoice" => &crate::asr::config::SENSEVOICE_REQUIRED_FILES,
         "asr-whisper-tiny" => &crate::asr::config::WHISPER_TINY_REQUIRED_FILES,
@@ -179,8 +180,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            23,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR"
+            24,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 1 个新 KWS"
         );
         assert!(
             models
@@ -258,6 +259,11 @@ mod tests {
         assert_eq!(ws.len(), 5);
         assert!(ws.contains(&"encoder-epoch-12-avg-2-chunk-16-left-64.onnx"));
         assert!(ws.contains(&"test_wavs/test_keywords.txt"));
+        // gigaspeech：同款三件套 + tokens + 关键词文件 + bpe.model（BPE 编码依据）
+        let gs = required_files_for_role("wake-word-gigaspeech");
+        assert_eq!(gs.len(), 6);
+        assert!(gs.contains(&"bpe.model"));
+        assert!(gs.contains(&"test_wavs/test_keywords.txt"));
         // 新离线 ASR：精确 role 优先于 asr-* 通配
         assert_eq!(required_files_for_role("asr-sensevoice").len(), 2);
         assert!(required_files_for_role("asr-sensevoice").contains(&"model.int8.onnx"));
@@ -323,6 +329,11 @@ mod tests {
         assert_eq!(
             ws.name,
             "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+        );
+        let gs = crate::kws::model::asset_by_role("wake-word-gigaspeech").expect("gigaspeech 资产");
+        assert_eq!(
+            gs.name,
+            "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
         );
     }
 

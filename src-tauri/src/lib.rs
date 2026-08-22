@@ -1969,7 +1969,11 @@ fn collect_asr_preflight_files(
             if !cfg.tokens.is_dir() {
                 return Err(format!("缺少 tokenizer 目录: {}", cfg.tokens.display()));
             }
-            vec![("ASR conv_frontend", conv), ("ASR encoder", &cfg.encoder), ("ASR decoder", &cfg.decoder)]
+            vec![
+                ("ASR conv_frontend", conv),
+                ("ASR encoder", &cfg.encoder),
+                ("ASR decoder", &cfg.decoder),
+            ]
         }
     };
     Ok(files)
@@ -6226,7 +6230,8 @@ mod preflight_tests {
     #[test]
     fn test_preflight_files_qwen3_no_joiner_tokenizer_as_dir() {
         // 手建临时目录（src-tauri 无 tempfile 依赖）
-        let dir = std::env::temp_dir().join(format!("zapmomo-preflight-qwen3-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("zapmomo-preflight-qwen3-{}", std::process::id()));
         let tokenizer = dir.join("tokenizer");
         std::fs::create_dir_all(&tokenizer).unwrap();
 

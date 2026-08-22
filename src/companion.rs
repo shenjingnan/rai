@@ -187,6 +187,29 @@ pub fn quick_valid(model: &CompanionModel) -> bool {
     Path::new(&model.model_dir).is_dir() && Path::new(&model.model_file).is_file()
 }
 
+/// GIF 伙伴的 format 标识（与 Live2D 的 "cubism3" 同一字段空间，判别式见 `is_gif`）。
+pub const GIF_FORMAT: &str = "gif";
+
+/// format 判别：GIF 伙伴。
+pub fn is_gif(model: &CompanionModel) -> bool {
+    model.format == GIF_FORMAT
+}
+
+/// 校验托管 GIF 伙伴：文件存在且带合法 GIF 文件头（GIF87a/GIF89a）。
+///
+/// 只读前 6 字节，不加载大尺寸 GIF 的全文。
+pub fn validate_gif_file(file: &Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(file).map_err(|e| format!("GIF 文件不存在或无法读取: {e}"))?;
+    let mut magic = [0u8; 6];
+    f.read_exact(&mut magic)
+        .map_err(|e| format!("读取 GIF 文件头失败: {e}"))?;
+    if &magic != b"GIF87a" && &magic != b"GIF89a" {
+        return Err("不是合法的 GIF 文件（缺少 GIF87a/GIF89a 文件头）".to_string());
+    }
+    Ok(())
+}
+
 /// 从库中解析当前 active 伙伴（库应已 sanitize）。
 pub fn active_model(lib: &CompanionLibrary) -> Option<&CompanionModel> {
     let active_id = lib.active_model_id.as_deref()?;
@@ -931,6 +954,11 @@ mod tests {
         .unwrap();
     }
 
+    /// 构造最小合法 GIF（GIF89a magic + 最少头部字节）。
+    fn make_valid_gif(path: &Path) {
+        std::fs::write(path, b"GIF89a\x01\x00\x01\x00\x00").unwrap();
+    }
+
     /// 在 fixture 基础上补未注册的动作/表情文件（模拟「火花」这类模型：文件在、清单没登记）。
     fn add_unregistered_assets(dir: &Path) {
         std::fs::create_dir_all(dir.join("Motions")).unwrap();
@@ -1626,6 +1654,29 @@ mod tests {
 
             assert!(fresh.exists(), "新鲜 tmp 应保留");
             assert!(!stale.exists(), "过期 tmp 应清理");
+        });
+    }
+
+    // ---- GIF 伙伴 ----
+
+    #[test]
+    fn test_validate_gif_file_accepts_gif89a_and_gif87a() {
+        run_with_temp_home(|home| {
+            let g = home.join("a.gif");
+            make_valid_gif(&g);
+            assert!(validate_gif_file(&g).is_ok());
+            std::fs::write(&g, b"GIF87a\x01\x00\x01\x00\x00").unwrap();
+            assert!(validate_gif_file(&g).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_validate_gif_file_rejects_bad_magic_and_missing() {
+        run_with_temp_home(|home| {
+            let bad = home.join("b.gif");
+            std::fs::write(&bad, b"PNG\r\n\x1a\n").unwrap();
+            assert!(validate_gif_file(&bad).is_err());
+            assert!(validate_gif_file(&home.join("none.gif")).is_err());
         });
     }
 

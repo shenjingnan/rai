@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.19](https://github.com/shenjingnan/zapmomo/compare/v0.1.18...v0.1.19) - 2026-08-22
+
+### Added
+
+- *(tts)* 接入 audio.cpp sidecar 引擎与 PocketTTS 英文模型 ([#160](https://github.com/shenjingnan/zapmomo/pull/160))
+- *(companion)* GIF 动图作为桌面伙伴（与 Live2D 并存） ([#159](https://github.com/shenjingnan/zapmomo/pull/159))
+- *(asr)* 接入 Qwen3-ASR 离线模型族（29 语言 + 热词） ([#157](https://github.com/shenjingnan/zapmomo/pull/157))
+- *(tts)* 支持 Kokoro TTS（103 音色，int8/fp32 双变体） ([#156](https://github.com/shenjingnan/zapmomo/pull/156))
+- *(kws)* 接入 GigaSpeech 英文唤醒词模型，补齐 sherpa-onnx 官方 KWS 全家桶 ([#155](https://github.com/shenjingnan/zapmomo/pull/155))
+- *(dsh)* 桌宠事件气泡升级为 iOS 风格堆叠 toast ([#154](https://github.com/shenjingnan/zapmomo/pull/154))
+- *(asr)* 新增流式 Paraformer ASR 模型族（中英/中粤英） ([#153](https://github.com/shenjingnan/zapmomo/pull/153))
+- *(asr)* 支持离线 ASR（SenseVoice/Whisper）与语音会话模型族自适应 ([#152](https://github.com/shenjingnan/zapmomo/pull/152))
+
+### Fixed
+
+- *(dsh)* 补全 dsh-plugin repository 字段修复 npm provenance 发布 ([#150](https://github.com/shenjingnan/zapmomo/pull/150))
+
 ## [0.1.18](https://github.com/shenjingnan/zapmomo/compare/v0.1.17...v0.1.18) - 2026-08-21
 
 ### Added

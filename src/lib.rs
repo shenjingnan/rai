@@ -1,6 +1,7 @@
 /// 通用工具模块
 pub mod asr;
 pub mod audio;
+pub mod audiocpp;
 pub mod cli;
 pub mod companion;
 pub mod config;

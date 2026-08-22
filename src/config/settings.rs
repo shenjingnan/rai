@@ -507,6 +507,12 @@ pub struct TtsSettings {
     /// 调试输出，缺省 false
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
+    /// TTS 引擎后端：sherpa（进程内，缺省）| audiocpp（audio.cpp sidecar 进程）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// audiocpp 引擎二进制覆盖路径（开发/调试用；缺省由 locator 自动定位）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_path: Option<String>,
 }
 
 /// 角色窗口位置（逻辑像素）。
@@ -1053,12 +1059,16 @@ mod tests {
             provider: Some("cpu".to_string()),
             num_threads: Some(2),
             debug: Some(false),
+            backend: Some("audiocpp".to_string()),
+            engine_path: None,
         };
         let toml_str = toml::to_string(&tts).unwrap();
         let deserialized: TtsSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(tts, deserialized);
         // 未配置字段应被 skip_serializing_if 忽略
         assert!(!toml_str.contains("decoder"));
+        assert!(!toml_str.contains("engine_path"));
+        assert!(toml_str.contains("backend = \"audiocpp\""));
     }
 
     #[test]

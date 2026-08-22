@@ -1,17 +1,20 @@
 /// 文本转语音（TTS）。
 ///
-/// 使用 sherpa-onnx 的 `OfflineTts`（ZipVoice 零样本声音克隆，中英双语）实现：
-/// 输入文本 → 合成 PCM 波形（可落盘 wav）。批量一次性合成，无流式 feed 循环。
+/// 门面按 `ResolvedTtsConfig.backend` 分派双后端：
+/// - sherpa-onnx `OfflineTts`（进程内，ZipVoice/Vits/Matcha 等中英模型）；
+/// - audio.cpp sidecar（`crate::audiocpp`，PocketTTS 等 GGUF 模型经 HTTP）。
 ///
 /// 设计上对齐 KWS/ASR：模型清单下载、配置解析、引擎「逐文件预检 + install-model 提示」
-/// 等模式保持一致；进度通过 `generate_with_config` 的回调（`FnMut(f32) -> bool`）暴露。
+/// 等模式保持一致；进度通过回调（`FnMut(f32) -> bool`）暴露（sherpa 为合成过程
+/// 协作回调，audiocpp 为请求前后探询——HTTP 在途请求无法中断）。
 pub mod config;
 pub mod kokoro_voices;
 pub mod reaction;
 pub mod voice;
 pub mod voice_store;
 
-use config::{ResolvedTtsConfig, TtsModelKind};
+use crate::audiocpp::client::AudiocppTts;
+use config::{ResolvedTtsConfig, TtsBackendKind, TtsModelKind};
 use sherpa_onnx::{
     GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKittenModelConfig,
     OfflineTtsKokoroModelConfig, OfflineTtsMatchaModelConfig, OfflineTtsModelConfig,
@@ -23,8 +26,8 @@ use std::path::{Path, PathBuf};
 pub use crate::kws::model::{DownloadProgress, DownloadStage, ModelError, ProgressFn};
 pub use voice::TtsVoice;
 
-/// 合成时的「说话人/音色」参数：`Sid`（vits/matcha/kokoro 等固定说话人）或
-/// `Reference`（ZipVoice 参考音频克隆）。
+/// 合成时的「说话人/音色」参数：`Sid`（vits/matcha/kokoro 等固定说话人）、
+/// `Reference`（ZipVoice 参考音频克隆）或 `Named`（audiocpp 具名音色，如 `alba`）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsVoiceParams {
     /// speaker id（本期单说话人模型恒 0；多说话人二期扩展）
@@ -34,6 +37,8 @@ pub enum TtsVoiceParams {
         wav_path: PathBuf,
         reference_text: String,
     },
+    /// 具名音色（audio.cpp 后端，如 PocketTTS 的 `alba`；sherpa 后端不支持）
+    Named(String),
 }
 
 /// 按模型类型构造 sherpa-onnx 的 `OfflineTtsModelConfig` 对应分支。
@@ -147,92 +152,91 @@ fn probe_rule_fsts(kind: TtsModelKind, model_dir: &Path) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-/// 文本转语音引擎。
+/// 文本转语音引擎（双后端门面）。
 ///
-/// 持有 `OfflineTts`。参考音色（零样本声音克隆的音色来源）在每次合成时按需传入，
-/// 因此引擎可复用、可切换音色。所有方法接收 `&self`。
+/// 内部按 `backend` 分派：sherpa（进程内 `OfflineTts`）或 audiocpp（sidecar HTTP）。
+/// 对齐 `voice::AsrBackend` 的 enum 分派先例（后端仅两个且同 crate，可穷尽匹配，
+/// 无需 trait 装箱）；两个后端均 `Send`，可按值 move 进合成线程（`SynthHandle`）。
+/// 参考音色（零样本声音克隆的音色来源）在每次合成时按需传入，引擎可复用、可切换
+/// 音色。所有方法接收 `&self`。
 pub struct TtsEngine {
-    tts: OfflineTts,
-    cfg: ResolvedTtsConfig,
+    inner: TtsBackendInner,
+}
+
+enum TtsBackendInner {
+    Sherpa {
+        tts: OfflineTts,
+        cfg: ResolvedTtsConfig,
+    },
+    Audiocpp(AudiocppTts),
 }
 
 impl TtsEngine {
-    /// 构造引擎，先按模型类型校验所需文件存在。
+    /// 构造引擎：先按 backend 做就绪预检（文件清单见 [`config::preflight`]），
+    /// sherpa 再创建 `OfflineTts`，audiocpp 定位引擎并 lease sidecar 进程。
     pub fn new(cfg: ResolvedTtsConfig) -> Result<Self, String> {
-        // 按模型类型所需文件清单逐文件校验（非 zipvoice 不校验 espeak-ng-data）
-        for name in config::required_files(cfg.model_type) {
-            let p = cfg.model_dir.join(name);
-            if !p.is_file() {
-                return Err(format!(
-                    "缺少模型文件 {name}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
-                    p.display()
-                ));
+        match cfg.backend {
+            TtsBackendKind::Sherpa => {
+                config::preflight(&cfg)?;
+                // Kokoro 主模型名随量化变体不同（model.onnx / model.int8.onnx），不在
+                // required_files 清单里，单独按候选探测。
+                if cfg.model_type == TtsModelKind::Kokoro
+                    && config::kokoro_model_file_in(&cfg.model_dir).is_none()
+                {
+                    return Err(format!(
+                        "缺少模型文件 {} 或 {}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
+                        config::DEFAULT_KOKORO_MODEL,
+                        config::DEFAULT_KOKORO_INT8_MODEL,
+                        cfg.model_dir.display()
+                    ));
+                }
+                let model_config = build_offline_model_config(&cfg);
+                let rule_fsts = probe_rule_fsts(cfg.model_type, &cfg.model_dir);
+                let config = OfflineTtsConfig {
+                    model: model_config,
+                    rule_fsts,
+                    ..Default::default()
+                };
+
+                let tts = OfflineTts::create(&config)
+                    .ok_or_else(|| "无法创建 OfflineTts，请检查模型文件与配置。".to_string())?;
+
+                // Kokoro v1.1 应有 103 个音色；不一致说明 voices.bin 与预期版本不符（仅告警，
+                // sid 钳界由 kokoro_voices::normalize_sid 兜底）。
+                if cfg.model_type == TtsModelKind::Kokoro && tts.num_speakers() != 103 {
+                    tracing::warn!(
+                        "Kokoro 音色数 {} 与预期 103 不符，请检查模型包版本",
+                        tts.num_speakers()
+                    );
+                }
+
+                Ok(Self {
+                    inner: TtsBackendInner::Sherpa { tts, cfg },
+                })
+            }
+            TtsBackendKind::Audiocpp => {
+                let tts = AudiocppTts::new(cfg)?;
+                Ok(Self {
+                    inner: TtsBackendInner::Audiocpp(tts),
+                })
             }
         }
-        // Kokoro 主模型名随量化变体不同（model.onnx / model.int8.onnx），不在
-        // required_files 清单里，单独按候选探测。
-        if cfg.model_type == TtsModelKind::Kokoro
-            && config::kokoro_model_file_in(&cfg.model_dir).is_none()
-        {
-            return Err(format!(
-                "缺少模型文件 {} 或 {}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
-                config::DEFAULT_KOKORO_MODEL,
-                config::DEFAULT_KOKORO_INT8_MODEL,
-                cfg.model_dir.display()
-            ));
-        }
-        if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
-            return Err(format!(
-                "缺少数据目录 data_dir: {}\n请运行 `zapmomo tts install-model` 下载模型。",
-                cfg.data_dir.display()
-            ));
-        }
-
-        let model_config = build_offline_model_config(&cfg);
-        let rule_fsts = probe_rule_fsts(cfg.model_type, &cfg.model_dir);
-        let config = OfflineTtsConfig {
-            model: model_config,
-            rule_fsts,
-            ..Default::default()
-        };
-
-        let tts = OfflineTts::create(&config)
-            .ok_or_else(|| "无法创建 OfflineTts，请检查模型文件与配置。".to_string())?;
-
-        // Kokoro v1.1 应有 103 个音色；不一致说明 voices.bin 与预期版本不符（仅告警，
-        // sid 钳界由 kokoro_voices::normalize_sid 兜底）。
-        if cfg.model_type == TtsModelKind::Kokoro && tts.num_speakers() != 103 {
-            tracing::warn!(
-                "Kokoro 音色数 {} 与预期 103 不符，请检查模型包版本",
-                tts.num_speakers()
-            );
-        }
-
-        Ok(Self { tts, cfg })
     }
 
     pub fn config(&self) -> &ResolvedTtsConfig {
-        &self.cfg
+        match &self.inner {
+            TtsBackendInner::Sherpa { cfg, .. } => cfg,
+            TtsBackendInner::Audiocpp(a) => a.config(),
+        }
     }
 
-    /// 合成输出的采样率（Hz）。
+    /// 合成输出的采样率（Hz）。audiocpp 后端初值为 PocketTTS 固定 24000，
+    /// 首次合成后按响应 wav 头校准。
     pub fn sample_rate(&self) -> i32 {
-        self.tts.sample_rate()
-    }
-
-    /// 按说话人/音色参数构建生成配置：`Sid` → speaker id；`Reference` → 参考音频克隆。
-    fn generation_config(
-        &self,
-        speed: f32,
-        voice: &TtsVoiceParams,
-    ) -> Result<GenerationConfig, String> {
-        build_generation_config(
-            self.cfg.model_type,
-            self.cfg.num_steps,
-            speed,
-            voice,
-            self.sample_rate(),
-        )
+        match &self.inner {
+            TtsBackendInner::Sherpa { tts, .. } => tts.sample_rate(),
+            TtsBackendInner::Audiocpp(a) => a.sample_rate(),
+        }
     }
 
     /// 把文本合成为 PCM 波形（f32，采样率见 [`Self::sample_rate`]）。
@@ -245,17 +249,29 @@ impl TtsEngine {
         speed: f32,
         voice: &TtsVoiceParams,
     ) -> Result<Vec<f32>, String> {
-        let gen_config = self.generation_config(1.0, voice)?;
-        let audio = self
-            .tts
-            .generate_with_config(text, &gen_config, None::<fn(&[f32], f32) -> bool>)
-            .ok_or_else(|| "语音合成失败。".to_string())?;
-        apply_speed_to_samples(audio.samples(), self.sample_rate(), speed)
+        match &self.inner {
+            TtsBackendInner::Sherpa { tts, cfg } => {
+                let gen_config = build_generation_config(
+                    cfg.model_type,
+                    cfg.num_steps,
+                    1.0,
+                    voice,
+                    tts.sample_rate(),
+                )?;
+                let audio = tts
+                    .generate_with_config(text, &gen_config, None::<fn(&[f32], f32) -> bool>)
+                    .ok_or_else(|| "语音合成失败。".to_string())?;
+                apply_speed_to_samples(audio.samples(), tts.sample_rate(), speed)
+            }
+            TtsBackendInner::Audiocpp(a) => a.synthesize(text, speed, voice),
+        }
     }
 
     /// 把文本合成为 PCM，并在合成过程中回调进度（0..1）。
     ///
-    /// `progress` 返回 `false` 提前终止合成（对应 sherpa-onnx 回调语义）。
+    /// sherpa：`progress` 返回 `false` 提前终止合成（协作回调语义）。
+    /// audiocpp：请求前探询（返回 `false` 则不发请求）——HTTP 在途请求无法中断，
+    /// 这是两个后端的取消语义差异。
     /// 语速同 [`Self::synthesize`]：模型按 1.0 合成，输出重采样实现。
     pub fn synthesize_with_progress<F>(
         &self,
@@ -267,13 +283,30 @@ impl TtsEngine {
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(1.0, voice)?;
-        let callback = move |_samples: &[f32], p: f32| progress(p);
-        let audio = self
-            .tts
-            .generate_with_config(text, &gen_config, Some(callback))
-            .ok_or_else(|| "语音合成失败。".to_string())?;
-        apply_speed_to_samples(audio.samples(), self.sample_rate(), speed)
+        match &self.inner {
+            TtsBackendInner::Sherpa { tts, cfg } => {
+                let gen_config = build_generation_config(
+                    cfg.model_type,
+                    cfg.num_steps,
+                    1.0,
+                    voice,
+                    tts.sample_rate(),
+                )?;
+                let callback = move |_samples: &[f32], p: f32| progress(p);
+                let audio = tts
+                    .generate_with_config(text, &gen_config, Some(callback))
+                    .ok_or_else(|| "语音合成失败。".to_string())?;
+                apply_speed_to_samples(audio.samples(), tts.sample_rate(), speed)
+            }
+            TtsBackendInner::Audiocpp(a) => {
+                if !progress(0.05) {
+                    return Err("已取消".to_string());
+                }
+                let out = a.synthesize(text, speed, voice)?;
+                let _ = progress(1.0);
+                Ok(out)
+            }
+        }
     }
 
     /// 把文本合成为 wav 文件。
@@ -302,16 +335,35 @@ impl TtsEngine {
     where
         F: FnMut(f32) -> bool + 'static,
     {
-        let gen_config = self.generation_config(1.0, voice)?;
-        let callback = move |_samples: &[f32], p: f32| progress(p);
-        let audio = self
-            .tts
-            .generate_with_config(text, &gen_config, Some(callback))
-            .ok_or_else(|| "语音合成失败。".to_string())?;
-        let sample_rate = self.sample_rate();
-        let samples = apply_speed_to_samples(audio.samples(), sample_rate, speed)?;
-        crate::audio::write_wav_f32(out_path, sample_rate as u32, &samples)?;
-        Ok(samples.len())
+        match &self.inner {
+            TtsBackendInner::Sherpa { tts, cfg } => {
+                let gen_config = build_generation_config(
+                    cfg.model_type,
+                    cfg.num_steps,
+                    1.0,
+                    voice,
+                    tts.sample_rate(),
+                )?;
+                let callback = move |_samples: &[f32], p: f32| progress(p);
+                let audio = tts
+                    .generate_with_config(text, &gen_config, Some(callback))
+                    .ok_or_else(|| "语音合成失败。".to_string())?;
+                let sample_rate = tts.sample_rate();
+                let samples = apply_speed_to_samples(audio.samples(), sample_rate, speed)?;
+                crate::audio::write_wav_f32(out_path, sample_rate as u32, &samples)?;
+                Ok(samples.len())
+            }
+            TtsBackendInner::Audiocpp(a) => {
+                if !progress(0.05) {
+                    return Err("已取消".to_string());
+                }
+                let samples = a.synthesize(text, speed, voice)?;
+                let sample_rate = a.sample_rate();
+                crate::audio::write_wav_f32(out_path, sample_rate as u32, &samples)?;
+                let _ = progress(1.0);
+                Ok(samples.len())
+            }
+        }
     }
 }
 
@@ -333,6 +385,9 @@ fn build_generation_config(
     match voice {
         TtsVoiceParams::Sid(sid) => {
             gc.sid = *sid;
+        }
+        TtsVoiceParams::Named(_) => {
+            return Err("sherpa 后端不支持具名音色（该参数仅 audio.cpp 后端使用）".to_string());
         }
         TtsVoiceParams::Reference {
             wav_path,
@@ -380,7 +435,10 @@ fn normalize_reference(
 /// 这是为了避免把 speed 传给 ZipVoice 模型：模型内部 `kept_frames =
 /// num_frames(speed) - 参考帧数`，高语速 + 短文本时 `kept_frames≤0` 会抛 C++
 /// 异常，而 Rust 无法捕获 C++ 异常会直接 abort。改用输出重采样后任何语速都不崩。
-fn apply_speed_to_samples(
+///
+/// audiocpp 后端复用同一语义（`crate::audiocpp::client` 调用），保证两个后端
+/// 的语速行为一致。
+pub(crate) fn apply_speed_to_samples(
     samples: &[f32],
     sample_rate: i32,
     speed: f32,

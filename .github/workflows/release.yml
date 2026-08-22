@@ -30,12 +30,22 @@ jobs:
         include:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
+            audiocpp_triple: aarch64-apple-darwin
+            # arm64 保留 Metal（大模型可走 GPU；小模型实测 CPU 更快，运行时按 [tts].provider 选择）
+            audiocpp_extra: '-DENGINE_ENABLE_METAL=ON'
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
+            audiocpp_triple: x86_64-apple-darwin
+            # ARM runner 上交叉编译 x86_64：Metal 关闭（Intel Mac 走 CPU）
+            audiocpp_extra: '-DENGINE_ENABLE_METAL=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64'
           - platform: ubuntu-22.04
             args: ''
+            audiocpp_triple: x86_64-unknown-linux-gnu
+            audiocpp_extra: ''
           - platform: windows-latest
             args: ''
+            audiocpp_triple: x86_64-pc-windows-msvc
+            audiocpp_extra: ''
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
@@ -116,6 +126,35 @@ jobs:
             echo '::warning::target/sherpa-onnx-prebuilt restored empty (rust-cache strips lib files), purging to force re-download'
             rm -rf target/sherpa-onnx-prebuilt
           fi
+
+      - name: Build audiocpp_server sidecar
+        # TTS 第二后端（audio.cpp，Apache-2.0）的 sidecar 进程：裁剪构建只编 pocket_tts
+        # 模型族（实测 11MB / ~1.5 分钟）。DEPLOYMENT_BUILD 把 model specs 编进二进制
+        # （否则运行时依赖源码目录的 model_specs/）；NATIVE_CPU=OFF 保证产物可移植
+        # （默认 -march=native 只能在构建机级 CPU 上跑）。externalBin 要求带 target
+        # triple 后缀的文件名（tauri.conf.json bundle.externalBin）。
+        # 引擎版本升级只改 AUDIOCPP_REF（与 tauri.conf.json 同步审查）。
+        shell: bash
+        env:
+          AUDIOCPP_REF: v0.6.1
+          AUDIOCPP_TRIPLE: ${{ matrix.audiocpp_triple }}
+          AUDIOCPP_EXTRA: ${{ matrix.audiocpp_extra }}
+        run: |
+          git clone --depth 1 --branch "$AUDIOCPP_REF" https://github.com/0xShug0/audio.cpp .audiocpp-src
+          COMMON_FLAGS="-DAUDIOCPP_MODEL_SET=custom -DAUDIOCPP_MODELS=pocket_tts \
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON -DENGINE_ENABLE_NATIVE_CPU=OFF \
+            -DENGINE_ENABLE_CUDA=OFF -DENGINE_ENABLE_VULKAN=OFF -DENGINE_ENABLE_HIP=OFF"
+          # shellcheck disable=SC2086
+          cmake -S .audiocpp-src -B .audiocpp-build $COMMON_FLAGS $AUDIOCPP_EXTRA -DCMAKE_BUILD_TYPE=Release
+          JOBS="${NUMBER_OF_PROCESSORS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+          cmake --build .audiocpp-build --target audiocpp_server --config Release --parallel "$JOBS"
+          # MSVC multi-config 产物在 bin/Release/ 子目录，find 兜底两种布局
+          SRC_BIN=$(find .audiocpp-build -type f -name 'audiocpp_server*' ! -name '*.dSYM*' | head -1)
+          test -n "$SRC_BIN" || { echo '::error::audiocpp_server 产物未找到'; exit 1; }
+          mkdir -p src-tauri/binaries
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE_SUFFIX=".exe"; else EXE_SUFFIX=""; fi
+          cp "$SRC_BIN" "src-tauri/binaries/audiocpp_server-${AUDIOCPP_TRIPLE}${EXE_SUFFIX}"
+          ls -lh src-tauri/binaries/
 
       - uses: tauri-apps/tauri-action@v1
         with:

@@ -47,25 +47,19 @@ impl Announcer {
         if !cfg.enabled {
             return Err("TTS 未启用（[tts].enabled = false）".to_string());
         }
-        // 逐文件预检（按模型类型所需文件，与 synthesize_tts 一致），给出明确的
+        // 逐文件预检（backend 感知，与 synthesize_tts 一致），给出明确的
         // 「模型未就绪」错误而非深层引擎报错
-        let files = tts::config::required_files(cfg.model_type);
-        if let Some(missing) = files.iter().find(|f| !cfg.model_dir.join(f).is_file()) {
-            return Err(format!(
-                "TTS 模型未就绪: {}",
-                cfg.model_dir.join(missing).display()
-            ));
-        }
-        if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
-            return Err(format!("TTS 数据目录缺失: {}", cfg.data_dir.display()));
-        }
-        // 合成参数：ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）
-        let voice = if cfg.model_type.uses_reference_audio() {
+        tts::config::preflight(&cfg).map_err(|e| format!("TTS 模型未就绪: {e}"))?;
+        // 合成参数：sherpa ZipVoice 走参考音频克隆；sid 模型走固定说话人（本期单说话人恒 0）；
+        // audiocpp（PocketTTS）走具名音色
+        let voice = if cfg.uses_reference_audio() {
             let (ref_wav, ref_text) = tts::voice::resolve_reference(&cfg, None, None, None)?;
             tts::TtsVoiceParams::Reference {
                 wav_path: ref_wav,
                 reference_text: ref_text,
             }
+        } else if cfg.backend == tts::config::TtsBackendKind::Audiocpp {
+            tts::TtsVoiceParams::Named(crate::audiocpp::DEFAULT_VOICE.to_string())
         } else {
             tts::TtsVoiceParams::Sid(0)
         };

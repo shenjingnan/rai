@@ -328,6 +328,25 @@ cargo check -p zapmomo-app
 cargo clippy -p zapmomo-app -- -D warnings
 ```
 
+### audio.cpp sidecar 引擎（externalBin）
+
+TTS 第二后端（PocketTTS English）由 audio.cpp 引擎驱动，引擎二进制作为
+externalBin 随安装包分发。`pnpm tauri dev` / `pnpm tauri build` 要求
+`src-tauri/binaries/audiocpp_server-<target-triple>` 存在（该目录不入库）：
+
+```bash
+# 从本仓库 Release 下载（日常；首次发版前无产物，用下面的 --build）
+scripts/fetch-audiocpp-dev.sh
+
+# 本地源码编译（裁剪构建仅含 pocket_tts 模型族，约 1.5 分钟）
+scripts/fetch-audiocpp-dev.sh --build
+```
+
+也可以不放该目录——引擎放在 `~/.zapmomo/engines/` 或 PATH 中同样会被自动发现；
+不使用 audio.cpp 后端（默认 sherpa）时引擎缺失只影响 `[tts].backend = "audiocpp"`
+的合成，其余功能不受影响。引擎版本 pin 在 `.github/workflows/release.yml` 的
+`AUDIOCPP_REF`。
+
 ### Live2D 虚拟角色（开发说明）
 
 常驻角色窗口由 `src-tauri/` 实现，模型定位逻辑在根 crate 的 `src/live2d/`：

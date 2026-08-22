@@ -159,6 +159,39 @@ impl TtsModelKind {
     }
 }
 
+/// TTS 推理后端：sherpa-onnx（进程内）或 audio.cpp（sidecar HTTP）。
+///
+/// 与 [`TtsModelKind`] 正交：模型类型描述「什么模型」，后端描述「谁推理」。
+/// 当前 audiocpp 后端仅服务 PocketTTS（英文固定音色 alba）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsBackendKind {
+    /// sherpa-onnx 进程内 `OfflineTts`（默认，行为不变）
+    #[default]
+    Sherpa,
+    /// audio.cpp sidecar 进程（audiocpp_server，OpenAI 风格 HTTP）
+    Audiocpp,
+}
+
+impl TtsBackendKind {
+    /// snake_case 字符串（配置/JSON 直传）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sherpa => "sherpa",
+            Self::Audiocpp => "audiocpp",
+        }
+    }
+
+    /// 解析 snake_case 字符串（与 `TtsModelKind::parse_str` 同款命名）。
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "sherpa" => Some(Self::Sherpa),
+            "audiocpp" => Some(Self::Audiocpp),
+            _ => None,
+        }
+    }
+}
+
 /// VITS 模型安装完成所需文件（如 vits-melo-tts-zh_en：model + lexicon + tokens）。
 pub const VITS_REQUIRED_FILES: [&str; 3] = [DEFAULT_TOKENS, DEFAULT_LEXICON, "model.onnx"];
 
@@ -221,6 +254,10 @@ pub struct ResolvedTtsConfig {
     pub provider: String,
     pub num_threads: i32,
     pub debug: bool,
+    /// 推理后端（决定 `TtsEngine` 内部分派；缺省 Sherpa，向后兼容）
+    pub backend: TtsBackendKind,
+    /// audiocpp 引擎二进制覆盖路径（开发/调试用；None = locator 自动定位）
+    pub engine_path: Option<PathBuf>,
 }
 
 impl Default for ResolvedTtsConfig {
@@ -250,8 +287,85 @@ impl Default for ResolvedTtsConfig {
             provider: "cpu".to_string(),
             num_threads: 2,
             debug: false,
+            backend: TtsBackendKind::Sherpa,
+            engine_path: None,
         }
     }
+}
+
+impl ResolvedTtsConfig {
+    /// 是否使用参考音频（声音克隆）语义：仅 sherpa 后端 + ZipVoice。
+    ///
+    /// 编排层（voice 会话 / GUI / CLI）应调此方法而非裸
+    /// `model_type.uses_reference_audio()`——audiocpp 后端的固定音色模型
+    /// （PocketTTS）按具名音色处理，不消费参考音频。
+    pub fn uses_reference_audio(&self) -> bool {
+        self.backend == TtsBackendKind::Sherpa && self.model_type.uses_reference_audio()
+    }
+}
+
+/// audiocpp 后端（PocketTTS English q8_0）安装完成所需文件（相对模型目录）。
+///
+/// `embeddings/` 子目录由下载器的 `create_dir_all(parent)` 自动创建。
+pub const AUDIOCPP_REQUIRED_FILES: [&str; 2] = [
+    "pocket-tts-english-q8_0.gguf",
+    "embeddings/alba.safetensors",
+];
+
+/// TTS 就绪预检（backend 感知的单一权威入口）。
+///
+/// - sherpa：按 [`required_files`] 逐文件 + `requires_data_dir` 校验 espeak-ng-data；
+///   Kokoro 主模型名随量化变体不同（不在清单内），由 [`kokoro_model_file_in`] 单独探测；
+/// - audiocpp：按 [`AUDIOCPP_REQUIRED_FILES`] 逐文件校验（不查 sherpa 五件套）。
+///
+/// 收敛此前散落 5 处的手写文件清单（引擎构造 / dsh / GUI 预检 / models_present /
+/// 语音会话 preflight——后者曾硬编码 zipvoice 清单，vits/matcha 会话被误拦）。
+pub fn preflight(cfg: &ResolvedTtsConfig) -> Result<(), String> {
+    let (files, hint) = match cfg.backend {
+        TtsBackendKind::Sherpa => {
+            if cfg.model_type.requires_data_dir() && !cfg.data_dir.is_dir() {
+                return Err(format!(
+                    "缺少数据目录 data_dir: {}\n请运行 `zapmomo tts install-model` 下载模型。",
+                    cfg.data_dir.display()
+                ));
+            }
+            if cfg.model_type == TtsModelKind::Kokoro
+                && kokoro_model_file_in(&cfg.model_dir).is_none()
+            {
+                return Err(format!(
+                    "缺少模型文件 {} 或 {}: {}\n请运行 `zapmomo tts install-model` 下载模型。",
+                    DEFAULT_KOKORO_MODEL,
+                    DEFAULT_KOKORO_INT8_MODEL,
+                    cfg.model_dir.display()
+                ));
+            }
+            (
+                required_files(cfg.model_type),
+                "zapmomo tts install-model" as &str,
+            )
+        }
+        TtsBackendKind::Audiocpp => (
+            AUDIOCPP_REQUIRED_FILES.as_slice(),
+            "zapmomo tts install-model --registry-id tts-pocket-english-audiocpp",
+        ),
+    };
+    for name in files {
+        let p = cfg.model_dir.join(name);
+        if !p.is_file() {
+            return Err(format!(
+                "缺少模型文件 {name}: {}\n请运行 `{hint}` 下载模型。",
+                p.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 模型是否就绪（[`preflight`] 的布尔版，GUI `models_present` 徽标用）。
+///
+/// 引擎二进制定位失败不在此拦截（合成时报错更精确）。
+pub fn models_present(cfg: &ResolvedTtsConfig) -> bool {
+    preflight(cfg).is_ok()
 }
 
 /// 用户默认模型目录：`~/.zapmomo/models/<模型名>`
@@ -339,8 +453,9 @@ fn resolve_model_dir(
 /// 文件探针：`model-steps-3.onnx`→Matcha、`voices.bin`→Kokoro（fp32/int8 两变体都有，
 /// 且与 VITS 的 `model.onnx`+lexicon 组合无交集）、`model.onnx`+lexicon→Vits、
 /// `encoder.int8.onnx`→Zipvoice，否则默认 Zipvoice。managed 安装目录名 == registry
-/// name 的权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录。
-fn detect_kind_from_dir(model_dir: &Path) -> TtsModelKind {
+/// name 的权威匹配在 `set_selected_model` 写配置时已保证，此处仅兜底外部/本地目录
+/// （以及 CLI 显式切后端时对旧 kind 的重探测，见 `cli::apply_backend_override`）。
+pub(crate) fn detect_kind_from_dir(model_dir: &Path) -> TtsModelKind {
     if model_dir.join("model-steps-3.onnx").is_file() {
         TtsModelKind::Matcha
     } else if model_dir.join(DEFAULT_VOICES_BIN).is_file() {
@@ -440,6 +555,17 @@ pub fn resolve(
         .unwrap_or_else(|| "cpu".to_string());
     cfg.num_threads = s.and_then(|s| s.num_threads).unwrap_or(2);
     cfg.debug = s.and_then(|s| s.debug).unwrap_or(false);
+    // 推理后端：缺省 sherpa（老用户无字段行为不变），非法值显式报错
+    cfg.backend = match s.and_then(|s| s.backend.as_deref()) {
+        Some(v) => TtsBackendKind::parse_str(v)
+            .ok_or_else(|| format!("未知 TTS 后端: {v}（支持 sherpa / audiocpp）"))?,
+        None => TtsBackendKind::default(),
+    };
+    cfg.engine_path = s
+        .and_then(|s| s.engine_path.as_deref())
+        .map(resolve_env_ref)
+        .transpose()?
+        .map(PathBuf::from);
 
     Ok(cfg)
 }
@@ -953,5 +1079,116 @@ mod tests {
         assert_eq!(tts.speed, Some(1.5));
         assert_eq!(tts.num_threads, Some(8));
         assert_eq!(tts.debug, Some(true));
+    }
+
+    #[test]
+    fn test_backend_kind_str_and_parse() {
+        for (s, kind) in [
+            ("sherpa", TtsBackendKind::Sherpa),
+            ("audiocpp", TtsBackendKind::Audiocpp),
+        ] {
+            assert_eq!(TtsBackendKind::parse_str(s), Some(kind), "{s}");
+            assert_eq!(kind.as_str(), s);
+        }
+        assert_eq!(TtsBackendKind::parse_str("unknown"), None);
+        assert_eq!(TtsBackendKind::default(), TtsBackendKind::Sherpa);
+    }
+
+    #[test]
+    fn test_resolve_backend_default_explicit_and_invalid() {
+        // 缺省 → sherpa（老用户行为不变）
+        assert_eq!(resolve(None, None).unwrap().backend, TtsBackendKind::Sherpa);
+        // 显式 audiocpp → 生效
+        let settings = TtsSettings {
+            backend: Some("audiocpp".to_string()),
+            ..TtsSettings::default()
+        };
+        assert_eq!(
+            resolve(Some(&settings), None).unwrap().backend,
+            TtsBackendKind::Audiocpp
+        );
+        // 非法值 → 报错（含支持列表）
+        let settings = TtsSettings {
+            backend: Some("vllm".to_string()),
+            ..TtsSettings::default()
+        };
+        let err = resolve(Some(&settings), None).unwrap_err();
+        assert!(err.contains("未知 TTS 后端"), "err: {err}");
+        assert!(err.contains("sherpa / audiocpp"), "err: {err}");
+    }
+
+    #[test]
+    fn test_resolve_engine_path_passthrough() {
+        // 未配置 → None（locator 自动定位）
+        assert_eq!(resolve(None, None).unwrap().engine_path, None);
+        // 显式配置 → 透传（支持 env 引用语义与 model_dir 一致）
+        let settings = TtsSettings {
+            engine_path: Some("/opt/audiocpp/audiocpp_server".to_string()),
+            ..TtsSettings::default()
+        };
+        assert_eq!(
+            resolve(Some(&settings), None).unwrap().engine_path,
+            Some(PathBuf::from("/opt/audiocpp/audiocpp_server"))
+        );
+    }
+
+    #[test]
+    fn test_uses_reference_audio_backend_aware() {
+        // sherpa + zipvoice → true（默认组合）
+        assert!(ResolvedTtsConfig::default().uses_reference_audio());
+        // sherpa + vits → false
+        let mut cfg = ResolvedTtsConfig::default();
+        cfg.model_type = TtsModelKind::Vits;
+        assert!(!cfg.uses_reference_audio());
+        // audiocpp 后端恒 false（PocketTTS 固定音色）
+        let settings = TtsSettings {
+            backend: Some("audiocpp".to_string()),
+            ..TtsSettings::default()
+        };
+        let cfg = resolve(Some(&settings), None).unwrap();
+        assert!(!cfg.uses_reference_audio());
+    }
+
+    #[test]
+    fn test_preflight_audiocpp_missing_files() {
+        let settings = TtsSettings {
+            backend: Some("audiocpp".to_string()),
+            ..TtsSettings::default()
+        };
+        let base = tempfile::tempdir().unwrap();
+        let mut cfg = resolve(Some(&settings), None).unwrap();
+        cfg.model_dir = base.path().to_path_buf();
+
+        // 空目录 → 报缺 gguf（文案带 registry-id 提示）
+        let err = preflight(&cfg).unwrap_err();
+        assert!(err.contains("pocket-tts-english-q8_0.gguf"), "err: {err}");
+        assert!(err.contains("tts-pocket-english-audiocpp"), "err: {err}");
+
+        // 只放 gguf → 报缺 embeddings（不查 sherpa 五件套）
+        std::fs::write(cfg.model_dir.join("pocket-tts-english-q8_0.gguf"), b"x").unwrap();
+        let err = preflight(&cfg).unwrap_err();
+        assert!(err.contains("embeddings/alba.safetensors"), "err: {err}");
+
+        // 两文件齐 → 通过；models_present 同步为 true
+        std::fs::create_dir_all(cfg.model_dir.join("embeddings")).unwrap();
+        std::fs::write(cfg.model_dir.join("embeddings/alba.safetensors"), b"x").unwrap();
+        assert!(preflight(&cfg).is_ok());
+        assert!(models_present(&cfg));
+    }
+
+    #[test]
+    fn test_preflight_sherpa_keeps_existing_behavior() {
+        // sherpa 缺文件 → 沿用 install-model 文案（既有测试锚点不变）
+        let mut cfg = ResolvedTtsConfig::default();
+        cfg.model_dir = PathBuf::from("/nonexistent/model");
+        let err = preflight(&cfg).unwrap_err();
+        assert!(err.contains("install-model"), "err: {err}");
+        assert!(!models_present(&cfg));
+        // vits 会话不再被 zipvoice 五件套误拦（preflight_voice_models 现存债的修复依据）：
+        // 报错来自 vits 自己的三件套清单，而非 zipvoice 的 encoder.int8.onnx
+        cfg.model_type = TtsModelKind::Vits;
+        let err = preflight(&cfg).unwrap_err();
+        assert!(err.contains("tokens.txt"), "err: {err}");
+        assert!(!err.contains("encoder.int8.onnx"), "err: {err}");
     }
 }

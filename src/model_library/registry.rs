@@ -163,6 +163,9 @@ pub fn required_files_for_role(role: &str) -> &'static [&'static str] {
         "tts-vits-melo" => &crate::tts::config::VITS_REQUIRED_FILES,
         "tts-matcha" => &crate::tts::config::MATCHA_REQUIRED_FILES,
         "tts-vocoder-22khz" => &[crate::tts::config::DEFAULT_MATCHA_VOCODER],
+        // audiocpp（PocketTTS）：主 GGUF + speaker embeddings 子目录文件
+        "tts-audiocpp-pocket" => &[crate::audiocpp::POCKET_GGUF_FILE],
+        "tts-audiocpp-pocket-embeddings" => &[crate::tts::config::AUDIOCPP_REQUIRED_FILES[1]],
         // Kokoro 两量化变体：registry 层按 role 钉死主模型文件名（staging 校验抓错误归档），
         // 引擎层用 kokoro_model_file_in 双名探测容忍两种包
         "tts-kokoro" => &crate::tts::config::KOKORO_FP32_REQUIRED_FILES,
@@ -191,8 +194,8 @@ mod tests {
         let models = all_models();
         assert_eq!(
             models.len(),
-            29,
-            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro TTS + 1 个 Qwen3-ASR"
+            30,
+            "应为 7 个首批（含 2 KWS）+ 5 个 ASR + 6 个补充 LLM + 2 个新 TTS + 3 个新 ASR + 2 个流式 Paraformer + 1 个新 KWS（gigaspeech）+ 2 个 Kokoro TTS + 1 个 Qwen3-ASR + 1 个 audiocpp PocketTTS"
         );
         assert!(
             models

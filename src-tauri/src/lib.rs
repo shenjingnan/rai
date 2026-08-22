@@ -1108,7 +1108,10 @@ fn get_tts_config(state: State<'_, TtsDownloadState>) -> Result<TtsConfigInfo, S
 
     let files = zapmomo::tts::config::required_files(cfg.model_type);
     let models_present = files.iter().all(|f| cfg.model_dir.join(f).is_file())
-        && (!cfg.model_type.requires_data_dir() || cfg.data_dir.is_dir());
+        && (!cfg.model_type.requires_data_dir() || cfg.data_dir.is_dir())
+        // Kokoro 主模型名随量化变体不同（model.onnx / model.int8.onnx），按候选探测
+        && (cfg.model_type != zapmomo::tts::config::TtsModelKind::Kokoro
+            || zapmomo::tts::config::kokoro_model_file_in(&cfg.model_dir).is_some());
 
     Ok(TtsConfigInfo {
         model_type: cfg.model_type.as_str().to_string(),
@@ -1166,15 +1169,27 @@ fn synthesize_inner(
     Ok(())
 }
 
-/// 列出可用参考音色：模型包内置 + 用户自定义音色库。
-///
-/// sid 模型（vits/matcha/kokoro...）无参考音色克隆概念，返回空列表
-/// （前端音色下拉只剩「模型固定」占位并禁用）。
+/// 列出可用音色：ZipVoice 返回参考音色（模型包内置 + 用户自定义音色库）；
+/// Kokoro 返回 103 个预置音色（sid + 语言分组）；vits/matcha 单说话人返回空列表。
 #[tauri::command]
 fn list_tts_voices() -> Result<Vec<zapmomo::tts::TtsVoice>, String> {
     let settings = zapmomo::config::settings::load_settings()?;
     let tts_settings = settings.as_ref().and_then(|s| s.tts.clone());
     let cfg = zapmomo::tts::config::resolve(tts_settings.as_ref(), None)?;
+    if cfg.model_type == zapmomo::tts::config::TtsModelKind::Kokoro {
+        return Ok(zapmomo::tts::kokoro_voices::list_voices()
+            .iter()
+            .map(|v| zapmomo::tts::TtsVoice {
+                id: v.id.to_string(),
+                name: v.name.to_string(),
+                wav_path: PathBuf::new(),
+                reference_text: String::new(),
+                custom: false,
+                sid: Some(v.sid),
+                group: Some(v.group),
+            })
+            .collect());
+    }
     if !cfg.model_type.uses_reference_audio() {
         return Ok(Vec::new());
     }
@@ -1277,7 +1292,7 @@ fn synthesize_tts(
     }
 
     // 合成参数：ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
-    // sid 模型走固定说话人（本期单说话人恒 0）。在后台线程外解析，尽早报错。
+    // sid 模型（Kokoro 等）按音色名/sid 解析说话人。在后台线程外解析，尽早报错。
     let voice_params = if cfg.model_type.uses_reference_audio() {
         let custom_wav = reference_wav.map(std::path::PathBuf::from);
         let (ref_wav, ref_text) = zapmomo::tts::voice::resolve_reference(
@@ -1291,7 +1306,7 @@ fn synthesize_tts(
             reference_text: ref_text,
         }
     } else {
-        zapmomo::tts::TtsVoiceParams::Sid(sid.unwrap_or(0))
+        zapmomo::tts::voice::resolve_sid_voice(&cfg, voice.as_deref(), sid)?
     };
 
     let speed = speed.unwrap_or(cfg.speed);
@@ -1949,10 +1964,68 @@ fn collect_asr_preflight_files(
     Ok(files)
 }
 
+/// 按 TTS `model_type` 收集预检文件清单（族感知，对齐 `collect_asr_preflight_files`）。
+///
+/// zipvoice 五件套 / vits model+tokens+lexicon / matcha 声学模型+声码器+tokens+lexicon；
+/// 未收录的 kind（kitten/pocket/supertonic）返回空清单，交由引擎构造时报错。
+fn collect_tts_preflight_files(
+    cfg: &zapmomo::tts::config::ResolvedTtsConfig,
+) -> Result<Vec<(&'static str, &std::path::Path)>, String> {
+    use zapmomo::tts::config::TtsModelKind;
+    Ok(match cfg.model_type {
+        TtsModelKind::Zipvoice => vec![
+            ("TTS encoder", cfg.encoder.as_path()),
+            ("TTS decoder", cfg.decoder.as_path()),
+            ("TTS vocoder", cfg.vocoder.as_path()),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Vits => vec![
+            (
+                "TTS model",
+                cfg.model
+                    .as_deref()
+                    .ok_or_else(|| "VITS 主模型未解析".to_string())?,
+            ),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Matcha => vec![
+            (
+                "TTS acoustic model",
+                cfg.acoustic_model
+                    .as_deref()
+                    .ok_or_else(|| "Matcha 声学模型未解析".to_string())?,
+            ),
+            ("TTS vocoder", cfg.vocoder.as_path()),
+            ("TTS tokens", cfg.tokens.as_path()),
+            ("TTS lexicon", cfg.lexicon.as_path()),
+        ],
+        TtsModelKind::Kokoro => vec![
+            (
+                "TTS model",
+                cfg.model
+                    .as_deref()
+                    .ok_or_else(|| "Kokoro 主模型未解析".to_string())?,
+            ),
+            (
+                "TTS voices",
+                cfg.voices
+                    .as_deref()
+                    .ok_or_else(|| "Kokoro voices.bin 未解析".to_string())?,
+            ),
+            ("TTS tokens", cfg.tokens.as_path()),
+        ],
+        _ => vec![],
+    })
+}
+
 /// 预检语音会话所需模型文件（KWS / ASR / TTS / LLM）。缺任一返回带安装提示的错误。
 ///
-/// ASR 按 `model_type` 族感知（zipformer 四件套 / paraformer encoder+decoder+tokens /
-/// SenseVoice model+tokens / Whisper encoder+decoder+tokens），不再硬编码 zipformer 专属文件名。
+/// ASR / TTS 均按 `model_type` 族感知（ASR：zipformer 四件套 / paraformer
+/// encoder+decoder+tokens / SenseVoice model+tokens / Whisper encoder+decoder+tokens；
+/// 不再硬编码 zipformer / zipvoice 专属文件名）；data_dir 仅对需要它的模型族
+/// （zipvoice/kokoro 等，见 `requires_data_dir`）检查。
 fn preflight_voice_models(
     cfg: &zapmomo::voice::config::ResolvedSessionConfig,
 ) -> Result<(), String> {
@@ -1962,19 +2035,15 @@ fn preflight_voice_models(
         ("KWS joiner", cfg.kws.joiner.as_path()),
         ("KWS tokens", cfg.kws.tokens.as_path()),
         ("KWS keywords", cfg.kws.keywords_file.as_path()),
-        ("TTS encoder", cfg.tts.encoder.as_path()),
-        ("TTS decoder", cfg.tts.decoder.as_path()),
-        ("TTS vocoder", cfg.tts.vocoder.as_path()),
-        ("TTS tokens", cfg.tts.tokens.as_path()),
-        ("TTS lexicon", cfg.tts.lexicon.as_path()),
     ];
+    files.extend(collect_tts_preflight_files(&cfg.tts)?);
     files.extend(collect_asr_preflight_files(&cfg.asr)?);
     for (name, path) in files {
         if !path.is_file() {
             return Err(format!("缺少模型文件 {name}: {}", path.display()));
         }
     }
-    if !cfg.tts.data_dir.is_dir() {
+    if cfg.tts.model_type.requires_data_dir() && !cfg.tts.data_dir.is_dir() {
         return Err(format!("缺少 TTS 数据目录: {}", cfg.tts.data_dir.display()));
     }
     if !cfg.llm.model_path.is_file() {

@@ -276,6 +276,10 @@ export interface TtsVoice {
   reference_text: string;
   /** 是否为用户自定义音色（true = 来自音色库，false = 模型包内置） */
   custom: boolean;
+  /** sid 模型（Kokoro）音色的 speaker id；参考音色（zipvoice）为 null */
+  sid?: number | null;
+  /** Kokoro 音色分组（前端分组下拉）；参考音色为 null */
+  group?: "english_female" | "chinese_female" | "chinese_male" | null;
 }
 
 /** `save_tts_voice` 载荷：把源 wav 拷贝进音色库并登记。 */

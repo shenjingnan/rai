@@ -5346,6 +5346,10 @@ const COMPANION_INITIAL_W: f64 = 360.0;
 const COMPANION_INITIAL_H: f64 = 480.0;
 /// 角色窗口距屏幕工作区边缘的留白（逻辑像素）。
 const COMPANION_MARGIN: f64 = 16.0;
+/// 窗口顶部为 dsh 事件 toast 堆叠预留的高度（逻辑像素，最前卡片 + 2 层向上 peek），
+/// 模型渲染区整体下移一条，堆叠卡片不遮挡模型。需与前端 `BUBBLE_STRIP`
+/// （CompanionRoot.tsx）保持一致。
+const COMPANION_BUBBLE_STRIP: f64 = 72.0;
 
 /// 计算角色窗口首次出现的右下角位置（逻辑像素）。
 ///
@@ -5602,8 +5606,8 @@ pub fn run() {
             let live2d = loaded.as_ref().and_then(|s| s.live2d.clone());
             let scale = live2d.as_ref().and_then(|l| l.window_scale).unwrap_or(1.0);
 
-            // 基准高度：min(480, 主屏工作区高度 × 0.6)。setup 阶段按默认 3:4 宽高比建窗，
-            // 模型加载后前端按真实宽高比修正。
+            // 基准高度：min(480, 主屏工作区高度 × 0.6)，另加顶部气泡预留条（与前端
+            // computeSize 一致）。setup 阶段按默认 3:4 宽高比建窗，模型加载后前端按真实宽高比修正。
             let avail_height = app
                 .primary_monitor()
                 .ok()
@@ -5613,8 +5617,8 @@ pub fn run() {
                     (work.position.y as f64 + work.size.height as f64) / m.scale_factor()
                 })
                 .unwrap_or(1080.0);
-            let init_h = 480.0_f64.min(avail_height * 0.6) * scale;
-            let init_w = init_h * (3.0 / 4.0);
+            let init_h = 480.0_f64.min(avail_height * 0.6) * scale + COMPANION_BUBBLE_STRIP;
+            let init_w = (init_h - COMPANION_BUBBLE_STRIP) * (3.0 / 4.0);
 
             // 启动同步 reconcile：让 settings 的 [live2d].model_dir 与伙伴库 active 一致，
             // 使 CompanionRoot 挂载时 get_live2d_config 直接读到正确的当前伙伴（毫秒级，不迁移）。

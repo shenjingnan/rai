@@ -667,7 +667,7 @@ fn get_asr_config(state: State<'_, AsrDownloadState>) -> Result<AsrConfigInfo, S
     let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
     let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
 
-    // 族感知：SenseVoice/Whisper/zipformer 各有自己的文件布局，交给 asr::is_installed 探测
+    // 族感知：SenseVoice/Whisper/Qwen3-ASR/zipformer 各有自己的文件布局，交给 asr::is_installed 探测
     let models_present = zapmomo::asr::is_installed(&cfg.model_dir);
     let punctuation_present = cfg.punctuation_model.is_file();
     tracing::info!(
@@ -756,10 +756,10 @@ fn start_asr_listen_impl(
     let asr_settings = settings.as_ref().and_then(|s| s.asr.clone());
     let cfg = zapmomo::asr::config::resolve(asr_settings.as_ref(), None)?;
 
-    // 离线族（SenseVoice/Whisper）不支持实时识别：前端已禁用开关，这里双保险拦截
+    // 离线族（SenseVoice/Whisper/Qwen3-ASR）不支持实时识别：前端已禁用开关，这里双保险拦截
     if !cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer/paraformer）模型，或使用「转写文件」功能离线转写。",
+            "当前模型类型 {} 不支持实时识别。请切换回流式（zipformer/paraformer）模型，或使用「转写文件」/「免提听写」离线转写。",
             cfg.model_type.as_str()
         ));
     }
@@ -854,7 +854,7 @@ fn is_asr_listening(state: State<'_, AsrListenState>) -> bool {
 
 /// 开始离线免提听写的内部实现（command 与「切换设备重启」共用）。
 ///
-/// 守卫：仅在离线模型（SenseVoice/Whisper）下可用；流式族（zipformer/paraformer）被拒（听写是离线专用）。
+/// 守卫：仅在离线模型（SenseVoice/Whisper/Qwen3-ASR）下可用；流式族（zipformer/paraformer）被拒（听写是离线专用）。
 /// 线程内先惰性下载 Silero VAD 模型，再跑 `run_dictate`（VAD 分段 → 每段整句转写）。
 fn start_asr_dictate_impl(
     app: AppHandle,
@@ -872,7 +872,7 @@ fn start_asr_dictate_impl(
     // 流式模型不支持听写（离线模型专用）：前端已切走开关，这里双保险拦截
     if cfg.model_type.is_streaming() {
         return Err(format!(
-            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper 离线模型。",
+            "当前模型类型 {} 不支持免提听写（离线模型专用）。请先切换 SenseVoice/Whisper/Qwen3-ASR 离线模型。",
             cfg.model_type.as_str()
         ));
     }
@@ -1960,6 +1960,17 @@ fn collect_asr_preflight_files(
             ("ASR decoder", &cfg.decoder),
             ("ASR tokens", &cfg.tokens),
         ],
+        AsrModelKind::Qwen3Asr => {
+            let conv = cfg
+                .model
+                .as_deref()
+                .ok_or_else(|| "Qwen3-ASR 模型未解析出 conv_frontend 文件".to_string())?;
+            // tokenizer 是目录（非文件），不进 is_file 循环，单独校验
+            if !cfg.tokens.is_dir() {
+                return Err(format!("缺少 tokenizer 目录: {}", cfg.tokens.display()));
+            }
+            vec![("ASR conv_frontend", conv), ("ASR encoder", &cfg.encoder), ("ASR decoder", &cfg.decoder)]
+        }
     };
     Ok(files)
 }
@@ -2022,10 +2033,9 @@ fn collect_tts_preflight_files(
 
 /// 预检语音会话所需模型文件（KWS / ASR / TTS / LLM）。缺任一返回带安装提示的错误。
 ///
-/// ASR / TTS 均按 `model_type` 族感知（ASR：zipformer 四件套 / paraformer
-/// encoder+decoder+tokens / SenseVoice model+tokens / Whisper encoder+decoder+tokens；
-/// 不再硬编码 zipformer / zipvoice 专属文件名）；data_dir 仅对需要它的模型族
-/// （zipvoice/kokoro 等，见 `requires_data_dir`）检查。
+/// ASR 按 `model_type` 族感知（zipformer 四件套 / paraformer encoder+decoder+tokens /
+/// SenseVoice model+tokens / Whisper encoder+decoder+tokens / Qwen3-ASR
+/// conv_frontend+encoder+decoder，tokenizer 目录单独校验），不再硬编码 zipformer 专属文件名。
 fn preflight_voice_models(
     cfg: &zapmomo::voice::config::ResolvedSessionConfig,
 ) -> Result<(), String> {
@@ -6211,5 +6221,41 @@ mod preflight_tests {
         assert!(labels.contains(&"ASR decoder"));
         assert!(labels.contains(&"ASR tokens"));
         assert!(!labels.contains(&"ASR joiner"));
+    }
+
+    #[test]
+    fn test_preflight_files_qwen3_no_joiner_tokenizer_as_dir() {
+        // 手建临时目录（src-tauri 无 tempfile 依赖）
+        let dir = std::env::temp_dir().join(format!("zapmomo-preflight-qwen3-{}", std::process::id()));
+        let tokenizer = dir.join("tokenizer");
+        std::fs::create_dir_all(&tokenizer).unwrap();
+
+        // tokenizer 目录存在 → conv_frontend/encoder/decoder 三件（无 joiner/tokens 标签）
+        let cfg = ResolvedAsrConfig {
+            model_type: AsrModelKind::Qwen3Asr,
+            model_dir: dir.clone(),
+            model: Some(dir.join("conv_frontend.onnx")),
+            encoder: dir.join("encoder.int8.onnx"),
+            decoder: dir.join("decoder.int8.onnx"),
+            tokens: tokenizer.clone(),
+            ..ResolvedAsrConfig::default()
+        };
+        let files = collect_asr_preflight_files(&cfg).unwrap();
+        let labels = labels(&files);
+        assert!(labels.contains(&"ASR conv_frontend"));
+        assert!(labels.contains(&"ASR encoder"));
+        assert!(labels.contains(&"ASR decoder"));
+        assert!(!labels.contains(&"ASR joiner"));
+        assert!(!labels.contains(&"ASR tokens"));
+
+        // tokenizer 目录缺失 → 直接报错（目录级校验，不进 is_file 循环）
+        let cfg_bad = ResolvedAsrConfig {
+            tokens: dir.join("nonexistent-tokenizer"),
+            ..cfg
+        };
+        let err = collect_asr_preflight_files(&cfg_bad).err().unwrap();
+        assert!(err.contains("tokenizer"), "err: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

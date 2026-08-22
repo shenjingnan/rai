@@ -1277,7 +1277,9 @@ fn synthesize_tts(
     // 预检模型文件（backend 感知：sherpa 按模型类型清单、audiocpp 按固定两文件），
     // 失败同步返回清晰错误（避免在后台线程里才报错）
     zapmomo::tts::config::preflight(&cfg).map_err(|e| {
-        format!("{e}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。")
+        format!(
+            "{e}\n\n请在「配置」面板点击「选择模型」，或运行 `zapmomo tts install-model` 下载模型。"
+        )
     })?;
 
     // 合成参数：sherpa ZipVoice 走参考音频克隆（自定义 wav > 内置音色 id > 配置默认）；
@@ -5780,9 +5782,9 @@ pub fn run() {
                     search_dirs.push(resource_dir);
                 }
                 zapmomo::audiocpp::locator::set_search_dirs(search_dirs);
-                zapmomo::audiocpp::server::set_idle_keepalive(Some(std::time::Duration::from_secs(
-                    45,
-                )));
+                zapmomo::audiocpp::server::set_idle_keepalive(Some(
+                    std::time::Duration::from_secs(45),
+                ));
             }
 
             // 常驻角色窗口：透明、无边框、永远置顶、不入任务栏，静态展示 Live2D。

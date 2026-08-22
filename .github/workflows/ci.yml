@@ -188,6 +188,16 @@ jobs:
             rm -rf target/sherpa-onnx-prebuilt
           fi
 
+      - name: Stub audio.cpp sidecar binary (externalBin presence)
+        # tauri 的 build.rs 在 check 阶段就校验 bundle.externalBin 文件存在；
+        # 本 job 只做静态检查不运行 sidecar，放置空占位文件即可满足存在性
+        # （真实二进制由 release.yml 编译、本地开发由 scripts/fetch-audiocpp-dev.sh）。
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          touch "src-tauri/binaries/audiocpp_server-$(rustc -vV | sed -n 's/host: //p')"
+          ls -la src-tauri/binaries/
+
       - name: Lint (app crate)
         run: cargo clippy -p zapmomo-app -- -D warnings
 

@@ -23,6 +23,7 @@ const STDERR_TAIL_LINES: usize = 20;
 /// 持有者（`AudiocppTts`）生命周期即租约生命周期：voice 会话/Announcer 常驻则
 /// server 常驻；GUI 每次合成取放，配合 `set_idle_keepalive(Some(45s))` 在窗口内
 /// 复用热 server（热请求 0.13s 级）。
+#[derive(Debug)]
 pub struct ServerLease {
     port: u16,
     generation: u64,
